@@ -8,47 +8,47 @@ IMPORTANT: This file was signed by Sparkle. Any modifications to this file requi
         <item>
             <title>0.1.23-alpha.59</title>
             <pubDate>Tue, 08 Sep 2026 22:17:05 +0000</pubDate>
-            <link>https://github.com/euforicio/AgentDock</link>
+            <link>https://github.com/euforic/AgentDock</link>
             <sparkle:channel>alpha</sparkle:channel>
             <sparkle:version>1000059</sparkle:version>
             <sparkle:shortVersionString>0.1.23-alpha.59</sparkle:shortVersionString>
             <sparkle:minimumSystemVersion>26.0</sparkle:minimumSystemVersion>
             <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
-            <enclosure url="https://github.com/euforicio/AgentDock/releases/download/alpha-20260908221341-530c633c42d6/AgentDock-0.1.23-alpha.59.zip" length="7566254" type="application/octet-stream" sparkle:edSignature="Xszm0GNLlTnh1SwfGRzMoNQ91I5QYgWr7eDuSjyXqiAKP0x1MG7KGV6c2hYWVDs87iXuLAIeORDY8a4ibxJRBw=="/>
+            <enclosure url="https://github.com/euforic/AgentDock/releases/download/alpha-20260908221341-530c633c42d6/AgentDock-0.1.23-alpha.59.zip" length="7566254" type="application/octet-stream" sparkle:edSignature="Xszm0GNLlTnh1SwfGRzMoNQ91I5QYgWr7eDuSjyXqiAKP0x1MG7KGV6c2hYWVDs87iXuLAIeORDY8a4ibxJRBw=="/>
         </item>
         <item>
             <title>0.1.22</title>
             <pubDate>Mon, 07 Sep 2026 22:03:13 +0000</pubDate>
-            <link>https://github.com/euforicio/AgentDock</link>
+            <link>https://github.com/euforic/AgentDock</link>
             <sparkle:version>1000057</sparkle:version>
             <sparkle:shortVersionString>0.1.22</sparkle:shortVersionString>
             <sparkle:minimumSystemVersion>26.0</sparkle:minimumSystemVersion>
             <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
-            <enclosure url="https://github.com/euforicio/AgentDock/releases/download/v0.1.22/AgentDock-0.1.22.zip" length="7563440" type="application/octet-stream" sparkle:edSignature="0HkZh5a4dIW1kw2w5adBVVzOQnRtwoX/EA91pGW19Dd644ZO/g4XF+zS6COd/kx2uIuj4ppc3b7TEWBEYm1VAA=="/>
+            <enclosure url="https://github.com/euforic/AgentDock/releases/download/v0.1.22/AgentDock-0.1.22.zip" length="7563440" type="application/octet-stream" sparkle:edSignature="0HkZh5a4dIW1kw2w5adBVVzOQnRtwoX/EA91pGW19Dd644ZO/g4XF+zS6COd/kx2uIuj4ppc3b7TEWBEYm1VAA=="/>
         </item>
         <item>
             <title>0.1.21</title>
             <pubDate>Tue, 01 Sep 2026 05:41:53 +0000</pubDate>
-            <link>https://github.com/euforicio/AgentDock</link>
+            <link>https://github.com/euforic/AgentDock</link>
             <sparkle:version>1000050</sparkle:version>
             <sparkle:shortVersionString>0.1.21</sparkle:shortVersionString>
             <sparkle:minimumSystemVersion>26.0</sparkle:minimumSystemVersion>
             <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
-            <enclosure url="https://github.com/euforicio/AgentDock/releases/download/v0.1.21/AgentDock-0.1.21.zip" length="7450879" type="application/octet-stream" sparkle:edSignature="zSe149jjKtO5CQs69YNAqmjRC65MpygkjF7yo8o2zWwERPLwSEfvZMPvGx8jZLAn+hBLWnbaeoukhQ9GTy9pAw=="/>
+            <enclosure url="https://github.com/euforic/AgentDock/releases/download/v0.1.21/AgentDock-0.1.21.zip" length="7450879" type="application/octet-stream" sparkle:edSignature="zSe149jjKtO5CQs69YNAqmjRC65MpygkjF7yo8o2zWwERPLwSEfvZMPvGx8jZLAn+hBLWnbaeoukhQ9GTy9pAw=="/>
         </item>
         <item>
             <title>0.1.20</title>
             <pubDate>Mon, 31 Aug 2026 00:50:54 +0000</pubDate>
-            <link>https://github.com/euforicio/AgentDock</link>
+            <link>https://github.com/euforic/AgentDock</link>
             <sparkle:version>1020</sparkle:version>
             <sparkle:shortVersionString>0.1.20</sparkle:shortVersionString>
             <sparkle:minimumSystemVersion>26.0</sparkle:minimumSystemVersion>
             <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
-            <enclosure url="https://github.com/euforicio/AgentDock/releases/download/v0.1.20/AgentDock-0.1.20.zip" length="7366042" type="application/octet-stream" sparkle:edSignature="LSrr6RRsZm8h7OnAnuCIurvzTmzE+tS5/I8kKeGS7aOooeCGTODWyinkcs3mPl8++2T25q6wZKN50xMHidNeAA=="/>
+            <enclosure url="https://github.com/euforic/AgentDock/releases/download/v0.1.20/AgentDock-0.1.20.zip" length="7366042" type="application/octet-stream" sparkle:edSignature="LSrr6RRsZm8h7OnAnuCIurvzTmzE+tS5/I8kKeGS7aOooeCGTODWyinkcs3mPl8++2T25q6wZKN50xMHidNeAA=="/>
         </item>
     </channel>
 </rss>
 <!-- sparkle-signatures:
-edSignature: aWhT0aoiU5pUmwxbeZwvOZc9/Dy6zP/4Q2KJtX3UnI1M34R2t8yLYqV02AeYjx8TU8n+USv2OxtHr8WCu6A+AQ==
-length: 3564
+edSignature: KtL1FRek8ZmhTPB5ftQp2J2xr4iOWdoBUgJSJMHRc84gzUTOQwNwtLf7dUEdnoGpNHhQid7a48t2QgT/dWguDg==
+length: 3548
 -->
