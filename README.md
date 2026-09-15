@@ -4,9 +4,9 @@
 
 # AgentDock
 
-[![Quality](https://github.com/euforicio/AgentDock/actions/workflows/ci.yml/badge.svg)](https://github.com/euforicio/AgentDock/actions/workflows/ci.yml)
-[![Build and Release](https://github.com/euforicio/AgentDock/actions/workflows/release.yml/badge.svg)](https://github.com/euforicio/AgentDock/actions/workflows/release.yml)
-[![Latest release](https://img.shields.io/github/v/release/euforicio/AgentDock?display_name=tag)](https://github.com/euforicio/AgentDock/releases/latest)
+[![Quality](https://github.com/euforic/AgentDock/actions/workflows/ci.yml/badge.svg)](https://github.com/euforic/AgentDock/actions/workflows/ci.yml)
+[![Build and Release](https://github.com/euforic/AgentDock/actions/workflows/release.yml/badge.svg)](https://github.com/euforic/AgentDock/actions/workflows/release.yml)
+[![Latest release](https://img.shields.io/github/v/release/euforic/AgentDock?display_name=tag)](https://github.com/euforic/AgentDock/releases/latest)
 [![License: FSL-1.1-MIT](https://img.shields.io/badge/license-FSL--1.1--MIT-6f5cff)](LICENSE)
 
 AgentDock is a native macOS app for running multiple isolated profiles of the
@@ -14,10 +14,10 @@ official OpenAI Codex and Anthropic Claude desktop apps. Each profile receives
 separate application state, can run alongside the stock app and other profiles,
 and can have its own Dock-pinnable shortcut.
 
-[Download the latest notarized release](https://github.com/euforicio/AgentDock/releases/latest)
-· [Visit the website](https://euforicio.github.io/AgentDock/)
+[Download the latest notarized release](https://github.com/euforic/AgentDock/releases/latest)
+· [Visit the website](https://gh.euforic.one/AgentDock/)
 · [Read the documentation](docs/index.md)
-· [Report a bug](https://github.com/euforicio/AgentDock/issues/new?template=bug_report.yml)
+· [Report a bug](https://github.com/euforic/AgentDock/issues/new?template=bug_report.yml)
 · [Contribute](CONTRIBUTING.md)
 · [Security](SECURITY.md)
 · [License](LICENSE)
@@ -59,7 +59,7 @@ settings.
 ## Install
 
 1. Download the DMG from the
-   [latest release](https://github.com/euforicio/AgentDock/releases/latest).
+   [latest release](https://github.com/euforic/AgentDock/releases/latest).
 2. Open it and drag AgentDock onto the Applications shortcut.
 3. Launch AgentDock. The release is Developer ID signed, hardened, notarized,
    and stapled for Gatekeeper verification.
@@ -158,7 +158,7 @@ proposals are welcome. Start with:
 - [Contributing guide](CONTRIBUTING.md)
 - [Support guide](SUPPORT.md)
 - [Security policy](SECURITY.md)
-- [Issue tracker](https://github.com/euforicio/AgentDock/issues)
+- [Issue tracker](https://github.com/euforic/AgentDock/issues)
 
 Please do not post credentials, account data, private transcript content,
 absolute home-directory paths, or unredacted logs in public issues or pull

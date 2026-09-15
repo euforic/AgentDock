@@ -67,8 +67,8 @@ The tag workflow:
 9. polls the public Pages URL until its bytes exactly match the generated feed,
    then verifies its Ed25519 signature again.
 
-Stable clients use `https://euforicio.github.io/AgentDock/appcast.xml`. Alpha
-clients use `https://euforicio.github.io/AgentDock/appcast-alpha.xml`, which
+Stable clients use `https://gh.euforic.one/AgentDock/appcast.xml`. Alpha
+clients use `https://gh.euforic.one/AgentDock/appcast-alpha.xml`, which
 also retains Stable entries as a fallback. Stable is the app default and users
 can change channels at any time in Settings. Configure
 GitHub Pages to publish from the root of the `gh-pages` branch before the first
@@ -83,14 +83,23 @@ pipeline explicitly because GitHub suppresses recursive tag workflow runs from
 the default Actions token. Alpha GitHub Releases are marked
 as prereleases and never replace the latest Stable release.
 
-The `Euforicio` organization must also allow **Read and write permissions** for
-GitHub Actions workflow tokens under **Organization Settings → Actions →
-General → Workflow permissions**. The workflow narrows that access to
-`contents: write` only for the release and appcast publication jobs. A
-repository-level write setting cannot override an organization policy that
-caps `GITHUB_TOKEN` at read-only; in that state the signed build still succeeds,
-but GitHub Release creation fails with `Resource not accessible by integration`
-and the appcast is intentionally not published.
+AgentDock is maintained in the personal `euforic/AgentDock` repository. CI and
+release jobs use GitHub-hosted `macos-26` (Apple silicon) and `ubuntu-24.04`
+runners, so they do not depend on organization runner access. Standard runner
+minutes are free while this repository is public. Temporary workflow artifacts
+expire after one day; GitHub Release assets remain available for downloads. Repository
+**Settings → Actions → General** must allow Actions; publication jobs explicitly
+request `contents: write`. Keep the `release` environment, its signing secret,
+and its `v*` / `alpha-*` tag deployment policies configured.
+
+The ownership migration changes the website and both update feeds to
+`https://gh.euforic.one/AgentDock/`. GitHub redirects the old repository and
+release URLs automatically, but does not redirect the old Pages site. Install
+a release built after the migration manually once if your installed app still
+uses the old feed. The bundle identifier, profile storage, and signing keys
+remain unchanged. Previously signed appcasts and immutable release archives
+retain their original URLs until superseded by a new signed release; do not
+edit a signed feed without re-signing it.
 
 The release action intentionally omits `target_commitish`: the `v*` tag already
 identifies the exact release commit. Supplying a target commit that changes a
@@ -111,11 +120,11 @@ sparkle_bin='.build/artifacts/sparkle/Sparkle/bin'
 private_key_file="$(mktemp -t agentdock-sparkle-key)"
 "$sparkle_bin/generate_keys" --account dev.euforic.agentdock -x "$private_key_file"
 gh secret set SPARKLE_PRIVATE_ED_KEY \
-  --repo euforicio/AgentDock \
+  --repo euforic/AgentDock \
   --env release \
   < "$private_key_file"
 gh variable set SPARKLE_PUBLIC_ED_KEY \
-  --repo euforicio/AgentDock \
+  --repo euforic/AgentDock \
   --body "$("$sparkle_bin/generate_keys" --account dev.euforic.agentdock -p)"
 rm -P "$private_key_file"
 ```
@@ -164,7 +173,7 @@ spctl --assess --type open --context context:primary-signature \
   --verbose=4 AgentDock-<version>.dmg
 hdiutil verify AgentDock-<version>.dmg
 curl --fail --silent --show-error \
-  https://euforicio.github.io/AgentDock/appcast.xml \
+  https://gh.euforic.one/AgentDock/appcast.xml \
   | xmllint --noout -
 ```
 

@@ -280,7 +280,7 @@ struct SettingsView: View {
             }
             Link(
                 "View exact analytics event catalog",
-                destination: URL(string: "https://github.com/euforicio/AgentDock/blob/main/docs/analytics.md")!
+                destination: URL(string: "https://github.com/euforic/AgentDock/blob/main/docs/analytics.md")!
             )
             .font(.system(size: 12))
             .padding(.top, 10)

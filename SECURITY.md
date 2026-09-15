@@ -19,7 +19,7 @@ transcripts, account details, absolute local paths, or unredacted logs.
 
 Use GitHub's private vulnerability reporting flow:
 
-[Report a vulnerability privately](https://github.com/euforicio/AgentDock/security/advisories/new)
+[Report a vulnerability privately](https://github.com/euforic/AgentDock/security/advisories/new)
 
 Include:
 

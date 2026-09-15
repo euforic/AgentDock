@@ -1,4 +1,4 @@
 User-agent: *
 Allow: /
 
-Sitemap: https://euforicio.github.io/AgentDock/sitemap.xml
+Sitemap: https://gh.euforic.one/AgentDock/sitemap.xml

@@ -156,7 +156,7 @@ cat >"$INFO_PLIST" <<PLIST
   <key>CFBundleVersion</key>
   <string>$BUILD_NUMBER</string>
   <key>SUFeedURL</key>
-  <string>https://euforicio.github.io/AgentDock/appcast.xml</string>
+  <string>https://gh.euforic.one/AgentDock/appcast.xml</string>
   <key>SUPublicEDKey</key>
   <string>$SPARKLE_PUBLIC_KEY</string>
   <key>SUEnableAutomaticChecks</key>

@@ -2,14 +2,14 @@
 
 ## Bugs
 
-Use the [bug report form](https://github.com/euforicio/AgentDock/issues/new?template=bug_report.yml)
+Use the [bug report form](https://github.com/euforic/AgentDock/issues/new?template=bug_report.yml)
 for reproducible AgentDock problems. Include the AgentDock version, macOS
 version, provider app version, expected behavior, actual behavior, and sanitized
 reproduction steps.
 
 ## Feature Requests
 
-Use the [feature request form](https://github.com/euforicio/AgentDock/issues/new?template=feature_request.yml)
+Use the [feature request form](https://github.com/euforic/AgentDock/issues/new?template=feature_request.yml)
 to describe the problem, intended users, and desired outcome. Proposals that
 change provider launch contracts, persistence, destructive behavior, or privacy
 boundaries need especially clear motivation.
