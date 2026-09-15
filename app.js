@@ -1,4 +1,4 @@
-const repository = "euforicio/AgentDock";
+const repository = "euforic/AgentDock";
 const releasesURL = `https://github.com/${repository}/releases`;
 const latestReleaseURL = `${releasesURL}/latest`;
 
