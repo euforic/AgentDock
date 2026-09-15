@@ -98,7 +98,7 @@ fi
 /usr/bin/xmllint --noout "$SITE_DIR/sitemap.xml"
 
 /usr/bin/grep -Fq 'data-download' "$SITE_DIR/index.html"
-/usr/bin/grep -Fq 'https://github.com/euforicio/AgentDock/releases/latest' "$SITE_DIR/index.html"
+/usr/bin/grep -Fq 'https://github.com/euforic/AgentDock/releases/latest' "$SITE_DIR/index.html"
 # The JavaScript template expression must remain literal.
 # shellcheck disable=SC2016
 /usr/bin/grep -Fq 'api.github.com/repos/${repository}/releases/latest' "$SITE_DIR/app.js"
@@ -115,7 +115,7 @@ fi
 if [[ "${AGENTDOCK_SITE_NETWORK_VALIDATION:-0}" == "1" ]]; then
   latest_release_json="$(/usr/bin/curl -fsSL \
     -H 'Accept: application/vnd.github+json' \
-    https://api.github.com/repos/euforicio/AgentDock/releases/latest)"
+    https://api.github.com/repos/euforic/AgentDock/releases/latest)"
   dmg_url="$(printf '%s' "$latest_release_json" \
     | /usr/bin/python3 -c 'import json,sys; data=json.load(sys.stdin); print(next(asset["browser_download_url"] for asset in data["assets"] if asset["name"].endswith(".dmg")))')"
   /usr/bin/curl -fsSIL "$dmg_url" >/dev/null

@@ -17,7 +17,7 @@ concurrency:
 jobs:
   build:
     name: Build signed and notarized macOS app
-    runs-on: blacksmith-6vcpu-macos-latest
+    runs-on: macos-26
     environment: release
     outputs:
       channel: ${{ steps.release_metadata.outputs.channel }}
@@ -90,7 +90,7 @@ jobs:
             }
             public_appcast="$RUNNER_TEMP/current-appcast.xml"
             curl -fsSL --retry 3 \
-              "https://euforicio.github.io/AgentDock/appcast.xml?release-check=$GITHUB_RUN_ID" \
+              "https://gh.euforic.one/AgentDock/appcast.xml?release-check=$GITHUB_RUN_ID" \
               -o "$public_appcast"
             public_version="$(./script/latest_appcast_version.sh "$public_appcast")"
             if ! version_greater_than "$version" "$public_version"; then
@@ -216,7 +216,7 @@ jobs:
           test -f "$zip"
           test -f "$dmg"
           test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$app/Contents/Info.plist")" = "$AGENTDOCK_VERSION"
-          test "$(/usr/libexec/PlistBuddy -c 'Print :SUFeedURL' "$app/Contents/Info.plist")" = "https://euforicio.github.io/AgentDock/appcast.xml"
+          test "$(/usr/libexec/PlistBuddy -c 'Print :SUFeedURL' "$app/Contents/Info.plist")" = "https://gh.euforic.one/AgentDock/appcast.xml"
           test "$(/usr/libexec/PlistBuddy -c 'Print :SUPublicEDKey' "$app/Contents/Info.plist")" = "$AGENTDOCK_SPARKLE_PUBLIC_KEY"
           test "$(/usr/libexec/PlistBuddy -c 'Print :SURequireSignedFeed' "$app/Contents/Info.plist")" = "true"
           test "$(/usr/libexec/PlistBuddy -c 'Print :SUVerifyUpdateBeforeExtraction' "$app/Contents/Info.plist")" = "true"
@@ -291,11 +291,12 @@ jobs:
             dist/AgentDock-*.dmg
             dist/AgentDock-*.sha256
           if-no-files-found: error
+          retention-days: 1
 
   release:
     name: Publish immutable release assets
     needs: build
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    runs-on: ubuntu-24.04
     permissions:
       contents: write
     env:
@@ -329,7 +330,7 @@ jobs:
   appcast:
     name: Sign and publish selected appcast last
     needs: [build, release]
-    runs-on: blacksmith-6vcpu-macos-latest
+    runs-on: macos-26
     environment: release
     permissions:
       contents: write
@@ -359,7 +360,7 @@ jobs:
           fi
           archive_name="AgentDock-$AGENTDOCK_VERSION.zip"
           archive_dir="$RUNNER_TEMP/agentdock-appcast"
-          asset_url="https://github.com/euforicio/AgentDock/releases/download/$GITHUB_REF_NAME/$archive_name"
+          asset_url="https://github.com/euforic/AgentDock/releases/download/$GITHUB_REF_NAME/$archive_name"
           mkdir -p "$archive_dir"
           available=0
           for _ in 1 2 3 4 5 6; do
@@ -379,7 +380,7 @@ jobs:
             echo "Published release ZIP does not match the notarized workflow artifact." >&2
             exit 1
           fi
-          curl -fsSL "https://euforicio.github.io/AgentDock/appcast.xml" \
+          curl -fsSL "https://gh.euforic.one/AgentDock/appcast.xml" \
             -o "$archive_dir/appcast.xml" || true
 
           swift package resolve
@@ -394,8 +395,8 @@ jobs:
           printf '%s' "$SPARKLE_PRIVATE_ED_KEY" \
             | "$generate_appcast" \
               --ed-key-file - \
-              --download-url-prefix "https://github.com/euforicio/AgentDock/releases/download/$GITHUB_REF_NAME/" \
-              --link "https://github.com/euforicio/AgentDock" \
+              --download-url-prefix "https://github.com/euforic/AgentDock/releases/download/$GITHUB_REF_NAME/" \
+              --link "https://github.com/euforic/AgentDock" \
               --maximum-versions 3 \
               --maximum-deltas 0 \
               "${channel_arguments[@]}" \
@@ -405,7 +406,7 @@ jobs:
           appcast="$archive_dir/appcast.xml"
           /usr/bin/xmllint --noout "$appcast"
           /usr/bin/grep -Fq \
-            "url=\"https://github.com/euforicio/AgentDock/releases/download/$GITHUB_REF_NAME/$archive_name\"" \
+            "url=\"https://github.com/euforic/AgentDock/releases/download/$GITHUB_REF_NAME/$archive_name\"" \
             "$appcast"
           /usr/bin/grep -Fq 'sparkle:edSignature=' "$appcast"
           /usr/bin/grep -Fq '<!-- sparkle-signatures:' "$appcast"
@@ -444,7 +445,7 @@ jobs:
           published=0
           for attempt in 1 2 3 4 5 6 7 8 9 10 11 12; do
             if curl -fsSL \
-              "https://euforicio.github.io/AgentDock/$FEED_FILENAME?release-run=$GITHUB_RUN_ID&attempt=$attempt" \
+              "https://gh.euforic.one/AgentDock/$FEED_FILENAME?release-run=$GITHUB_RUN_ID&attempt=$attempt" \
               -o "$public_appcast" \
               && cmp -s "$RUNNER_TEMP/$FEED_FILENAME" "$public_appcast"; then
               published=1

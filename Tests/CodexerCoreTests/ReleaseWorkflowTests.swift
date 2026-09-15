@@ -26,8 +26,8 @@ final class ReleaseWorkflowTests: XCTestCase {
 
         XCTAssertTrue(workflow.contains("  release:\n"))
         XCTAssertTrue(workflow.contains("  appcast:\n    name: Sign and publish selected appcast last\n    needs: [build, release]\n"))
-        XCTAssertTrue(workflow.contains("https://github.com/euforicio/AgentDock/releases/download/$GITHUB_REF_NAME/"))
-        XCTAssertTrue(workflow.contains("https://euforicio.github.io/AgentDock/appcast.xml"))
+        XCTAssertTrue(workflow.contains("https://github.com/euforic/AgentDock/releases/download/$GITHUB_REF_NAME/"))
+        XCTAssertTrue(workflow.contains("https://gh.euforic.one/AgentDock/appcast.xml"))
         XCTAssertTrue(workflow.contains("appcast-alpha.xml"))
         XCTAssertTrue(workflow.contains("--channel alpha"))
         XCTAssertTrue(workflow.contains("cmp -s \"release-input/$archive_name\" \"$archive_dir/$archive_name\""))
@@ -43,7 +43,7 @@ final class ReleaseWorkflowTests: XCTestCase {
         XCTAssertTrue(workflow.contains("is not the highest version tag"))
         XCTAssertTrue(workflow.contains("public_version=\"$(./script/latest_appcast_version.sh \"$public_appcast\")\""))
         XCTAssertTrue(workflow.contains("Release version $version must be newer than public appcast version"))
-        XCTAssertTrue(workflow.contains("runs-on: blacksmith-6vcpu-macos-latest\n    environment: release"))
+        XCTAssertTrue(workflow.contains("runs-on: macos-26\n    environment: release"))
         XCTAssertTrue(workflow.contains("Alpha releases must point to the current origin/main commit."))
         XCTAssertTrue(workflow.contains("prerelease: ${{ needs.build.outputs.channel == 'alpha' }}"))
         XCTAssertTrue(workflow.contains("make_latest: ${{ needs.build.outputs.channel == 'stable' }}"))
@@ -113,7 +113,7 @@ final class ReleaseWorkflowTests: XCTestCase {
         XCTAssertTrue(workflow.contains("./script/package_app.sh"))
     }
 
-    func testReleasePublicationUsesBlacksmithRunnerWithWritePermission() throws {
+    func testReleasePublicationUsesGitHubRunnerWithWritePermission() throws {
         let workflow = try String(contentsOf: repositoryRoot
             .appendingPathComponent(".github/workflows/release.yml"), encoding: .utf8)
 
@@ -121,7 +121,7 @@ final class ReleaseWorkflowTests: XCTestCase {
           release:
             name: Publish immutable release assets
             needs: build
-            runs-on: blacksmith-4vcpu-ubuntu-2404
+            runs-on: ubuntu-24.04
             permissions:
               contents: write
         """))

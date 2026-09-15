@@ -100,7 +100,7 @@ PLIST_POSTHOG_HOST="$(/usr/libexec/PlistBuddy -c 'Print :AgentDockPostHogHost' "
 [[ "$PLIST_BUNDLE_ID" == "dev.euforic.agentdock" ]] || fail "unexpected bundle id: $PLIST_BUNDLE_ID"
 [[ "$PLIST_ICON" == "AppIcon" ]] || fail "unexpected icon file: $PLIST_ICON"
 [[ "$PLIST_MIN_OS" == "26.0" ]] || fail "unexpected minimum macOS version: $PLIST_MIN_OS"
-[[ "$PLIST_FEED_URL" == "https://euforicio.github.io/AgentDock/appcast.xml" ]] \
+[[ "$PLIST_FEED_URL" == "https://gh.euforic.one/AgentDock/appcast.xml" ]] \
   || fail "unexpected Sparkle feed URL: $PLIST_FEED_URL"
 [[ "$PLIST_UPDATE_CHECK_INTERVAL" =~ ^3600([.]0+)?$ ]] \
   || fail "Sparkle update checks must run hourly"

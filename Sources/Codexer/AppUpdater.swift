@@ -8,8 +8,8 @@ enum AppUpdateChannel: String, CaseIterable, Identifiable {
     case alpha
 
     static let preferenceKey = "AgentDockUpdateChannel"
-    static let stableFeedURL = "https://euforicio.github.io/AgentDock/appcast.xml"
-    static let alphaFeedURL = "https://euforicio.github.io/AgentDock/appcast-alpha.xml"
+    static let stableFeedURL = "https://gh.euforic.one/AgentDock/appcast.xml"
+    static let alphaFeedURL = "https://gh.euforic.one/AgentDock/appcast-alpha.xml"
 
     var id: String { rawValue }
 

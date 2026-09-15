@@ -16,7 +16,7 @@ concurrency:
 jobs:
   quality:
     name: Test, package, and privacy audit
-    runs-on: blacksmith-6vcpu-macos-latest
+    runs-on: macos-26
     env:
       AGENTDOCK_BUILD_SCRATCH_DIR: /tmp/agentdock-ci-build
 
