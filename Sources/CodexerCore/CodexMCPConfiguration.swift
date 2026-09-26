@@ -161,9 +161,7 @@ public enum CodexMCPConfiguration {
         codexAppURL: URL,
         codexHomeURL: URL
     ) throws {
-        let executableURL = codexAppURL.appendingPathComponent(
-            "Contents/Resources/codex"
-        )
+        let executableURL = CodexBundledCLI.executableURL(for: codexAppURL)
         guard FileManager.default.isExecutableFile(atPath: executableURL.path) else {
             throw CodexMCPConfigurationError.missingCodexExecutable(
                 executableURL.path

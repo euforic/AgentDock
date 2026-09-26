@@ -2,6 +2,25 @@ import XCTest
 @testable import CodexerCore
 
 final class CodexMCPConfigurationTests: XCTestCase {
+    func testInstalledCodexCLIUsesSupportedBundleLayout() throws {
+        let appURL = URL(fileURLWithPath: "/Applications/Codex.app")
+        guard FileManager.default.fileExists(atPath: appURL.path) else {
+            throw XCTSkip("Codex.app is not installed")
+        }
+
+        let resolved = CodexBundledCLI.executableURL(for: appURL)
+        let current = appURL.appendingPathComponent(
+            "Contents/Resources/codex-cli/CodexCLI.app/Contents/MacOS/codex"
+        )
+        let legacy = appURL.appendingPathComponent("Contents/Resources/codex")
+        XCTAssertTrue(FileManager.default.isExecutableFile(atPath: resolved.path))
+        if FileManager.default.isExecutableFile(atPath: current.path) {
+            XCTAssertEqual(resolved, current)
+        } else {
+            XCTAssertEqual(resolved, legacy)
+        }
+    }
+
     func testConfiguredContentPreservesUnrelatedAndNestedSettings() throws {
         let existing = """
         model = "gpt-test"

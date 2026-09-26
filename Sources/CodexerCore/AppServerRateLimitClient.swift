@@ -39,7 +39,7 @@ public final class AppServerRateLimitClient: @unchecked Sendable {
             }
         }
         let codexExecutable = executableOverride
-            ?? codexAppURL.appendingPathComponent("Contents/Resources/codex")
+            ?? CodexBundledCLI.executableURL(for: codexAppURL)
         guard FileManager.default.isExecutableFile(atPath: codexExecutable.path) else {
             return ProfileRateLimits(errorMessage: "Codex app-server executable was not found at \(codexExecutable.path).")
         }
