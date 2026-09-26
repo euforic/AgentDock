@@ -6,6 +6,16 @@ IMPORTANT: This file was signed by Sparkle. Any modifications to this file requi
     <channel>
         <title>AgentDock</title>
         <item>
+            <title>0.1.24</title>
+            <pubDate>Sat, 26 Sep 2026 20:49:33 +0000</pubDate>
+            <link>https://github.com/euforic/AgentDock</link>
+            <sparkle:version>1000062</sparkle:version>
+            <sparkle:shortVersionString>0.1.24</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>26.0</sparkle:minimumSystemVersion>
+            <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
+            <enclosure url="https://github.com/euforic/AgentDock/releases/download/v0.1.24/AgentDock-0.1.24.zip" length="7566800" type="application/octet-stream" sparkle:edSignature="tTauHjtM+ylZjh7uV74UQDpttlPFSzXRgGfTi2WyAoVdB0Jy+kfXu0bYN0XVjkLahdPvcwn8eudxFgTFyTrjCA=="/>
+        </item>
+        <item>
             <title>0.1.23</title>
             <pubDate>Tue, 15 Sep 2026 06:12:55 +0000</pubDate>
             <link>https://github.com/euforic/AgentDock</link>
@@ -25,19 +35,9 @@ IMPORTANT: This file was signed by Sparkle. Any modifications to this file requi
             <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
             <enclosure url="https://github.com/euforic/AgentDock/releases/download/v0.1.22/AgentDock-0.1.22.zip" length="7563440" type="application/octet-stream" sparkle:edSignature="0HkZh5a4dIW1kw2w5adBVVzOQnRtwoX/EA91pGW19Dd644ZO/g4XF+zS6COd/kx2uIuj4ppc3b7TEWBEYm1VAA=="/>
         </item>
-        <item>
-            <title>0.1.21</title>
-            <pubDate>Tue, 01 Sep 2026 05:41:53 +0000</pubDate>
-            <link>https://github.com/euforic/AgentDock</link>
-            <sparkle:version>1000050</sparkle:version>
-            <sparkle:shortVersionString>0.1.21</sparkle:shortVersionString>
-            <sparkle:minimumSystemVersion>26.0</sparkle:minimumSystemVersion>
-            <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
-            <enclosure url="https://github.com/euforic/AgentDock/releases/download/v0.1.21/AgentDock-0.1.21.zip" length="7450879" type="application/octet-stream" sparkle:edSignature="zSe149jjKtO5CQs69YNAqmjRC65MpygkjF7yo8o2zWwERPLwSEfvZMPvGx8jZLAn+hBLWnbaeoukhQ9GTy9pAw=="/>
-        </item>
     </channel>
 </rss>
 <!-- sparkle-signatures:
-edSignature: E8jeJ/T+GyLVBdt/1oK89Y5rw8/D7ClyvOx3syAn9ny1z7PtSiGEVVwNQvja3OwFcT7te+KFt9/W6Y0io1OHDA==
+edSignature: DiPBUdEJq4LDeCTMqdtpFvk/m4qEeIaO+s7LWGGRInjnQvRtl1GJY0vwnayTAnR6d1w1zXjR9g8mjNNJpR9RAA==
 length: 2692
 -->
