@@ -30,8 +30,7 @@ public enum CodexCLIProfileProxy {
         }
         let configOverrides = try profile.appServerConfigOverrides(in: codexHomeURL)
 
-        let executableURL = appURL
-            .appendingPathComponent("Contents/Resources/codex", isDirectory: false)
+        let executableURL = CodexBundledCLI.executableURL(for: appURL)
         guard FileManager.default.isExecutableFile(atPath: executableURL.path) else {
             throw CodexCLIProfileProxyError.missingBundledCLI(executableURL.path)
         }

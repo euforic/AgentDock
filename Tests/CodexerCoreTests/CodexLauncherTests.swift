@@ -24,7 +24,7 @@ final class CodexLauncherTests: XCTestCase {
 
         XCTAssertEqual(
             environment["CODEX_CLI_PATH"],
-            "/Applications/Codex.app/Contents/Resources/codex"
+            CodexBundledCLI.executableURL(for: appURL).path
         )
         XCTAssertEqual(environment["CODEX_HOME"], "/tmp/selected-home")
         XCTAssertEqual(environment["CODEX_ELECTRON_USER_DATA_PATH"], "/tmp/selected-desktop")
@@ -53,7 +53,7 @@ final class CodexLauncherTests: XCTestCase {
 
         XCTAssertEqual(
             environment["CODEX_CLI_PATH"],
-            "/Applications/Codex.app/Contents/Resources/codex"
+            CodexBundledCLI.executableURL(for: appURL).path
         )
         XCTAssertNil(environment["CODEX_HOME"])
         XCTAssertNil(environment["CODEX_ELECTRON_USER_DATA_PATH"])

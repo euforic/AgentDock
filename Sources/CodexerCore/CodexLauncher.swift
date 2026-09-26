@@ -407,8 +407,7 @@ public struct SystemCodexWorkspaceLauncher: CodexWorkspaceLaunching {
         profileProxyURL: URL? = nil
     ) -> [String: String] {
         var environment = DesktopLaunchEnvironment.sanitized(inheritedEnvironment)
-        let bundledCLIURL = codexAppURL
-            .appendingPathComponent("Contents/Resources/codex", isDirectory: false)
+        let bundledCLIURL = CodexBundledCLI.executableURL(for: codexAppURL)
         environment["CODEX_CLI_PATH"] = (configProfile == nil ? bundledCLIURL : profileProxyURL)?.path
         environment.removeValue(forKey: CodexCLIProfileProxy.enabledEnvironmentKey)
         environment.removeValue(forKey: CodexCLIProfileProxy.appPathEnvironmentKey)
