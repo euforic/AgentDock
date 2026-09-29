@@ -1922,7 +1922,9 @@ public struct LocalChatScanner: @unchecked Sendable {
                     isCollapsible: true
                 )
             }
-        case "session_meta", "turn_context", "world_state":
+        case "session_meta", "turn_context", "world_state", "token_usage_record":
+            // Usage records accompany transcript items in current Codex rollouts;
+            // they are accounting metadata, not an unsupported conversation item.
             return nil
         default:
             return Self.unsupportedCodexEntry(id: id, type: type, timestamp: timestamp)

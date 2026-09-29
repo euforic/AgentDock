@@ -688,6 +688,37 @@ final class LocalChatScannerTests: XCTestCase {
         XCTAssertEqual(result.changeToken, "")
     }
 
+    func testCodexUsageRecordsDoNotRenderAsUnsupportedTranscriptItems() throws {
+        let profile = makeProfile("Usage")
+        let file = try sessionFile(profile: profile, name: "rollout-usage.jsonl")
+        try writeRecords([
+            sessionMeta(id: "usage-session"),
+            message(role: "user", text: "Review the package", second: 1),
+            [
+                "type": "token_usage_record",
+                "payload": [
+                    "thread_id": "usage-session",
+                    "usage": ["input_tokens": 10, "output_tokens": 5, "total_tokens": 15],
+                    "thread_token_usage": ["total_tokens": 15]
+                ]
+            ],
+            message(role: "assistant", text: "The package is valid.", second: 2),
+            ["type": "future_history_record", "payload": ["value": "unknown"]]
+        ], to: file)
+
+        let scanner = makeScanner()
+        let session = try XCTUnwrap(scanner.scan(profile: profile).sessions.first)
+        let entries = allEntries(scanner: scanner, session: session)
+        let forward = scanner.loadTranscriptForwardPage(for: session)
+
+        XCTAssertEqual(entries.map(\.kind), [.message, .message, .unsupported])
+        XCTAssertEqual(entries.map(\.id), forward.entries.map(\.id))
+        XCTAssertEqual(entries.compactMap(\.message).map(\.text), [
+            "Review the package", "The package is valid."
+        ])
+        XCTAssertTrue(entries.last?.text.localizedCaseInsensitiveContains("future history record") == true)
+    }
+
     private func makeProfile(_ name: String) -> CodexProfile {
         CodexProfile(
             name: name,
