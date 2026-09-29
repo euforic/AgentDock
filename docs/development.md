@@ -131,6 +131,8 @@ main process identity fails the check.
 Installed-app checks:
 
 ```bash
+AGENTDOCK_INSTALLED_APP_TEST=1 swift test --filter 'testOfficialInstalledCodexSignatureIsAccepted|testInstalledCodexAcceptsIsolatedMCPConfigurationWhenEnabled'
+
 AGENTDOCK_LIVE_LIFECYCLE=1 swift test \
   --filter CodexLauncherTests/testLiveProfileCanOpenAndCloseWithoutTouchingStockInstance
 
@@ -143,6 +145,13 @@ AGENTDOCK_INSTALLED_CLAUDE_TEST=1 swift test \
 AGENTDOCK_CLAUDE_LIVE_LIFECYCLE=1 swift test \
   --filter ClaudeDesktopTests/testLiveClaudeProfileCanOpenAndCloseWithoutTouchingStock
 ```
+
+The installed Codex configuration check validates the signed app and runs its
+bundled CLI against a temporary managed MCP configuration without account data.
+Repeat it after provider updates. Both installed-profile checks and runtime
+launches resolve the current nested CLI bundle with a legacy fallback.
+Codex accounting-only `token_usage_record` events are omitted from transcript
+presentation; unknown history events still appear as unsupported records.
 
 These checks can open installed provider applications or terminate the exact
 active managed profile named in the environment. Run them only on a Mac where

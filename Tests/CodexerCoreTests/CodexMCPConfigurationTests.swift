@@ -51,6 +51,21 @@ final class CodexMCPConfigurationTests: XCTestCase {
         XCTAssertTrue(updated.contains("[features]\nsecret_auth_storage = true"))
     }
 
+    func testInstalledCodexAcceptsIsolatedMCPConfigurationWhenEnabled() throws {
+        guard ProcessInfo.processInfo.environment["AGENTDOCK_INSTALLED_APP_TEST"] == "1" else {
+            throw XCTSkip("Set AGENTDOCK_INSTALLED_APP_TEST=1 to validate the installed Codex CLI.")
+        }
+        let appURL = URL(fileURLWithPath: "/Applications/Codex.app")
+        try OfficialCodexAppValidator().validateCodexApp(at: appURL)
+        let home = FileManager.default.temporaryDirectory
+            .appendingPathComponent("CodexMCPInstalled-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: home, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: home) }
+
+        try CodexMCPConfiguration.configure(codexHomeURL: home, callbackPort: 49_152)
+        try CodexMCPConfiguration.validateWithBundledCodex(codexAppURL: appURL, codexHomeURL: home)
+    }
+
     func testConfiguredContentUpdatesManagedTopLevelSettings() throws {
         let existing = """
         mcp_oauth_callback_port = 40000 # old
