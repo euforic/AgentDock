@@ -300,6 +300,17 @@ struct HomeUsageWindow: Identifiable {
     let title: String
     let usage: RateLimitWindowUsage
 
+    func timeRemaining(at now: Date) -> String {
+        guard let resetsAt = usage.resetsAt else { return "Reset time unavailable" }
+        guard resetsAt > now else { return "Reset due · Refresh usage" }
+        let reportedMinutes = ceil(resetsAt.timeIntervalSince(now) / 60)
+        guard reportedMinutes.isFinite, reportedMinutes < Double(Int.max) else { return "Reset time unavailable" }
+        let minutes = max(1, Int(reportedMinutes))
+        if minutes < 60 { return "\(minutes)m left" }
+        if minutes < 1440 { return "\(minutes / 60)h \(minutes % 60)m left" }
+        return "\(minutes / 1440)d \(minutes % 1440 / 60)h left"
+    }
+
     static func windows(in limits: ProfileRateLimits) -> [Self] {
         limits.buckets.flatMap { bucket in
             [("primary", bucket.primary), ("secondary", bucket.secondary)].compactMap { key, usage in
@@ -324,47 +335,59 @@ struct HomeUsageSummary: View {
     let accent: Color
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 5) {
-            if let limits {
-                if let error = limits.errorMessage {
-                    Label("Usage unavailable", systemImage: "exclamationmark.triangle")
-                        .foregroundStyle(.secondary).help(error)
-                    Text(error).font(.caption).foregroundStyle(.secondary).lineLimit(2)
-                } else {
-                    let windows = HomeUsageWindow.windows(in: limits)
-                    ForEach(windows.prefix(2)) { window in
-                        VStack(alignment: .leading, spacing: 3) {
-                            HStack {
-                                Text(window.title).lineLimit(1).help(window.title)
-                                Spacer(minLength: 8)
-                                Text("\(window.usage.usedPercent.formatted(.number.precision(.fractionLength(0))))% used")
-                                    .monospacedDigit()
+        TimelineView(.periodic(from: .now, by: 60)) { context in
+            VStack(alignment: .leading, spacing: 5) {
+                if let limits {
+                    if let error = limits.errorMessage {
+                        Label("Usage unavailable", systemImage: "exclamationmark.triangle")
+                            .foregroundStyle(.secondary).help(error)
+                        Text(error).font(.caption).foregroundStyle(.secondary).lineLimit(2)
+                    } else {
+                        let windows = HomeUsageWindow.windows(in: limits)
+                        ForEach(windows.prefix(2)) { window in
+                            VStack(alignment: .leading, spacing: 3) {
+                                HStack {
+                                    Text(window.title).lineLimit(1).help(window.title)
+                                    Spacer(minLength: 8)
+                                    Text("\(window.usage.usedPercent.formatted(.number.precision(.fractionLength(0))))% used")
+                                        .monospacedDigit()
+                                }
+                                ProgressView(value: min(max(window.usage.usedPercent, 0), 100), total: 100)
+                                    .tint(window.usage.usedPercent >= 90 ? .red : accent)
+                                    .accessibilityLabel(window.title)
+                                VStack(alignment: .leading, spacing: 1) {
+                                    if let date = window.usage.resetsAt {
+                                        Text("Resets \(date.formatted(.dateTime.month(.abbreviated).day().hour().minute()))")
+                                            .help("Resets \(date.formatted(date: .complete, time: .shortened))")
+                                        Text(window.timeRemaining(at: context.date))
+                                            .fontWeight(.medium)
+                                            .monospacedDigit()
+                                    } else {
+                                        Text("Reset time unavailable")
+                                    }
+                                }
+                                .font(.system(size: 10))
+                                .foregroundStyle(.secondary)
+                                .fixedSize(horizontal: false, vertical: true)
+                                .accessibilityElement(children: .combine)
                             }
-                            ProgressView(value: min(max(window.usage.usedPercent, 0), 100), total: 100)
-                                .tint(window.usage.usedPercent >= 90 ? .red : accent)
-                                .accessibilityLabel(window.title)
-                                .help(window.usage.resetsAt.map {
-                                    "Resets \($0.formatted(date: .abbreviated, time: .shortened))"
-                                } ?? "Reset time unavailable")
+                        }
+                        if windows.count > 2 { Text("+\(windows.count - 2) more in Overview").foregroundStyle(.secondary) }
+                        if windows.isEmpty { Text("No usage windows reported").foregroundStyle(.secondary) }
+                        if let warning = limits.warningMessage {
+                            Label(warning, systemImage: "exclamationmark.triangle").foregroundStyle(.orange).lineLimit(2).help(warning)
                         }
                     }
-                    if windows.count > 2 { Text("+\(windows.count - 2) more in Overview").foregroundStyle(.secondary) }
-                    if windows.isEmpty { Text("No usage windows reported").foregroundStyle(.secondary) }
-                    if let warning = limits.warningMessage {
-                        Label(warning, systemImage: "exclamationmark.triangle").foregroundStyle(.orange).lineLimit(2).help(warning)
-                    }
-                }
-                TimelineView(.periodic(from: .now, by: 60)) { context in
                     if limits.errorMessage == nil && context.date.timeIntervalSince(limits.fetchedAt) > 600 {
                         Text("Last known usage").foregroundStyle(.secondary)
                     }
+                } else {
+                    Text("Usage not loaded").foregroundStyle(.secondary)
+                    Text("Refresh to check this source.").foregroundStyle(.secondary)
                 }
-            } else {
-                Text("Usage not loaded").foregroundStyle(.secondary)
-                Text("Refresh to check this source.").foregroundStyle(.secondary)
             }
+            .font(.system(size: 11))
+            .frame(maxWidth: .infinity, alignment: .leading)
         }
-        .font(.system(size: 11))
-        .frame(maxWidth: .infinity, alignment: .leading)
     }
 }
