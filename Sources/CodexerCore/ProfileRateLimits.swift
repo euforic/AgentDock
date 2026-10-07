@@ -2,6 +2,7 @@ import Foundation
 
 public struct ProfileRateLimits: Equatable, Sendable {
     public var accountID: String?
+    public var accountEmail: String?
     public var resetCredits: ResetCreditsSummary?
     public var planType: String?
     public var buckets: [RateLimitBucket]
@@ -12,6 +13,7 @@ public struct ProfileRateLimits: Equatable, Sendable {
 
     public init(
         accountID: String? = nil,
+        accountEmail: String? = nil,
         resetCredits: ResetCreditsSummary? = nil,
         planType: String? = nil,
         buckets: [RateLimitBucket] = [],
@@ -21,6 +23,7 @@ public struct ProfileRateLimits: Equatable, Sendable {
         warningMessage: String? = nil
     ) {
         self.accountID = accountID
+        self.accountEmail = accountEmail
         self.resetCredits = resetCredits
         self.planType = planType
         self.buckets = buckets
