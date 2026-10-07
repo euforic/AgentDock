@@ -65,21 +65,11 @@ public actor ClaudeUsageClient: ClaudeUsageFetching {
         allowKeychainInteraction: Bool,
         forceRefresh: Bool = false
     ) async -> ProfileRateLimits {
-        let codeCredential = credentialReader.readCodeCredential(
-            homeURL: claudeCodeHomeURL,
+        // The official row represents Desktop, whose account can differ from Claude Code.
+        let credential = credentialReader.readDesktopCredential(
+            userDataURL: claudeUserDataURL,
             allowKeychainInteraction: allowKeychainInteraction
         )
-        let credential = if let codeCredential,
-                            codeCredential.scopes.isEmpty
-                                || codeCredential.scopes.contains("user:profile")
-        {
-            codeCredential
-        } else {
-            credentialReader.readDesktopCredential(
-                userDataURL: claudeUserDataURL,
-                allowKeychainInteraction: allowKeychainInteraction
-            ) ?? codeCredential
-        }
         return await fetch(credential, forceRefresh: forceRefresh)
     }
 

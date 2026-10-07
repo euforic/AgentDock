@@ -129,7 +129,9 @@ Each profile's tokens and account identity are still read afresh from its files.
 Background reads forbid Keychain interaction, including legacy login-Keychain
 prompts. A manual refresh can request access; choosing **Always Allow** lets
 macOS retain that grant for subsequent launches of the signed app. Managed profiles resolve credentials
-only from their own Desktop user-data roots. Desktop usage requires a valid
+only from their own Desktop user-data roots. The official Claude usage row also
+uses Desktop credentials exclusively, so a separate Claude Code login cannot
+replace the displayed account. Desktop usage requires a valid
 account and organization identity, and responses are verified against that
 identity before display. An explicit identity mismatch clears the corresponding
 cached quota instead of showing stale data. Active-organization cookie database

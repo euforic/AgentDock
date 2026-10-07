@@ -102,9 +102,9 @@ AgentDock does not carry an older percentage into a newer limit window.
 
 Live Claude quota refresh is a separate flow:
 
-1. Official Claude prefers a live-capable Claude Code login and falls back to
-   the official Desktop OAuth cache. Managed profiles use only their own
-   Desktop user-data root.
+1. Official Claude uses the official Desktop OAuth cache exclusively. Managed
+   profiles use only their own Desktop user-data root. A separate Claude Code
+   login cannot replace the account displayed for Desktop.
 2. Background refresh reads Keychain without interaction. Manual refresh may
    request access to Claude Safe Storage.
 3. The active account and organization are resolved locally and verified with

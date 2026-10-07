@@ -59,6 +59,25 @@ final class ClaudeUsageClientTests: XCTestCase {
         XCTAssertTrue(restored.boolValue)
     }
 
+    func testOfficialUsageRequiresDesktopLoginEvenWhenCodeCredentialExists() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let codeHome = directory.appendingPathComponent(".claude", isDirectory: true)
+        try FileManager.default.createDirectory(at: codeHome, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        try Data(#"{"claudeAiOauth":{"accessToken":"synthetic-token","scopes":["user:profile"]}}"#.utf8)
+            .write(to: codeHome.appendingPathComponent(".credentials.json"))
+
+        let limits = await ClaudeUsageClient().fetchOfficialUsage(
+            claudeCodeHomeURL: codeHome,
+            claudeUserDataURL: directory.appendingPathComponent("desktop"),
+            allowKeychainInteraction: false,
+            forceRefresh: true
+        )
+        XCTAssertTrue(limits.buckets.isEmpty)
+        XCTAssertTrue(limits.errorMessage?.hasPrefix("Live usage is unavailable.") == true)
+    }
+
     func testInstalledOfficialUsageWhenEnabled() async throws {
         guard ProcessInfo.processInfo.environment["AGENTDOCK_LIVE_CLAUDE_USAGE_TEST"] == "1" else {
             throw XCTSkip("Set AGENTDOCK_LIVE_CLAUDE_USAGE_TEST=1 to validate the signed-in official account.")
