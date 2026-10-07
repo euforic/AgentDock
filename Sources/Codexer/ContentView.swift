@@ -7,6 +7,7 @@ struct ContentView: View {
     @EnvironmentObject private var updater: AppUpdater
     @State private var profileSearch = ""
     @State private var showsSettings = false
+    @State private var showsResets = false
     @FocusState private var searchFocused: Bool
 
     var body: some View {
@@ -65,13 +66,14 @@ struct ContentView: View {
             model.refreshChats()
         }
         .onReceive(NotificationCenter.default.publisher(for: .agentDockFocusSearch)) { _ in
-            guard showsSettings || model.detailTab != .chats else { return }
+            guard showsSettings || model.showsHome || model.resetReminders.showsAvailableResets || model.detailTab != .chats else { return }
             searchFocused = true
         }
         .onReceive(NotificationCenter.default.publisher(for: .agentDockFocusProfileSearch)) { _ in
             searchFocused = true
         }
         .onReceive(model.resetReminders.$showsAvailableResets) { visible in
+            showsResets = visible
             if visible { showsSettings = false }
         }
         .onChange(of: model.sidebarSelection) {
@@ -104,6 +106,19 @@ struct ContentView: View {
 
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 4) {
+                    Button {
+                        showsSettings = false
+                        model.selectHome()
+                    } label: {
+                        Label("Home", systemImage: "house")
+                            .font(.system(size: 13, weight: .medium))
+                            .padding(10)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .background(!showsSettings && model.showsHome && !showsResets
+                                ? AgentDockPalette.selection : .clear, in: .rect(cornerRadius: 7))
+                    }
+                    .buttonStyle(.plain)
+                    .keyboardShortcut("1", modifiers: .command)
                     ResetSidebarButton(controller: model.resetReminders) {
                         showsSettings = false
                         model.resetReminders.showsAvailableResets = true
@@ -192,7 +207,7 @@ struct ContentView: View {
             } label: {
                 OfficialSidebarRow(
                     product: product,
-                    isSelected: !showsSettings && model.sidebarSelection == .official(product)
+                    isSelected: !showsSettings && !showsResets && model.sidebarSelection == .official(product)
                 )
             }
             .buttonStyle(.plain)
@@ -200,7 +215,7 @@ struct ContentView: View {
             ForEach(Array(profiles.enumerated()), id: \.element.id) { index, profile in
                 ProfileSidebarRow(
                     profile: profile,
-                    isSelected: !showsSettings && model.selectedProfileID == profile.id,
+                    isSelected: !showsSettings && !showsResets && model.selectedProfileID == profile.id,
                     onSelect: {
                         showsSettings = false
                         model.selectProfile(profile.id)
@@ -257,14 +272,18 @@ struct ContentView: View {
                         Divider()
                             .overlay(AgentDockPalette.divider)
                         Group {
-                            switch model.detailTab {
-                            case .overview:
-                                OverviewView()
-                            case .chats:
-                                ChatsView()
-                                    .id(model.sidebarSelection)
-                            case .advanced:
-                                AdvancedView()
+                            if model.showsHome {
+                                HomeView(resetReminders: model.resetReminders)
+                            } else {
+                                switch model.detailTab {
+                                case .overview:
+                                    OverviewView()
+                                case .chats:
+                                    ChatsView()
+                                        .id(model.sidebarSelection)
+                                case .advanced:
+                                    AdvancedView()
+                                }
                             }
                         }
                     }
@@ -313,7 +332,7 @@ struct ContentView: View {
                     .frame(width: 14, height: 14)
             }
             .agentDockToolbarAction()
-            .help("Refresh profile activity and chats")
+            .help(model.showsHome ? "Refresh accounts, usage and banked resets" : "Refresh profile activity and chats")
             .accessibilityLabel("Refresh")
             .keyboardShortcut("r", modifiers: .command)
 
@@ -335,7 +354,10 @@ struct ContentView: View {
 
     @ViewBuilder
     private var selectedSourceIdentity: some View {
-        if let profile = model.selectedProfile {
+        if model.showsHome {
+            Label("Home", systemImage: "house")
+                .font(.system(size: 13, weight: .semibold))
+        } else if let profile = model.selectedProfile {
             HStack(spacing: 8) {
                 ProfileIconView(profile: profile, size: 26)
                 VStack(alignment: .leading, spacing: 1) {
@@ -420,7 +442,8 @@ struct ContentView: View {
             ]
         ))
         model.refreshStats(allowCredentialInteraction: true)
-        model.refreshChats()
+        if model.showsHome { model.resetReminders.refresh() }
+        else { model.refreshChats() }
     }
 
     private var selectedDetailAnalyticsSurface: AnalyticsSurface {

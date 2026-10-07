@@ -37,6 +37,17 @@ final class AgentDockPreferencesTests: XCTestCase {
         XCTAssertEqual(store.load(), .defaults)
     }
 
+    func testHomeIsTheDefaultAndExistingStartupChoicesRemainSupported() {
+        let store = AgentDockPreferencesStore(defaults: defaults)
+        XCTAssertEqual(store.load().defaultView, .home)
+        for choice in AgentDockDefaultView.allCases {
+            defaults.set(choice.rawValue, forKey: "AgentDock.defaultView")
+            XCTAssertEqual(store.load().defaultView, choice)
+        }
+        store.restoreDefaults()
+        XCTAssertEqual(store.load().defaultView, .home)
+    }
+
     func testUnsupportedRefreshIntervalFallsBackToDefault() {
         let store = AgentDockPreferencesStore(defaults: defaults)
         var preferences = AgentDockPreferences.defaults

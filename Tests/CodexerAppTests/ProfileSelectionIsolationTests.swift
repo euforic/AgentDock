@@ -32,6 +32,39 @@ final class ProfileSelectionIsolationTests: XCTestCase {
         XCTAssertEqual(model.chatTranscriptEntries.filter { $0.kind == .message }.map(\.text), ["Second profile conversation"])
     }
 
+    func testHomeStartsByDefaultAndSurvivesReload() throws {
+        let fixture = try SyntheticProfileFixture()
+        defer { fixture.remove() }
+        XCTAssertTrue(fixture.model.showsHome)
+        XCTAssertNil(fixture.model.selectedProfile)
+        fixture.model.reload(refreshData: false)
+        XCTAssertTrue(fixture.model.showsHome)
+    }
+
+    func testHomeClearsPreviousTranscriptAndReturnsToProfileOverview() async throws {
+        let fixture = try SyntheticProfileFixture()
+        defer { fixture.remove() }
+        let model = fixture.model
+        model.selectProfile(fixture.first.id)
+        try await fixture.waitForChats()
+        XCTAssertFalse(model.chatTranscriptEntries.isEmpty)
+        model.detailTab = .chats
+        model.resetReminders.showsAvailableResets = true
+        model.selectHome()
+        XCTAssertTrue(model.showsHome)
+        XCTAssertFalse(model.resetReminders.showsAvailableResets)
+        XCTAssertTrue(model.chatSessions.isEmpty)
+        XCTAssertTrue(model.chatTranscriptEntries.isEmpty)
+        XCTAssertNil(model.selectedChatID)
+        model.refreshChats()
+        try await fixture.waitForChats()
+        XCTAssertTrue(model.chatSessions.isEmpty)
+        model.selectProfile(fixture.second.id)
+        XCTAssertEqual(model.detailTab, .overview)
+        try await fixture.waitForChats()
+        XCTAssertEqual(model.chatSessions.map(\.profileID), [fixture.second.id])
+    }
+
     func testInvalidOrEmptySelectionNeverResolvesToAnotherProfile() throws {
         let fixture = try SyntheticProfileFixture()
         defer { fixture.remove() }
@@ -71,25 +104,31 @@ final class ProfileSelectionIsolationTests: XCTestCase {
         for size in [(name: "regular", width: 1080.0, height: 720.0),
                      (name: "compact", width: 900.0, height: 600.0)] {
             let fixture = try SyntheticProfileFixture(firstName: size.name == "compact"
-                ? "Design Studio — Product and Platform Engineering" : "Design Studio")
+                ? "Design Studio — Product and Platform Engineering" : "Design Studio", includeClaude: true)
             defer { fixture.remove() }
             let model = fixture.model
             model.selectProfile(fixture.first.id)
             try await fixture.waitForChats()
             let updater = AppUpdater()
             for appearance in [AgentDockAppearance.light, .dark] {
-              for tab in [AgentDockDetailTab.overview, .chats] {
+              for destination in ["home", "overview", "chats"] {
+                if destination == "home" { model.selectHome() }
+                else { model.selectProfile(fixture.first.id) }
+                let tab: AgentDockDetailTab = destination == "chats" ? .chats : .overview
                 model.preferences.appearance = appearance
                 model.detailTab = tab
                 let view = NSHostingView(rootView: ContentView()
                     .environmentObject(model)
                     .environmentObject(updater))
+                view.sizingOptions = []
                 let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: size.width, height: size.height),
                                       styleMask: [.titled, .resizable, .fullSizeContentView], backing: .buffered, defer: false)
                 window.isReleasedWhenClosed = false
+                window.animationBehavior = .none
                 window.titleVisibility = .hidden
                 window.titlebarAppearsTransparent = true
                 window.contentView = view
+                window.setContentSize(NSSize(width: size.width, height: size.height))
                 NSApplication.shared.setActivationPolicy(.regular)
                 NSApplication.shared.activate(ignoringOtherApps: true)
                 window.makeKeyAndOrderFront(nil)
@@ -97,15 +136,20 @@ final class ProfileSelectionIsolationTests: XCTestCase {
                 view.layoutSubtreeIfNeeded()
                 // Capture WindowServer composition, including native glass controls.
                 let arguments = ["-x", "-o", "-l", String(window.windowNumber),
-                                 directory.appendingPathComponent("\(size.name)-\(appearance.rawValue)-\(tab.rawValue).png").path]
+                                 directory.appendingPathComponent("\(size.name)-\(appearance.rawValue)-\(destination).png").path]
                 var capture = try BoundedSubprocess.run(
                     executableURL: URL(fileURLWithPath: "/usr/sbin/screencapture"),
                     arguments: arguments,
                     timeout: 5,
                     maximumOutputBytes: 1_024
                 )
-                if capture.terminationStatus != 0 {
-                    // Initial activation may not have reached WindowServer yet.
+                let imageURL = directory.appendingPathComponent("\(size.name)-\(appearance.rawValue)-\(destination).png")
+                let expectedWidth = Int(size.width * window.backingScaleFactor)
+                let expectedHeight = Int(size.height * window.backingScaleFactor)
+                let initialImage = (try? Data(contentsOf: imageURL)).flatMap(NSBitmapImageRep.init(data:))
+                if capture.terminationStatus != 0 || initialImage?.pixelsWide != expectedWidth
+                    || initialImage?.pixelsHigh != expectedHeight {
+                    // Retry an incomplete WindowServer activation or animation frame.
                     window.orderFrontRegardless()
                     try await Task.sleep(for: .milliseconds(800))
                     capture = try BoundedSubprocess.run(
@@ -114,6 +158,9 @@ final class ProfileSelectionIsolationTests: XCTestCase {
                     )
                 }
                 XCTAssertEqual(capture.terminationStatus, 0, "Could not capture the synthetic window; verify Screen Recording access.")
+                let bitmap = try XCTUnwrap(NSBitmapImageRep(data: Data(contentsOf: imageURL)))
+                XCTAssertEqual(bitmap.pixelsWide, expectedWidth)
+                XCTAssertEqual(bitmap.pixelsHigh, expectedHeight)
                 window.close()
               }
             }
@@ -130,7 +177,7 @@ private final class SyntheticProfileFixture {
     let first: CodexProfile
     let second: CodexProfile
 
-    init(firstName: String = "Design Studio") throws {
+    init(firstName: String = "Design Studio", includeClaude: Bool = false) throws {
         root = FileManager.default.temporaryDirectory
             .appendingPathComponent("AgentDock-Selection-\(UUID().uuidString)", isDirectory: true)
             .standardizedFileURL.resolvingSymlinksInPath()
@@ -140,6 +187,7 @@ private final class SyntheticProfileFixture {
                                      shortcutDirectory: root.appendingPathComponent("Shortcuts"))
         first = try store.createProfile(name: firstName)
         second = try store.createProfile(name: "Engineering")
+        if includeClaude { _ = try store.createProfile(product: .claude, name: "Studio") }
         for (profile, prompt) in [(first, "First profile conversation"), (second, "Second profile conversation")] {
             let sessions = profile.codexHomePath.appendingPathComponent("sessions/2026/09/07", isDirectory: true)
             try FileManager.default.createDirectory(at: sessions, withIntermediateDirectories: true)
@@ -154,6 +202,15 @@ private final class SyntheticProfileFixture {
                 .reduce(into: Data()) { $0.append($1); $0.append(0x0a) }
             try data.write(to: sessions.appendingPathComponent("rollout-synthetic.jsonl"))
         }
+        let resetStore = ResetReminderStore(defaults: defaults)
+        let expirationHours: Double = firstName.contains("Engineering") ? 12 : 48
+        var snapshot = ResetReminderStore.Snapshot()
+        snapshot.accounts = [ResetAccount(id: "synthetic-account", sourceIDs: [first.id.uuidString],
+            names: [first.name], summary: ResetCreditsSummary(availableCount: 2, credits: [
+                ResetCredit(id: "tomorrow", grantedAt: .now, expiresAt: Date().addingTimeInterval(expirationHours * 3600)),
+                ResetCredit(id: "later", grantedAt: .now, expiresAt: Date().addingTimeInterval(10 * 86400))
+            ]), checkedAt: .now, identityVerified: true)]
+        resetStore.save(snapshot)
         model = CodexerModel(
             store: store,
             officialDataRootURL: root.appendingPathComponent("Official"),
@@ -161,7 +218,8 @@ private final class SyntheticProfileFixture {
             claudeAppURL: root.appendingPathComponent("Unavailable.app"),
             preferencesStore: AgentDockPreferencesStore(defaults: defaults),
             chatScanner: LocalChatScanner(indexRootURL: root.appendingPathComponent("Indexes")),
-            loadActivityOnInit: false
+            loadActivityOnInit: false,
+            resetReminders: ResetReminderController(store: resetStore, nativeNotifications: false)
         )
     }
 
