@@ -301,7 +301,7 @@ struct ContentView: View {
                 }
                 .pickerStyle(.segmented)
                 .labelsHidden()
-                .frame(width: visibleDetailTabs.count == 3 ? 300 : 170)
+                .fixedSize(horizontal: true, vertical: true)
             }
         }
         .padding(.horizontal, 18)
