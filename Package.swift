@@ -60,7 +60,7 @@ let package = Package(
         ),
         .testTarget(
             name: "CodexerAppTests",
-            dependencies: ["Codexer", "CodexerCore", "TranscriptRenderer"]
+            dependencies: ["Codexer", "CodexerCore"]
         ),
         .testTarget(
             name: "TranscriptRendererTests",

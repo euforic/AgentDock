@@ -123,6 +123,10 @@ struct ActivityDetailSheet: View {
           }()
         )
 
+        if let measuredAt = stats.dataSizeMeasuredAt {
+          Text("Storage measured \(measuredAt.formatted(date: .omitted, time: .shortened)); reused for up to 10 minutes.")
+            .font(.caption).foregroundStyle(.secondary)
+        }
         SectionLabel(title: "Locations")
         VStack(spacing: 0) {
           ForEach(Array(storageLocations.enumerated()), id: \.offset) { index, location in

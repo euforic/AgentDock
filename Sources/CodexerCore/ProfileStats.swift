@@ -14,6 +14,7 @@ public struct ProfileStats: Equatable, Sendable {
     public var weeklyErrors: Int
     public var dataBytes: Int64
     public var dataSizeIsTruncated: Bool
+    public var dataSizeMeasuredAt: Date?
     public var lastActivityAt: Date?
     public var jobCounts: [String: Int]
     public var tokenizedSessions: Int
@@ -35,6 +36,7 @@ public struct ProfileStats: Equatable, Sendable {
         weeklyErrors: 0,
         dataBytes: 0,
         dataSizeIsTruncated: false,
+        dataSizeMeasuredAt: nil,
         lastActivityAt: nil,
         jobCounts: [:],
         tokenizedSessions: 0,
@@ -128,7 +130,7 @@ public final class ProfileStatsScanner: @unchecked Sendable {
             )
         case .claude:
             claudeStats(
-                sessions: claudeChatScanner.scan(profile: profile).sessions,
+                result: claudeChatScanner.scanForStats(profile: profile),
                 dataRootURL: profile.profileDirectory,
                 now: now
             )
@@ -142,10 +144,10 @@ public final class ProfileStatsScanner: @unchecked Sendable {
         now: Date = Date()
     ) -> ProfileStats {
         claudeStats(
-            sessions: claudeChatScanner.scanOfficialClaude(
+            result: claudeChatScanner.scanOfficialClaudeForStats(
                 claudeHomeURL: claudeUserDataURL,
                 claudeCodeHomeURL: claudeCodeHomeURL
-            ).sessions,
+            ),
             dataRootURL: dataRootURL,
             now: now
         )
@@ -164,6 +166,7 @@ public final class ProfileStatsScanner: @unchecked Sendable {
         let dataSize = cachedDirectorySize(dataRootURL, now: now)
         stats.dataBytes = dataSize.bytes
         stats.dataSizeIsTruncated = dataSize.truncated
+        stats.dataSizeMeasuredAt = dataSize.measuredAt
         guard !Task.isCancelled else { return stats }
 
         if fileManager.fileExists(atPath: stateDatabase.path) {
@@ -274,7 +277,7 @@ public final class ProfileStatsScanner: @unchecked Sendable {
     }
 
     private func claudeStats(
-        sessions: [LocalChatSession],
+        result: LocalChatScanResult,
         dataRootURL: URL,
         now: Date
     ) -> ProfileStats {
@@ -282,8 +285,13 @@ public final class ProfileStatsScanner: @unchecked Sendable {
         let dataSize = cachedDirectorySize(dataRootURL, now: now)
         stats.dataBytes = dataSize.bytes
         stats.dataSizeIsTruncated = dataSize.truncated
+        stats.dataSizeMeasuredAt = dataSize.measuredAt
         guard !Task.isCancelled else { return stats }
 
+        let sessions = result.sessions
+        if result.diagnostics.inventoryTruncated {
+            stats.errorMessages.append("Local activity coverage is partial: some records could not be inspected within safety limits. Totals reflect only the inspected records.")
+        }
         let weekStart = now.addingTimeInterval(-7 * 24 * 60 * 60)
         let weekly = sessions.filter { $0.updatedAt >= weekStart && $0.updatedAt <= now }
         let tokenized = sessions.filter { $0.tokenCount != nil }
@@ -523,6 +531,7 @@ public final class ProfileStatsScanner: @unchecked Sendable {
             + UInt64(dataSizeTimeout * 1_000_000_000)
         var total: Int64 = 0
         var visited = 0
+        var depthTruncated = false
         for case let fileURL as URL in enumerator {
             guard !Task.isCancelled else {
                 return DirectorySizeMeasurement(bytes: total, truncated: true, cancelled: true)
@@ -535,6 +544,7 @@ public final class ProfileStatsScanner: @unchecked Sendable {
             }
             visited += 1
             if enumerator.level > dataSizeMaximumDepth {
+                depthTruncated = true
                 enumerator.skipDescendants()
                 continue
             }
@@ -558,19 +568,26 @@ public final class ProfileStatsScanner: @unchecked Sendable {
             }
             total = sum
         }
-        return DirectorySizeMeasurement(bytes: total, truncated: false, cancelled: false)
+        return DirectorySizeMeasurement(bytes: total, truncated: depthTruncated, cancelled: false)
     }
 
     private func cachedDirectorySize(_ url: URL, now: Date) -> DirectorySizeMeasurement {
         let key = url.standardizedFileURL.path
         if let cached = dataSizeCacheLock.withLock({ dataSizeCache[key] }),
-           now.timeIntervalSince(cached.measuredAt) < 60
+           now >= cached.measuredAt,
+           now.timeIntervalSince(cached.measuredAt) < 10 * 60
         {
             return cached.measurement
         }
-        let measurement = directorySize(url)
+        var measurement = directorySize(url)
+        measurement.measuredAt = now
         if !measurement.cancelled {
             dataSizeCacheLock.withLock {
+                if dataSizeCache.count >= 64, dataSizeCache[key] == nil,
+                   let oldest = dataSizeCache.min(by: { $0.value.measuredAt < $1.value.measuredAt })?.key
+                {
+                    dataSizeCache.removeValue(forKey: oldest)
+                }
                 dataSizeCache[key] = (now, measurement)
             }
         }
@@ -587,6 +604,7 @@ private struct DirectorySizeMeasurement: Sendable {
     var bytes: Int64
     var truncated: Bool
     var cancelled: Bool
+    var measuredAt: Date? = nil
 }
 
 private extension NSLock {

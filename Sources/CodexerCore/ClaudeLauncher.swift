@@ -185,7 +185,9 @@ public actor ClaudeInstanceController {
     }
 
     public func validateClaudeApp(at appURL: URL) throws {
+        try Task.checkCancellation()
         try validator.validateApp(at: appURL, product: .claude)
+        try Task.checkCancellation()
         try contractProbe.validate(appURL: appURL)
     }
 
@@ -193,8 +195,35 @@ public actor ClaudeInstanceController {
         for profiles: [CodexProfile],
         appURL: URL
     ) throws -> [CodexProfile.ID: CodexInstanceStatus] {
+        try Task.checkCancellation()
+        guard !profiles.isEmpty else { return [:] }
         try validateClaudeApp(at: appURL)
+        try Task.checkCancellation()
         let snapshot = try snapshotProvider.snapshot()
+        try Task.checkCancellation()
+        return statuses(for: profiles, appURL: appURL, snapshot: snapshot)
+    }
+
+    func statusBatch(
+        for profiles: [CodexProfile],
+        appURL: URL
+    ) throws -> ProviderInstanceStatusBatch {
+        try Task.checkCancellation()
+        try validateClaudeApp(at: appURL)
+        try Task.checkCancellation()
+        let snapshot = try snapshotProvider.snapshot()
+        try Task.checkCancellation()
+        return ProviderInstanceStatusBatch(
+            managedStatuses: statuses(for: profiles, appURL: appURL, snapshot: snapshot),
+            officialStatus: stockStatus(appURL: appURL, snapshot: snapshot)
+        )
+    }
+
+    private func statuses(
+        for profiles: [CodexProfile],
+        appURL: URL,
+        snapshot: ClaudeProcessSnapshot
+    ) -> [CodexProfile.ID: CodexInstanceStatus] {
         return Dictionary(uniqueKeysWithValues: profiles.map { profile in
             let trustedProcessIDs = ClaudeInstanceDiscovery.profileMainProcessIDs(
                 in: snapshot,
@@ -224,8 +253,15 @@ public actor ClaudeInstanceController {
     }
 
     public func stockStatus(appURL: URL) throws -> CodexInstanceStatus {
+        try Task.checkCancellation()
         try validateClaudeApp(at: appURL)
+        try Task.checkCancellation()
         let snapshot = try snapshotProvider.snapshot()
+        try Task.checkCancellation()
+        return stockStatus(appURL: appURL, snapshot: snapshot)
+    }
+
+    private func stockStatus(appURL: URL, snapshot: ClaudeProcessSnapshot) -> CodexInstanceStatus {
         return CodexInstanceStatus(
             processIDs: ClaudeInstanceDiscovery.stockMainProcessIDs(
                 in: snapshot,

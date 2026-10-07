@@ -2,15 +2,16 @@ import Darwin
 import Foundation
 
 public final class CodexRateLimitClient: @unchecked Sendable {
-    private let nativeClient: AppServerRateLimitClient
+    private let nativeReader: CodexAccountRateLimitReader
     private let customClient: CustomProviderRateLimitClient
     private let fileManager: FileManager
 
     public init(
-        nativeClient: AppServerRateLimitClient = AppServerRateLimitClient(),
+        nativeClient: AppServerRateLimitClient? = nil,
+        nativeReader: CodexAccountRateLimitReader = .shared,
         fileManager: FileManager = .default
     ) {
-        self.nativeClient = nativeClient
+        self.nativeReader = nativeClient.map { CodexAccountRateLimitReader(client: $0) } ?? nativeReader
         customClient = CustomProviderRateLimitClient()
         self.fileManager = fileManager
     }
@@ -49,7 +50,7 @@ public final class CodexRateLimitClient: @unchecked Sendable {
                 configProfile: configProfile
             ) {
             case .openAI:
-                return nativeClient.fetchRateLimits(
+                return await nativeReader.fetch(
                     codexHomeURL: codexHomeURL,
                     codexAppURL: codexAppURL
                 )

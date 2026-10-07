@@ -419,6 +419,8 @@ final class LocalChatSessionTests: XCTestCase {
 
         XCTAssertEqual(result.sessions.count, 1)
         XCTAssertEqual(result.sessions.first?.tokenCount, 7)
+        XCTAssertTrue(result.diagnostics.inventoryTruncated)
+        XCTAssertTrue(scanner.scanOfficialClaude(claudeHomeURL: root).diagnostics.inventoryTruncated)
     }
 
     func testClaudeInventoryBoundsFilesAndAggregateMetadataBytes() throws {
@@ -487,6 +489,135 @@ final class LocalChatSessionTests: XCTestCase {
             scanner.officialClaudeChangeToken(claudeHomeURL: root),
             initial.changeToken
         )
+    }
+
+    func testLargeClaudeCodeHistoryUsesRecentTailAndReusesUnchangedIndex() throws {
+        let history = root.appendingPathComponent("history.jsonl")
+        let project = "/synthetic/project"
+        let oldLine = try JSONSerialization.data(withJSONObject: [
+            "display": String(repeating: "x", count: 1_024), "project": project,
+            "sessionId": "old-session", "timestamp": 1_785_232_800_000
+        ]) + Data([0x0A])
+        var data = Data()
+        for _ in 0..<16_000 { data.append(oldLine) }
+        let recentLine = try JSONSerialization.data(withJSONObject: [
+            "display": "Recent session", "project": project,
+            "sessionId": "recent-session", "timestamp": 1_785_232_860_000
+        ]) + Data([0x0A])
+        data.append(recentLine)
+        XCTAssertGreaterThan(data.count, 16 * 1_024 * 1_024)
+        try data.write(to: history)
+        for id in ["old-session", "recent-session"] {
+            let body = root.appendingPathComponent("projects/-synthetic-project/\(id).jsonl")
+            try FileManager.default.createDirectory(at: body.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try writeJSONLines([["type": "assistant", "message": ["model": "synthetic-model"]]], to: body)
+        }
+        let scanner = LocalChatScanner(indexRootURL: root.appendingPathComponent("Indexes"))
+        let coldStart = Date()
+        let cold = scanner.scanOfficialClaude(claudeHomeURL: root)
+        let coldDuration = Date().timeIntervalSince(coldStart)
+        let warmStart = Date()
+        let warm = scanner.scanOfficialClaude(claudeHomeURL: root)
+        let warmDuration = Date().timeIntervalSince(warmStart)
+
+        XCTAssertEqual(cold.sessions.first?.id, "recent-session")
+        XCTAssertEqual(cold.sessions.first?.model, "synthetic-model")
+        XCTAssertEqual(cold.diagnostics.inspectedHistoryBytes, 16 * 1_024 * 1_024)
+        XCTAssertTrue(cold.diagnostics.inventoryTruncated)
+        XCTAssertEqual(warm.sessions.map(\.id), cold.sessions.map(\.id))
+        XCTAssertEqual(warm.diagnostics.inspectedHistoryBytes, 0)
+        XCTAssertEqual(warm.diagnostics.cacheHitCount, 1)
+        XCTAssertTrue(warm.diagnostics.inventoryTruncated)
+        print("Synthetic large history reader: cold=\(coldDuration)s warm=\(warmDuration)s bytes=\(data.count)")
+    }
+
+    func testClaudeHistoryCacheInvalidatesAppendRewriteAndSymlinkReplacement() throws {
+        let history = root.appendingPathComponent("history.jsonl")
+        let body = root.appendingPathComponent("projects/-synthetic-project/session.jsonl")
+        try FileManager.default.createDirectory(at: body.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try writeJSONLines([["type": "assistant", "message": ["model": "synthetic-model"]]], to: body)
+        func record(_ title: String) -> [String: Any] {
+            ["display": title, "project": "/synthetic/project", "sessionId": "session", "timestamp": 1_785_232_860_000]
+        }
+        try writeJSONLines([record("First title")], to: history)
+        let scanner = LocalChatScanner(indexRootURL: root.appendingPathComponent("Indexes"))
+        XCTAssertEqual(scanner.scanOfficialClaude(claudeHomeURL: root).sessions.first?.title, "First title")
+        XCTAssertEqual(scanner.scanOfficialClaude(claudeHomeURL: root).diagnostics.cacheHitCount, 1)
+        let handle = try FileHandle(forWritingTo: history)
+        try handle.seekToEnd()
+        try handle.write(contentsOf: Data([0x0A]) + JSONSerialization.data(withJSONObject: record("Later title")) + Data([0x0A]))
+        try handle.close()
+        let appended = scanner.scanOfficialClaude(claudeHomeURL: root)
+        XCTAssertEqual(appended.sessions.first?.title, "Later title")
+        XCTAssertGreaterThan(appended.diagnostics.inspectedHistoryBytes, 0)
+        let originalDate = try XCTUnwrap(history.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate)
+        try writeJSONLines([record("Other title")], to: history)
+        try FileManager.default.setAttributes([.modificationDate: originalDate], ofItemAtPath: history.path)
+        XCTAssertEqual(scanner.scanOfficialClaude(claudeHomeURL: root).sessions.first?.title, "Other title")
+        let outside = root.appendingPathComponent("outside.jsonl")
+        try writeJSONLines([record("Linked title")], to: outside)
+        try FileManager.default.removeItem(at: history)
+        try FileManager.default.createSymbolicLink(at: history, withDestinationURL: outside)
+        let linked = scanner.scanOfficialClaude(claudeHomeURL: root)
+        XCTAssertTrue(linked.sessions.isEmpty)
+        XCTAssertEqual(linked.diagnostics.cacheHitCount, 0)
+    }
+
+    func testClaudeUsageCacheEvictsOnlyLeastRecentlyUsedSummaryAcrossAccounts() throws {
+        let first = root.appendingPathComponent("FirstAccount")
+        let second = root.appendingPathComponent("SecondAccount")
+        try makeCoworkFixture(userDataURL: first, fixtureName: "local_first", sessionID: "first")
+        try makeCoworkFixture(userDataURL: first, fixtureName: "local_second", sessionID: "second")
+        let oldest = try makeCoworkFixture(userDataURL: second, fixtureName: "local_oldest", sessionID: "oldest")
+        let scanner = LocalChatScanner(
+            maximumClaudeUsageCacheEntries: 3,
+            indexRootURL: root.appendingPathComponent("Indexes")
+        )
+        XCTAssertEqual(scanner.scanOfficialClaude(claudeHomeURL: first).diagnostics.parsedFileCount, 2)
+        XCTAssertEqual(scanner.scanOfficialClaude(claudeHomeURL: second).diagnostics.parsedFileCount, 1)
+        XCTAssertEqual(scanner.scanOfficialClaude(claudeHomeURL: first).diagnostics.cacheHitCount, 2)
+        try FileManager.default.removeItem(at: oldest.metadata)
+        try makeCoworkFixture(userDataURL: second, fixtureName: "local_newest", sessionID: "newest")
+        let added = scanner.scanOfficialClaude(claudeHomeURL: second)
+        XCTAssertEqual(added.diagnostics.parsedFileCount, 1)
+        let retained = scanner.scanOfficialClaude(claudeHomeURL: first)
+        XCTAssertEqual(retained.diagnostics.cacheHitCount, 2)
+        XCTAssertEqual(retained.diagnostics.parsedFileCount, 0)
+        XCTAssertTrue(retained.sessions.allSatisfy { $0.tokenCount != nil })
+    }
+
+    func testClaudeUsageCacheInvalidatesSameSizeRewriteAndReplacementWithPreservedDate() throws {
+        func usage(_ tokens: Int) -> [String: Any] {
+            ["type": "assistant", "message": ["id": "synthetic-message", "usage": ["input_tokens": tokens]]]
+        }
+        let fixture = try makeCoworkFixture(auditRecords: [usage(100)])
+        let scanner = LocalChatScanner(indexRootURL: root.appendingPathComponent("Indexes"))
+        XCTAssertEqual(scanner.scanOfficialClaude(claudeHomeURL: root).sessions.first?.tokenCount, 100)
+        let originalDate = try XCTUnwrap(fixture.audit.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate)
+        try writeJSONLines([usage(999)], to: fixture.audit)
+        try FileManager.default.setAttributes([.modificationDate: originalDate], ofItemAtPath: fixture.audit.path)
+        let rewritten = scanner.scanOfficialClaude(claudeHomeURL: root)
+        XCTAssertEqual(rewritten.sessions.first?.tokenCount, 999)
+        XCTAssertEqual(rewritten.diagnostics.parsedFileCount, 1)
+        let replacement = try JSONSerialization.data(withJSONObject: usage(888), options: [.sortedKeys])
+        try replacement.write(to: fixture.audit, options: [.atomic])
+        try FileManager.default.setAttributes([.modificationDate: originalDate], ofItemAtPath: fixture.audit.path)
+        let replaced = scanner.scanOfficialClaude(claudeHomeURL: root)
+        XCTAssertEqual(replaced.sessions.first?.tokenCount, 888)
+        XCTAssertEqual(replaced.diagnostics.parsedFileCount, 1)
+        XCTAssertEqual(scanner.scanOfficialClaude(claudeHomeURL: root).diagnostics.cacheHitCount, 1)
+    }
+
+    func testStatsScanPreservesUsageAndModelsWithoutPresentationDetailsOrChangeToken() throws {
+        try makeCoworkFixture()
+        let scanner = LocalChatScanner(indexRootURL: root.appendingPathComponent("Indexes"))
+        let presentation = scanner.scanOfficialClaude(claudeHomeURL: root)
+        let summaries = scanner.scanOfficialClaudeForStats(claudeHomeURL: root, claudeCodeHomeURL: root)
+        XCTAssertEqual(summaries.sessions.map(\.tokenCount), presentation.sessions.map(\.tokenCount))
+        XCTAssertEqual(summaries.sessions.map(\.model), presentation.sessions.map(\.model))
+        XCTAssertEqual(summaries.sessions.map(\.updatedAt), presentation.sessions.map(\.updatedAt))
+        XCTAssertTrue(summaries.changeToken.isEmpty)
+        XCTAssertTrue(summaries.sessions.allSatisfy { $0.preview == nil && $0.repository == nil && $0.branch == nil })
     }
 
     @discardableResult

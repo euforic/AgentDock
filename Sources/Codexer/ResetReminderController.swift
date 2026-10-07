@@ -20,6 +20,7 @@ final class ResetReminderController: NSObject, ObservableObject, UNUserNotificat
             }
             persist()
             requestReconcile()
+            schedulePolling()
         }
     }
     @Published private(set) var accounts: [ResetAccount] = []
@@ -44,12 +45,20 @@ final class ResetReminderController: NSObject, ObservableObject, UNUserNotificat
     private nonisolated(unsafe) var wakeObserver: NSObjectProtocol?
     private let workspaceCenter = NSWorkspace.shared.notificationCenter
     private var center: UNUserNotificationCenter?
-    private let client = AppServerRateLimitClient()
+    private let client: CodexAccountRateLimitReader
+    private var isApplicationActive = false
+    private var lastRefreshAt: Date?
+    private var lastAttemptAt: Date?
+    private var refreshGeneration = 0
+    private var lastSavedSnapshot: ResetReminderStore.Snapshot
 
-    init(store: ResetReminderStore = ResetReminderStore(), nativeNotifications: Bool = true) {
+    init(store: ResetReminderStore = ResetReminderStore(), nativeNotifications: Bool = true,
+         client: CodexAccountRateLimitReader = .shared) {
         self.store = store
         let saved = store.load()
         snapshot = saved
+        lastSavedSnapshot = saved
+        self.client = client
         policy = saved.policy.validated
         accounts = ResetAccount.consolidated(saved.accounts)
         super.init()
@@ -79,48 +88,99 @@ final class ResetReminderController: NSObject, ObservableObject, UNUserNotificat
         self.sources = sources
         self.appURL = appURL
         let ids = Set(sources.map(\.id))
-        sourceErrors = sourceErrors.filter { ids.contains($0.key) }
+        let errors = sourceErrors.filter { ids.contains($0.key) }
+        if sourceErrors != errors { sourceErrors = errors }
         snapshot.accounts.removeAll { $0.sourceIDs.allSatisfy { !ids.contains($0) } }
-        accounts = ResetAccount.consolidated(snapshot.accounts)
-        if pollingTask == nil {
-            pollingTask = Task { [weak self] in
-                while !Task.isCancelled {
-                    do { try await Task.sleep(for: .seconds(300)) } catch { return }
-                    guard let self else { return }
-                    // Inventory stays fresh while visible; notifications never depend on activity settings.
-                    self.refresh()
-                    await self.updatePermission()
-                }
-            }
+        let current = ResetAccount.consolidated(snapshot.accounts)
+        if accounts != current { accounts = current }
+        if wakeObserver == nil {
             wakeObserver = workspaceCenter.addObserver(
                 forName: NSWorkspace.didWakeNotification, object: nil, queue: .main
             ) { [weak self] _ in
-                Task { @MainActor in self?.refresh() }
+                Task { @MainActor in
+                    self?.refreshIfNeeded(maxAge: 60)
+                    self?.requestReconcile()
+                    self?.schedulePolling()
+                }
             }
         }
         if changed { refresh() }
+        schedulePolling()
         requestReconcile()
-        Task { await updatePermission() }
+        if changed { Task { await updatePermission() } }
+    }
+
+    func setApplicationActive(_ active: Bool) {
+        guard isApplicationActive != active else { return }
+        isApplicationActive = active
+        if active {
+            refreshIfNeeded(maxAge: 60)
+            Task { await updatePermission() }
+        }
+        schedulePolling()
+    }
+
+    private func refreshIfNeeded(maxAge: TimeInterval) {
+        guard !isRefreshing else { return }
+        let now = Date()
+        if let lastRefreshAt, now.timeIntervalSince(lastRefreshAt) < maxAge { return }
+        if let lastAttemptAt, now.timeIntervalSince(lastAttemptAt) < 60 { return }
+        refresh()
+    }
+
+    static func pollDelay(active: Bool, remindersEnabled: Bool, nextMilestone: Date?, now: Date) -> TimeInterval {
+        if active { return 300 }
+        guard remindersEnabled, let nextMilestone else { return 1800 }
+        return min(1800, max(60, nextMilestone.timeIntervalSince(now)))
+    }
+
+    private func schedulePolling() {
+        pollingTask?.cancel()
+        guard appURL != nil else { pollingTask = nil; return }
+        let now = Date()
+        let expiry = accounts.flatMap { $0.summary.credits ?? [] }.compactMap(\.expiresAt).filter { $0 > now }.min()
+        let next = (Array(nextReminders.values) + [expiry].compactMap { $0 }).filter { $0 > now }.min()
+        let cadence = Self.pollDelay(active: isApplicationActive, remindersEnabled: false, nextMilestone: nil, now: now)
+        let due = (lastAttemptAt ?? now).addingTimeInterval(cadence)
+        let milestoneDelay = Self.pollDelay(active: isApplicationActive, remindersEnabled: policy.enabled,
+            nextMilestone: next, now: now)
+        let delay = max(60, min(milestoneDelay, due.timeIntervalSince(now)))
+        pollingTask = Task { [weak self] in
+            do { try await Task.sleep(for: .seconds(delay)) } catch { return }
+            guard !Task.isCancelled, let self else { return }
+            self.refreshIfNeeded(maxAge: self.isApplicationActive || self.policy.enabled ? 300 : 1800)
+            self.requestReconcile()
+            await self.updatePermission()
+            self.schedulePolling()
+        }
     }
 
     func refresh() {
         guard let appURL else { return }
         refreshTask?.cancel()
+        refreshGeneration += 1
+        let generation = refreshGeneration
+        lastAttemptAt = Date()
         let sources = sources
         let client = client
         isRefreshing = true
         refreshTask = Task { [weak self] in
-            // Serial bounded reads avoid spawning an app-server for every account at once.
-            for source in sources {
-                let worker = Task.detached(priority: .utility) {
-                    client.fetchRateLimits(codexHomeURL: source.homeURL, codexAppURL: appURL,
-                        includeAccountDetails: true)
+            let results = await withTaskGroup(of: (ResetSource, ProfileRateLimits).self,
+                returning: [(ResetSource, ProfileRateLimits)].self) { group in
+                for source in sources {
+                    group.addTask {
+                        (source, await client.fetch(codexHomeURL: source.homeURL, codexAppURL: appURL))
+                    }
                 }
-                let limits = await withTaskCancellationHandler { await worker.value } onCancel: { worker.cancel() }
-                guard !Task.isCancelled, let self else { return }
+                var results: [(ResetSource, ProfileRateLimits)] = []
+                for await result in group { results.append(result) }
+                return results
+            }
+            guard !Task.isCancelled, let self, self.refreshGeneration == generation else { return }
+            for (source, limits) in results {
                 if let error = limits.errorMessage {
                     // Keep last successful data, clearly labelled as stale in the view.
-                    self.sourceErrors[source.id] = error
+                    if self.sourceErrors[source.id] != error { self.sourceErrors[source.id] = error }
                 } else if let summary = limits.resetCredits {
                     var account = ResetAccount(id: ResetAccount.identity(accountID: limits.accountID, sourceID: source.id),
                         sourceIDs: [source.id], names: [source.name], summary: summary, checkedAt: limits.fetchedAt)
@@ -143,12 +203,15 @@ final class ResetReminderController: NSObject, ObservableObject, UNUserNotificat
                     self.sourceErrors[source.id] = "Reset information is unavailable for this account or CLI version."
                 }
             }
-            guard !Task.isCancelled, let self else { return }
-            self.accounts = ResetAccount.consolidated(self.snapshot.accounts)
+            let accounts = ResetAccount.consolidated(self.snapshot.accounts)
+            if self.accounts != accounts { self.accounts = accounts }
+            self.refreshTask = nil
+            if results.allSatisfy({ $0.1.errorMessage == nil }) { self.lastRefreshAt = Date() }
             self.isRefreshing = false
             self.pruneStates()
             self.persist()
             self.requestReconcile()
+            self.schedulePolling()
         }
     }
 
@@ -208,14 +271,17 @@ final class ResetReminderController: NSObject, ObservableObject, UNUserNotificat
     }
 
     func updatePermission() async {
-        guard let center else { permission = "Packaged app required"; return }
-        let settings = await center.notificationSettings()
-        switch settings.authorizationStatus {
-        case .authorized, .provisional: permission = settings.alertSetting == .enabled ? "Allowed" : "Alerts disabled in macOS"
-        case .denied: permission = "Blocked in macOS"
-        case .notDetermined: permission = "Not requested"
-        default: permission = "Unavailable"
-        }
+        let value: String
+        if let center {
+            let settings = await center.notificationSettings()
+            switch settings.authorizationStatus {
+            case .authorized, .provisional: value = settings.alertSetting == .enabled ? "Allowed" : "Alerts disabled in macOS"
+            case .denied: value = "Blocked in macOS"
+            case .notDetermined: value = "Not requested"
+            default: value = "Unavailable"
+            }
+        } else { value = "Packaged app required" }
+        if permission != value { permission = value }
     }
 
     func sendTestNotification() async {
@@ -239,7 +305,13 @@ final class ResetReminderController: NSObject, ObservableObject, UNUserNotificat
 
     private func persist() {
         snapshot.policy = policy.validated
+        // Concurrent replies can arrive in a different order without changing data.
+        snapshot.accounts.sort {
+            $0.id == $1.id ? $0.sourceIDs.lexicographicallyPrecedes($1.sourceIDs) : $0.id < $1.id
+        }
+        guard snapshot != lastSavedSnapshot else { return }
         store.save(snapshot)
+        lastSavedSnapshot = snapshot
     }
 
     private func pruneStates() {
@@ -298,9 +370,11 @@ final class ResetReminderController: NSObject, ObservableObject, UNUserNotificat
                 fireAt: fireAt, milestone: milestoneDate, expiresAt: expiryDate))
         }
         planned.sort { ($0.fireAt, $0.id) < ($1.fireAt, $1.id) }
-        scheduleLimited = planned.count > 60
+        if scheduleLimited != (planned.count > 60) { scheduleLimited = planned.count > 60 }
         planned = Array(planned.prefix(60))
-        nextReminders = Dictionary(grouping: planned, by: \.resetKey).compactMapValues { $0.map(\.fireAt).min() }
+        let next = Dictionary(grouping: planned, by: \.resetKey).compactMapValues { $0.map(\.fireAt).min() }
+        if nextReminders != next { nextReminders = next }
+        schedulePolling()
         guard let center else { return }
         let desiredIDs = Set(planned.map(\.id))
         center.removePendingNotificationRequests(withIdentifiers: pending.map(\.identifier).filter { !desiredIDs.contains($0) })

@@ -69,7 +69,6 @@ final class ClaudeUsageClientTests: XCTestCase {
             .write(to: codeHome.appendingPathComponent(".credentials.json"))
 
         let limits = await ClaudeUsageClient().fetchOfficialUsage(
-            claudeCodeHomeURL: codeHome,
             claudeUserDataURL: directory.appendingPathComponent("desktop"),
             allowKeychainInteraction: false,
             forceRefresh: true
@@ -84,7 +83,6 @@ final class ClaudeUsageClientTests: XCTestCase {
         }
         let home = FileManager.default.homeDirectoryForCurrentUser
         let limits = await ClaudeUsageClient().fetchOfficialUsage(
-            claudeCodeHomeURL: home.appendingPathComponent(".claude", isDirectory: true),
             claudeUserDataURL: home.appendingPathComponent(
                 "Library/Application Support/Claude",
                 isDirectory: true

@@ -63,14 +63,6 @@ fi
 require_file "$LICENSE_FILE"
 require_file "$NOTICES_FILE"
 require_dir "$LICENSES_DIR"
-require_file "$LICENSES_DIR/Streamdown-FSL-1.1-MIT.txt"
-require_file "$LICENSES_DIR/MarkdownView-MIT.txt"
-require_file "$LICENSES_DIR/swift-markdown-Apache-2.0.txt"
-require_file "$LICENSES_DIR/swift-markdown-NOTICE.txt"
-require_file "$LICENSES_DIR/Highlightr-MIT.txt"
-require_file "$LICENSES_DIR/highlight.js-BSD-3-Clause.txt"
-require_file "$LICENSES_DIR/RichText-MIT.txt"
-require_file "$LICENSES_DIR/swift-cmark-COPYING.txt"
 require_file "$LICENSES_DIR/Sparkle-MIT.txt"
 
 NOTARY_VALUES_SET=0

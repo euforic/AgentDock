@@ -1,5 +1,23 @@
 import Foundation
 
+public struct DesktopInstanceStatusBatch: Equatable, Sendable {
+    public var managedStatuses: [CodexProfile.ID: CodexInstanceStatus]
+    public var officialStatuses: [DesktopProduct: CodexInstanceStatus]
+
+    public init(
+        managedStatuses: [CodexProfile.ID: CodexInstanceStatus] = [:],
+        officialStatuses: [DesktopProduct: CodexInstanceStatus] = [:]
+    ) {
+        self.managedStatuses = managedStatuses
+        self.officialStatuses = officialStatuses
+    }
+}
+
+struct ProviderInstanceStatusBatch: Sendable {
+    var managedStatuses: [CodexProfile.ID: CodexInstanceStatus]
+    var officialStatus: CodexInstanceStatus
+}
+
 public actor DesktopInstanceController {
     private let codexController: CodexInstanceController
     private let claudeController: ClaudeInstanceController
@@ -10,6 +28,43 @@ public actor DesktopInstanceController {
     ) {
         self.codexController = codexController
         self.claudeController = claudeController
+    }
+
+    /// Failed or unselected providers contribute no entries, so callers can
+    /// retain their last successful status independently for each provider.
+    public func statusBatch(
+        for profiles: [CodexProfile],
+        appURLs: [DesktopProduct: URL]
+    ) async -> DesktopInstanceStatusBatch {
+        var result = DesktopInstanceStatusBatch()
+        for product in DesktopProduct.allCases {
+            guard !Task.isCancelled else { return DesktopInstanceStatusBatch() }
+            guard let appURL = appURLs[product] else { continue }
+            let providerProfiles = profiles.filter { $0.product == product }
+            do {
+                let batch: ProviderInstanceStatusBatch
+                switch product {
+                case .codex:
+                    batch = try await codexController.statusBatch(
+                        for: providerProfiles,
+                        codexAppURL: appURL
+                    )
+                case .claude:
+                    batch = try await claudeController.statusBatch(
+                        for: providerProfiles,
+                        appURL: appURL
+                    )
+                }
+                guard !Task.isCancelled else { return DesktopInstanceStatusBatch() }
+                result.managedStatuses.merge(batch.managedStatuses) { _, latest in latest }
+                result.officialStatuses[product] = batch.officialStatus
+            } catch {
+                // A provider inspection failure does not discard another
+                // provider's successful result.
+                continue
+            }
+        }
+        return Task.isCancelled ? DesktopInstanceStatusBatch() : result
     }
 
     public func statuses(

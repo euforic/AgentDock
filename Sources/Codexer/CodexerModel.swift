@@ -93,7 +93,21 @@ final class CodexerModel: ObservableObject {
     private var workspaceNotificationTasks: [Task<Void, Never>] = []
     private var workspaceRefreshTask: Task<Void, Never>?
     private var allowsAutomaticRefresh = false
-    private var isApplicationActive = true
+    private(set) var isApplicationActive = true
+    private var activityMonitor: ApplicationActivityMonitor?
+    private var statusRefreshTask: Task<Void, Never>?
+    private var statusRefreshPending = false
+    private var statusNeedsRefresh = true
+    private var statusGeneration = 0
+    private(set) var lastStatusRefreshAt: Date?
+    private(set) var completedStatusBatches = 0
+    private(set) var lastStatsRefreshAt: Date?
+    private var lastQuotaRefreshAt: Date?
+    private var lastQuotaAttemptAt: Date?
+    private var configDiscoveryTask: Task<Void, Never>?
+    private var configDiscoveryGeneration = 0
+    @Published private(set) var officialCodexConfigProfiles: [CodexConfigProfile] = []
+    @Published private(set) var configProfilesByID: [CodexProfile.ID: [CodexConfigProfile]] = [:]
     private var statsGeneration = 0
     private var rateLimitGeneration = 0
     private var appliedInitialDefaultView = false
@@ -240,6 +254,8 @@ final class CodexerModel: ObservableObject {
         profileActivityRefreshTask?.cancel()
         workspaceNotificationTasks.forEach { $0.cancel() }
         workspaceRefreshTask?.cancel()
+        statusRefreshTask?.cancel()
+        configDiscoveryTask?.cancel()
     }
 
     var codexAppURL: URL {
@@ -401,7 +417,9 @@ final class CodexerModel: ObservableObject {
 
     func reload(refreshData: Bool = true) {
         guard let store else { return }
-        profiles = store.profiles
+        if profiles != store.profiles { profiles = store.profiles }
+        refreshConfigProfiles()
+        resetReminders.configure(sources: resetSources, appURL: codexAppURL)
         installedShortcutProfileIDs = Set(
             profiles.lazy.filter { self.shortcutInstaller.shortcutExists(for: $0) }.map(\.id)
         )
@@ -456,6 +474,7 @@ final class CodexerModel: ObservableObject {
     }
 
     func refreshStats(allowCredentialInteraction: Bool = false) {
+        refreshConfigProfiles()
         refreshStats(for: profiles, replaceAll: true)
         refreshRateLimits(
             for: profiles,
@@ -524,17 +543,19 @@ final class CodexerModel: ObservableObject {
                 worker.cancel()
             }
             guard !Task.isCancelled, let self, self.statsGeneration == generation else { return }
+            self.statsRefreshTask = nil
             self.statsLoadingProfileIDs.subtract(profiles.map(\.id))
             if replaceAll {
                 self.officialStatsLoading = false
             }
             if replaceAll {
-                self.profileStats = results.0
+                self.lastStatsRefreshAt = Date()
+                if self.profileStats != results.0 { self.profileStats = results.0 }
                 if let official = results.1 {
-                    self.officialCodexStats = official
+                    if self.officialCodexStats != official { self.officialCodexStats = official }
                 }
                 if let officialClaude = results.2 {
-                    self.officialClaudeStats = officialClaude
+                    if self.officialClaudeStats != officialClaude { self.officialClaudeStats = officialClaude }
                 }
             } else {
                 self.profileStats.merge(results.0) { _, new in new }
@@ -550,12 +571,12 @@ final class CodexerModel: ObservableObject {
         let profiles = profiles.map(resolvedProfileForLaunch)
         rateLimitRefreshTask?.cancel()
         rateLimitGeneration += 1
+        lastQuotaAttemptAt = Date()
         let generation = rateLimitGeneration
         let client = rateLimitClient
         let claudeClient = claudeUsageClient
         let appURL = codexAppURL
         let officialHomeURL = officialCodexHomeURL
-        let officialClaudeCodeHomeURL = officialClaudeCodeHomeURL
         let officialClaudeUserDataURL = officialClaudeUserDataURL
         let officialConfigProfile = effectiveOfficialCodexConfigProfile
 
@@ -574,7 +595,6 @@ final class CodexerModel: ObservableObject {
             let officialClaudeWorker = Task.detached(priority: .utility) {
                 replaceAll
                     ? await claudeClient.fetchOfficialUsage(
-                        claudeCodeHomeURL: officialClaudeCodeHomeURL,
                         claudeUserDataURL: officialClaudeUserDataURL,
                         allowKeychainInteraction: allowCredentialInteraction,
                         forceRefresh: allowCredentialInteraction
@@ -642,10 +662,15 @@ final class CodexerModel: ObservableObject {
             let (official, officialClaude) = await (officialResult, officialClaudeResult)
 
             guard !Task.isCancelled, let self, self.rateLimitGeneration == generation else { return }
+            self.rateLimitRefreshTask = nil
+            if replaceAll, results.values.allSatisfy({ $0.errorMessage == nil }),
+               official?.errorMessage == nil, officialClaude?.errorMessage == nil {
+                self.lastQuotaRefreshAt = Date()
+            }
             if replaceAll {
-                self.profileRateLimits = results
-                self.officialCodexRateLimits = official
-                self.officialClaudeRateLimits = officialClaude
+                if self.profileRateLimits != results { self.profileRateLimits = results }
+                if self.officialCodexRateLimits != official { self.officialCodexRateLimits = official }
+                if self.officialClaudeRateLimits != officialClaude { self.officialClaudeRateLimits = officialClaude }
             } else {
                 self.profileRateLimits.merge(results) { _, new in new }
             }
@@ -1242,10 +1267,52 @@ final class CodexerModel: ObservableObject {
     func setApplicationActive(_ active: Bool) {
         guard isApplicationActive != active else { return }
         isApplicationActive = active
+        resetReminders.setApplicationActive(active)
         if active, allowsAutomaticRefresh {
-            Task { [weak self] in await self?.refreshInstanceStatuses() }
+            Task { [weak self] in await self?.refreshInstanceStatuses(force: false) }
+            refreshActivityIfStale()
+            refreshConfigProfiles()
         } else if !active {
             workspaceRefreshTask?.cancel()
+            if statusRefreshTask != nil { statusNeedsRefresh = true }
+            statusGeneration += 1
+            statusRefreshTask?.cancel()
+            statusRefreshTask = nil
+            // Automatic reads have no visible consumer while inactive.
+            cancelRefreshes()
+        }
+    }
+
+    func refreshActivityIfStale(now: Date = Date()) {
+        guard isApplicationActive, preferences.refreshProfileActivity, statsRefreshTask == nil, rateLimitRefreshTask == nil else { return }
+        let interval = Double(max(1, preferences.refreshIntervalMinutes) * 60)
+        let statsStale = lastStatsRefreshAt.map { now.timeIntervalSince($0) >= interval } ?? true
+        let quotaStale = lastQuotaRefreshAt.map { now.timeIntervalSince($0) >= interval } ?? true
+        let canRetry = lastQuotaAttemptAt.map { now.timeIntervalSince($0) >= 60 } ?? true
+        if statsStale || (quotaStale && canRetry) { refreshStats() }
+    }
+
+    func refreshConfigProfiles() {
+        configDiscoveryTask?.cancel()
+        configDiscoveryGeneration += 1
+        let generation = configDiscoveryGeneration
+        let home = officialCodexHomeURL
+        let profiles = profiles.filter { $0.product == .codex }
+        configDiscoveryTask = Task { [weak self] in
+            let worker = Task.detached(priority: .utility) {
+                let official = CodexConfigProfile.discover(in: home)
+                var managed: [CodexProfile.ID: [CodexConfigProfile]] = [:]
+                for profile in profiles {
+                    guard !Task.isCancelled else { break }
+                    managed[profile.id] = CodexConfigProfile.discover(in: profile.codexHomePath)
+                }
+                return (official, managed)
+            }
+            let result = await withTaskCancellationHandler { await worker.value } onCancel: { worker.cancel() }
+            guard !Task.isCancelled, let self, self.configDiscoveryGeneration == generation else { return }
+            if self.officialCodexConfigProfiles != result.0 { self.officialCodexConfigProfiles = result.0 }
+            if self.configProfilesByID != result.1 { self.configProfilesByID = result.1 }
+            self.configDiscoveryTask = nil
         }
     }
 
@@ -1254,10 +1321,6 @@ final class CodexerModel: ObservableObject {
         preferences = .defaults
         officialCodexProfileSettings = .defaults
         refreshRateLimits()
-    }
-
-    var officialCodexConfigProfiles: [CodexConfigProfile] {
-        CodexConfigProfile.discover(in: officialCodexHomeURL)
     }
 
     var effectiveOfficialCodexConfigProfile: CodexConfigProfile? {
@@ -1350,7 +1413,7 @@ final class CodexerModel: ObservableObject {
 
     func codexConfigProfiles(for profile: CodexProfile) -> [CodexConfigProfile] {
         guard profile.product == .codex else { return [] }
-        return CodexConfigProfile.discover(in: profile.codexHomePath)
+        return configProfilesByID[profile.id] ?? []
     }
 
     func effectiveCodexConfigProfile(for profile: CodexProfile) -> CodexConfigProfile? {
@@ -1612,12 +1675,15 @@ final class CodexerModel: ObservableObject {
 
     private func startInstanceMonitoring() {
         instanceMonitorTask?.cancel()
+        isApplicationActive = false
+        activityMonitor = ApplicationActivityMonitor { [weak self] in self?.setApplicationActive($0) }
         let center = NSWorkspace.shared.notificationCenter
         workspaceNotificationTasks.forEach { $0.cancel() }
         workspaceNotificationTasks.removeAll()
         for name in [
             NSWorkspace.didLaunchApplicationNotification,
-            NSWorkspace.didTerminateApplicationNotification
+            NSWorkspace.didTerminateApplicationNotification,
+            NSWorkspace.didWakeNotification
         ] {
             workspaceNotificationTasks.append(
                 Task { [weak self] in
@@ -1625,6 +1691,11 @@ final class CodexerModel: ObservableObject {
                         guard !Task.isCancelled else { return }
                         let application = notification.userInfo?[NSWorkspace.applicationUserInfoKey]
                             as? NSRunningApplication
+                        if name == NSWorkspace.didWakeNotification {
+                            self?.scheduleWorkspaceStatusRefresh()
+                            self?.refreshActivityIfStale()
+                            continue
+                        }
                         guard Self.isRelevantWorkspaceBundleIdentifier(
                             application?.bundleIdentifier
                         ) else { continue }
@@ -1637,7 +1708,7 @@ final class CodexerModel: ObservableObject {
             while !Task.isCancelled {
                 guard self != nil else { return }
                 if self?.isApplicationActive == true {
-                    await self?.refreshInstanceStatuses()
+                    await self?.refreshInstanceStatuses(force: false)
                 }
                 do {
                     try await Task.sleep(for: .seconds(60))
@@ -1653,7 +1724,8 @@ final class CodexerModel: ObservableObject {
             || identifier == DesktopAppRegistry.claude.bundleIdentifier
     }
 
-    private func scheduleWorkspaceStatusRefresh() {
+    func scheduleWorkspaceStatusRefresh() {
+        statusNeedsRefresh = true
         guard isApplicationActive else { return }
         workspaceRefreshTask?.cancel()
         workspaceRefreshTask = Task { [weak self] in
@@ -1683,50 +1755,46 @@ final class CodexerModel: ObservableObject {
                     .refresh,
                     [.action(.automaticRefresh), .surface(.overview), .trigger(.automatic), .countBucket(.init(self.profiles.count))]
                 ))
-                self.refreshStats()
+                self.refreshActivityIfStale()
             }
         }
     }
 
-    private func refreshInstanceStatuses() async {
-        let profileSnapshot = profiles
-        let selectedApps = appURLs
-        let controller = instanceController
-        async let profileStatuses = try? controller.statuses(
-            for: profileSnapshot,
-            appURLs: selectedApps
-        )
-        let stockStatuses = await withTaskGroup(
-            of: (DesktopProduct, CodexInstanceStatus?).self,
-            returning: [DesktopProduct: CodexInstanceStatus].self
-        ) { group in
-            for product in DesktopProduct.allCases {
-                let appURL = selectedApps[product]
-                    ?? DesktopAppRegistry.descriptor(for: product).defaultAppURL
-                group.addTask {
-                    let status = try? await controller.stockStatus(
-                        product: product,
-                        appURL: appURL
-                    )
-                    return (product, status)
-                }
-            }
-            var collected = stockInstanceStatuses
-            for await (product, status) in group {
-                if let status {
-                    collected[product] = status
-                }
-            }
-            return collected
+    func refreshInstanceStatuses(force: Bool = true) async {
+        if let existing = statusRefreshTask {
+            if force { statusRefreshPending = true }
+            await existing.value
+            return
         }
-        let statuses = await profileStatuses
-        guard !Task.isCancelled else { return }
-        if let statuses, profileInstanceStatuses != statuses {
-            profileInstanceStatuses = statuses
+        if !force, !statusNeedsRefresh, let lastStatusRefreshAt, Date().timeIntervalSince(lastStatusRefreshAt) < 10 { return }
+        statusGeneration += 1
+        let generation = statusGeneration
+        let task = Task { [weak self] in
+            guard let self else { return }
+            repeat {
+                self.statusRefreshPending = false
+                self.statusNeedsRefresh = false
+                let profileSnapshot = self.profiles
+                let selectedApps = self.appURLs
+                let result = await self.instanceController.statusBatch(for: profileSnapshot, appURLs: selectedApps)
+                guard !Task.isCancelled, self.statusGeneration == generation else { return }
+                // A lifecycle action or selection changed while the batch was reading.
+                if self.statusRefreshPending || self.statusNeedsRefresh || profileSnapshot != self.profiles || selectedApps != self.appURLs { continue }
+                let ids = Set(profileSnapshot.map(\.id))
+                var managed = self.profileInstanceStatuses.filter { ids.contains($0.key) }
+                managed.merge(result.managedStatuses) { _, new in new }
+                var official = self.stockInstanceStatuses
+                official.merge(result.officialStatuses) { _, new in new }
+                if self.profileInstanceStatuses != managed { self.profileInstanceStatuses = managed }
+                if self.stockInstanceStatuses != official { self.stockInstanceStatuses = official }
+                self.completedStatusBatches += 1
+                self.lastStatusRefreshAt = Date()
+                break
+            } while !Task.isCancelled
+            if self.statusGeneration == generation { self.statusRefreshTask = nil }
         }
-        if stockInstanceStatuses != stockStatuses {
-            stockInstanceStatuses = stockStatuses
-        }
+        statusRefreshTask = task
+        await task.value
     }
 
     private func cancelRefreshes() {
@@ -1736,6 +1804,8 @@ final class CodexerModel: ObservableObject {
         rateLimitRefreshTask?.cancel()
         statsRefreshTask = nil
         rateLimitRefreshTask = nil
+        statsLoadingProfileIDs.removeAll()
+        officialStatsLoading = false
     }
 
     nonisolated private static func validatedAppSelections(

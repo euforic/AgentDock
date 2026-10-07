@@ -348,6 +348,7 @@ final class CodexerModelTests: XCTestCase {
             rateLimitClient: FixedRateLimitClient(),
             preferencesStore: preferencesStore
         )
+        await waitUntil { !model.officialCodexConfigProfiles.isEmpty }
         let ollama = try XCTUnwrap(model.officialCodexConfigProfiles.first)
 
         model.openStockCodex()

@@ -53,6 +53,51 @@ final class ProfileStatsScannerTests: XCTestCase {
         XCTAssertLessThan(stats.dataBytes, 8 * 16)
     }
 
+    func testStorageMeasurementReusesTimestampAtOneAndFiveMinutesThenExpires() throws {
+        let profile = CodexProfile(name: "Cached", slug: "cached", rootDirectory: root)
+        try FileManager.default.createDirectory(at: profile.codexHomePath, withIntermediateDirectories: true)
+        let file = profile.codexHomePath.appendingPathComponent("sample.dat")
+        try Data(repeating: 0x61, count: 3).write(to: file)
+        let scanner = ProfileStatsScanner()
+        let now = Date(timeIntervalSince1970: 1_700_000_000)
+        let initial = scanner.stats(for: profile, now: now)
+        try Data(repeating: 0x61, count: 12).write(to: file)
+        for interval in [60.0, 300.0] {
+            let reused = scanner.stats(for: profile, now: now.addingTimeInterval(interval))
+            XCTAssertEqual(reused.dataBytes, 3)
+            XCTAssertEqual(reused.dataSizeMeasuredAt, now)
+        }
+        let refreshed = scanner.stats(for: profile, now: now.addingTimeInterval(600))
+        XCTAssertEqual(initial.dataSizeMeasuredAt, now)
+        XCTAssertEqual(refreshed.dataBytes, 12)
+        XCTAssertEqual(refreshed.dataSizeMeasuredAt, now.addingTimeInterval(600))
+    }
+
+    func testClaudeStatsReportPartialHistoryCoverageAndPreserveModelBudget() throws {
+        let home = root.appendingPathComponent("ClaudeCode")
+        let project = home.appendingPathComponent("projects/-synthetic-project")
+        try FileManager.default.createDirectory(at: project, withIntermediateDirectories: true)
+        let recent = try JSONSerialization.data(withJSONObject: [
+            "display": "Recent", "project": "/synthetic/project", "sessionId": "recent",
+            "timestamp": 1_700_000_000_000
+        ]) + Data([0x0A])
+        try (Data(repeating: 0x78, count: 2_048) + Data([0x0A]) + recent)
+            .write(to: home.appendingPathComponent("history.jsonl"))
+        let body = try JSONSerialization.data(withJSONObject: [
+            "type": "assistant", "message": ["model": "synthetic-model"]
+        ]) + Data([0x0A])
+        try body.write(to: project.appendingPathComponent("recent.jsonl"))
+        let scanner = ProfileStatsScanner(claudeChatScanner: LocalChatScanner(maximumMetadataBytes: 512))
+        let stats = scanner.stats(
+            claudeUserDataURL: root.appendingPathComponent("UserData"),
+            claudeCodeHomeURL: home, dataRootURL: home,
+            now: Date(timeIntervalSince1970: 1_700_000_001)
+        )
+        XCTAssertEqual(stats.totalSessions, 1)
+        XCTAssertEqual(stats.modelUsage.first?.model, "synthetic-model")
+        XCTAssertTrue(stats.errorMessages.contains { $0.contains("coverage is partial") })
+    }
+
     func testStatsSummarizeSessionsTokensJobsAndWeeklyLogs() throws {
         let profile = CodexProfile(name: "Work", slug: "work", rootDirectory: root)
         try FileManager.default.createDirectory(at: profile.codexHomePath, withIntermediateDirectories: true)

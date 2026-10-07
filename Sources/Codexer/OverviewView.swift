@@ -508,6 +508,8 @@ private struct OfficialOverview: View {
             accent: .orange,
             providerName: "Claude"
           )
+          Text("Live limits follow the signed-in Claude Desktop account. Local activity can also include Claude Code sessions from a different login.")
+            .font(.caption).foregroundStyle(.secondary)
           ClaudeUsageCard(
             stats: model.officialClaudeStats,
             loading: model.officialStatsLoading,

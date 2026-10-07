@@ -6,7 +6,6 @@ import Security
 
 public protocol ClaudeUsageFetching: Sendable {
     func fetchOfficialUsage(
-        claudeCodeHomeURL: URL,
         claudeUserDataURL: URL,
         allowKeychainInteraction: Bool,
         forceRefresh: Bool
@@ -60,7 +59,6 @@ public actor ClaudeUsageClient: ClaudeUsageFetching {
     }
 
     public func fetchOfficialUsage(
-        claudeCodeHomeURL: URL,
         claudeUserDataURL: URL,
         allowKeychainInteraction: Bool,
         forceRefresh: Bool = false
@@ -464,7 +462,6 @@ enum ClaudeUsageResponseParser {
 }
 
 struct ClaudeCredentialReader {
-    private static let codeService = "Claude Code-credentials"
     private static let safeStorageService = "Claude Safe Storage"
     private static let safeStorageAccount = "Claude Key"
     private static let cacheKeys = ["oauth:tokenCacheV2", "oauth:tokenCache"]
@@ -475,29 +472,6 @@ struct ClaudeCredentialReader {
 
     init(keychain: SecKeychain? = nil) {
         self.keychain = keychain
-    }
-
-    func readCodeCredential(homeURL: URL, allowKeychainInteraction: Bool) -> ClaudeUsageCredential? {
-        let identity = codeIdentity(homeURL: homeURL)
-        if let text = readKeychainPassword(
-            service: Self.codeService,
-            account: NSUserName(),
-            allowKeychainInteraction: allowKeychainInteraction
-        ) ?? readKeychainPassword(
-            service: Self.codeService,
-            account: nil,
-            allowKeychainInteraction: allowKeychainInteraction
-        ),
-           let credential = parseCredential(text, identity: identity)
-        {
-            return credential
-        }
-        let file = homeURL.appendingPathComponent(".credentials.json")
-        guard let text = try? BoundedFileReader.string(
-            at: file,
-            maximumBytes: LocalControlFileLimit.providerCredentialState
-        ) else { return nil }
-        return parseCredential(text, identity: identity)
     }
 
     mutating func readDesktopCredential(
@@ -539,41 +513,6 @@ struct ClaudeCredentialReader {
             return credential
         }
         return nil
-    }
-
-    private func parseCredential(
-        _ text: String,
-        identity: ClaudeAccountIdentity?
-    ) -> ClaudeUsageCredential? {
-        guard let data = text.data(using: .utf8),
-              let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let oauth = root["claudeAiOauth"] as? [String: Any],
-              let token = nonempty(oauth["accessToken"] as? String)
-        else { return nil }
-        return ClaudeUsageCredential(
-            accessToken: token,
-            expiresAt: number(oauth["expiresAt"]),
-            subscriptionType: nonempty(oauth["subscriptionType"] as? String),
-            scopes: Set((oauth["scopes"] as? [String]) ?? []),
-            identity: identity
-        )
-    }
-
-    private func codeIdentity(homeURL: URL) -> ClaudeAccountIdentity? {
-        let stateURL = homeURL.deletingLastPathComponent().appendingPathComponent(".claude.json")
-        guard let data = try? BoundedFileReader.data(
-                  at: stateURL,
-                  maximumBytes: LocalControlFileLimit.providerCredentialState
-              ),
-              let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let account = root["oauthAccount"] as? [String: Any],
-              let accountUUID = nonempty(account["accountUuid"] as? String),
-              let organizationUUID = nonempty(account["organizationUuid"] as? String)
-        else { return nil }
-        return ClaudeAccountIdentity(
-            accountUUID: accountUUID.lowercased(),
-            organizationUUID: organizationUUID.lowercased()
-        )
     }
 
     private func selectDesktopCredential(

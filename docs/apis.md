@@ -17,6 +17,20 @@ formats, and release scripts.
 The two library products are integration surfaces inside this repository. They
 do not carry a semantic-versioning compatibility promise independent of the app.
 
+`DesktopInstanceController.statusBatch(for:appURLs:)` inspects managed and
+official instances together. Each available selected provider captures one
+bounded process snapshot. A missing or nonexecutable Codex app returns stopped
+statuses without inspecting processes. Claude's strict app signature and startup-contract checks
+run once per batch, and each candidate main process still requires its dynamic
+publisher identity check. Validation is repeated on the next batch; no bundle
+modification-time cache replaces signature or contract validation.
+
+An unselected or failed provider contributes no entries. Callers retain the
+last successful status for that provider and remove entries for deleted
+profiles. A cancelled batch returns no entries, and callers must check task
+cancellation before applying results. Individual managed and official status
+APIs remain available for lifecycle operations.
+
 ## Provider Launch Contracts
 
 Codex profiles use:

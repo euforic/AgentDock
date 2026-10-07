@@ -17,6 +17,9 @@ implementation, contribution, and operations details needed for focused work.
   and local acceptance boundaries.
 - [Banked reset reminders](reset-reminders.md): inventory, native expiration alerts,
   snoozing, freshness, and validation.
+- [Resource usage readers](resource-usage-readers.md): bounded histories, partial coverage, and storage freshness.
+- [Resource usage QA](resource-usage-qa.md): finding dispositions, validation,
+  sequential measurements, and remaining runtime acceptance gates.
 - [Development and testing](development.md): local setup, commands, validation,
   and opt-in installed-app checks.
 - [Release operations](operations.md): packaging, signing, notarization,

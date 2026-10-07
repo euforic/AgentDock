@@ -20,6 +20,7 @@ public protocol CodexInstanceManaging: Sendable {
 extension CodexInstanceController: CodexInstanceManaging {}
 
 public protocol DesktopInstanceManaging: Sendable {
+    func statusBatch(for profiles: [CodexProfile], appURLs: [DesktopProduct: URL]) async -> DesktopInstanceStatusBatch
     func statuses(
         for profiles: [CodexProfile],
         appURLs: [DesktopProduct: URL]
@@ -38,6 +39,18 @@ public protocol DesktopInstanceManaging: Sendable {
     ) async throws -> CodexOpenOutcome
     func closeOfficialCodex(appURL: URL) async throws -> CodexCloseOutcome
     func validateApp(product: DesktopProduct, at url: URL) async throws
+}
+
+public extension DesktopInstanceManaging {
+    func statusBatch(for profiles: [CodexProfile], appURLs: [DesktopProduct: URL]) async -> DesktopInstanceStatusBatch {
+        let managed = (try? await statuses(for: profiles, appURLs: appURLs)) ?? [:]
+        var official: [DesktopProduct: CodexInstanceStatus] = [:]
+        for (product, url) in appURLs {
+            guard !Task.isCancelled else { return DesktopInstanceStatusBatch() }
+            official[product] = try? await stockStatus(product: product, appURL: url)
+        }
+        return DesktopInstanceStatusBatch(managedStatuses: managed, officialStatuses: official)
+    }
 }
 
 extension DesktopInstanceController: DesktopInstanceManaging {}

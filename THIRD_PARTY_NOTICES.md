@@ -1,8 +1,18 @@
 # Third-Party Notices
 
-AgentDock includes or links the following third-party components. Release app
-bundles include the complete license texts under
+The AgentDock app includes Sparkle. Release app bundles include its complete
+license text under
 `AgentDock.app/Contents/Resources/Licenses/`.
+
+| Component | Version | License |
+| --- | --- | --- |
+| [Sparkle](https://github.com/sparkle-project/Sparkle) | 2.9.6 | MIT |
+
+The separate TranscriptRenderer library and TranscriptRendererShowcase executable
+use the following components. They are not linked into the AgentDock app or
+shortcut launcher and their license texts are not included in the app bundle.
+When distributing either renderer product, include the complete license and
+notice texts from the vendored subset and its resolved dependency checkouts.
 
 | Component | Version | License |
 | --- | --- | --- |
@@ -13,7 +23,6 @@ bundles include the complete license texts under
 | [highlight.js](https://github.com/highlightjs/highlight.js) | 11.11.1 | BSD 3-Clause |
 | [RichText](https://github.com/LiYanan2004/RichText) | 1.0.0 | MIT |
 | [swift-cmark](https://github.com/swiftlang/swift-cmark) | 0.8.0 | BSD-style and embedded component notices |
-| [Sparkle](https://github.com/sparkle-project/Sparkle) | 2.9.6 | MIT |
 
 Dependency versions are pinned in [Package.resolved](Package.resolved). This
 file is informational and does not replace the complete license texts.

@@ -191,7 +191,9 @@ AgentDock is licensed under the
 becomes effective on July 29, 2028. Until then, the FSL permitted-purpose and
 competing-use restrictions apply.
 
-The vendored Streamdown subset retains its own FSL-1.1-MIT license and its
+The separate TranscriptRenderer library and showcase use the vendored Streamdown
+subset, which retains its own FSL-1.1-MIT license and its
 separate March 16, 2028 MIT grant date in
 [`Vendor/streamdown-swift/LICENSE`](Vendor/streamdown-swift/LICENSE).
-See [Third-party notices](THIRD_PARTY_NOTICES.md) for dependency licenses.
+Those renderer dependencies are not included in the AgentDock app bundle.
+See [Third-party notices](THIRD_PARTY_NOTICES.md) for app and renderer dependency licenses.

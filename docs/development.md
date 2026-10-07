@@ -183,3 +183,34 @@ that interaction is expected.
 See [Contributing](../CONTRIBUTING.md) for the pull-request workflow.
 Release builds use [build_app.sh](../script/build_app.sh) and
 [package_app.sh](../script/package_app.sh).
+
+## Resource measurements
+
+Run sequential production-reader measurements on the same Mac, retaining JSON
+output outside the repository:
+
+```bash
+./script/benchmark_resources.sh 0acab4c /tmp/agentdock-resource-results
+AGENTDOCK_BENCHMARK_LIVE_QUOTA=1 ./script/benchmark_resources.sh 0acab4c /tmp/agentdock-resource-live-results
+```
+
+The opt-in command reads the official signed-in native account but prints only
+success counts and resource counters. It never records account identity, quota
+amounts, credentials, or provider content. Both runs use the same installed
+provider processes. Keep those processes and their workload stable. The runner
+compiles optimized baseline and current readers, adds identical count-only
+instrumentation to temporary copies, and runs baseline then candidate three
+times. It reports wall and CPU time, child CPU, physical footprint, interrupt
+and package-idle wakeups, disk I/O, actual child launches, and validation calls.
+Per-process disk counters can stay zero when filesystem data is cached; they
+do not count every file metadata lookup. Network byte counters are not available
+in this harness. These are reader measurements, not app idle or thermal proof.
+
+A self-contained native SwiftUI probe exercises activation, multiple windows,
+closing/reopening all windows, and rapid hide/return transitions. Compile
+`script/probe_application_lifecycle.swift` with
+`Sources/Codexer/ApplicationActivityMonitor.swift` and run it in a temporary
+application bundle. Its JSON trace contains only lifecycle booleans and window
+counts, comparing the original scene callback gate with the current app-level
+monitor. It does not access provider data. Native notification presentation,
+actual sleep/wake, and sustained app idle measurements remain separate gates.

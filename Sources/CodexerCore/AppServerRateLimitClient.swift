@@ -1,4 +1,5 @@
 import Foundation
+import Darwin
 
 public final class AppServerRateLimitClient: @unchecked Sendable {
     private let executableOverride: URL?
@@ -33,22 +34,73 @@ public final class AppServerRateLimitClient: @unchecked Sendable {
 
     public func fetchRateLimits(codexHomeURL: URL, codexAppURL: URL,
                                includeAccountDetails: Bool) -> ProfileRateLimits {
+        fetchRateLimitsBatch(codexHomeURLs: [codexHomeURL], codexAppURL: codexAppURL,
+            includeAccountDetails: includeAccountDetails)[codexHomeURL]
+            ?? ProfileRateLimits(errorMessage: "Usage-limit refresh was cancelled.")
+    }
+
+    /// The validated executable is scoped to this bounded batch, never cached as trust.
+    public func fetchRateLimitsBatch(codexHomeURLs: [URL], codexAppURL: URL,
+                                    includeAccountDetails: Bool = true) -> [URL: ProfileRateLimits] {
+        guard !Task.isCancelled else { return [:] }
+        let homes = Array(Set(codexHomeURLs)).sorted { $0.path < $1.path }
+        guard !homes.isEmpty else { return [:] }
+        let executable = executableOverride ?? CodexBundledCLI.executableURL(for: codexAppURL)
+        let identity = executableOverride == nil ? batchIdentity(app: codexAppURL, executable: executable) : nil
         if executableOverride == nil {
-            do {
-                try appValidator.validateCodexApp(at: codexAppURL)
-            } catch {
-                return ProfileRateLimits(
-                    errorMessage: (error as? LocalizedError)?.errorDescription
-                        ?? error.localizedDescription
-                )
+            do { try appValidator.validateCodexApp(at: codexAppURL) }
+            catch {
+                let failure = ProfileRateLimits(errorMessage:
+                    (error as? LocalizedError)?.errorDescription ?? error.localizedDescription)
+                return Dictionary(uniqueKeysWithValues: homes.map { ($0, failure) })
             }
         }
-        let codexExecutable = executableOverride
-            ?? CodexBundledCLI.executableURL(for: codexAppURL)
-        guard FileManager.default.isExecutableFile(atPath: codexExecutable.path) else {
-            return ProfileRateLimits(errorMessage: "Codex app-server executable was not found at \(codexExecutable.path).")
+        guard identity == nil || identity == batchIdentity(app: codexAppURL, executable: executable) else {
+            return Dictionary(uniqueKeysWithValues: homes.map {
+                ($0, ProfileRateLimits(errorMessage: "The installed app changed during validation."))
+            })
         }
+        guard FileManager.default.isExecutableFile(atPath: executable.path) else {
+            return Dictionary(uniqueKeysWithValues: homes.map {
+                ($0, ProfileRateLimits(errorMessage: "Codex app-server executable was not found."))
+            })
+        }
+        var results: [URL: ProfileRateLimits] = [:]
+        for home in homes {
+            guard !Task.isCancelled else { break }
+            guard identity == nil || identity == batchIdentity(app: codexAppURL, executable: executable) else {
+                results[home] = ProfileRateLimits(errorMessage: "The installed app changed during the refresh.")
+                continue
+            }
+            let value = fetchValidatedRateLimits(codexHomeURL: home,
+                executable: executable, includeAccountDetails: includeAccountDetails)
+            results[home] = Task.isCancelled || identity == nil || identity == batchIdentity(app: codexAppURL, executable: executable)
+                ? value : ProfileRateLimits(errorMessage: "The installed app changed during the refresh.")
+        }
+        return results
+    }
 
+    private func batchIdentity(app: URL, executable: URL) -> [String] {
+        var paths = [app, app.appendingPathComponent("Contents"), app.appendingPathComponent("Contents/Resources"),
+            app.appendingPathComponent("Contents/MacOS/Codex"),
+            app.appendingPathComponent("Contents/_CodeSignature/CodeResources"),
+            app.appendingPathComponent("Contents/Resources/app.asar"), executable,
+            executable.deletingLastPathComponent(), executable.deletingLastPathComponent().deletingLastPathComponent(),
+            executable.deletingLastPathComponent().deletingLastPathComponent().appendingPathComponent("_CodeSignature/CodeResources")]
+        var parent = executable.deletingLastPathComponent()
+        while parent.path.hasPrefix(app.path + "/"), parent != app {
+            paths.append(parent)
+            parent.deleteLastPathComponent()
+        }
+        return paths.map { path in
+            var value = stat()
+            guard lstat(path.path, &value) == 0 else { return "missing:\(errno)" }
+            return "\(value.st_dev):\(value.st_ino):\(value.st_mode):\(value.st_size):\(value.st_mtimespec.tv_sec):\(value.st_mtimespec.tv_nsec):\(value.st_ctimespec.tv_sec):\(value.st_ctimespec.tv_nsec)"
+        }
+    }
+
+    private func fetchValidatedRateLimits(codexHomeURL: URL, executable codexExecutable: URL,
+                                         includeAccountDetails: Bool) -> ProfileRateLimits {
         let environment = Self.launchEnvironment(
             codexHomeURL: codexHomeURL,
             codexExecutable: codexExecutable,

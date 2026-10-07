@@ -883,7 +883,44 @@ public actor CodexInstanceController {
         for profiles: [CodexProfile],
         codexAppURL: URL
     ) throws -> [CodexProfile.ID: CodexInstanceStatus] {
+        try Task.checkCancellation()
+        guard !profiles.isEmpty else { return [:] }
         let snapshot = try processSnapshotProvider.processSnapshot()
+        try Task.checkCancellation()
+        return statuses(for: profiles, codexAppURL: codexAppURL, snapshot: snapshot)
+    }
+
+    func statusBatch(
+        for profiles: [CodexProfile],
+        codexAppURL: URL
+    ) throws -> ProviderInstanceStatusBatch {
+        try Task.checkCancellation()
+        let executableURL = IsolatedCodexLaunchConfiguration.appExecutableURL(for: codexAppURL)
+        var isDirectory: ObjCBool = false
+        guard fileManager.fileExists(atPath: executableURL.path, isDirectory: &isDirectory),
+              !isDirectory.boolValue,
+              fileManager.isExecutableFile(atPath: executableURL.path)
+        else {
+            return ProviderInstanceStatusBatch(
+                managedStatuses: Dictionary(uniqueKeysWithValues: profiles.map {
+                    ($0.id, CodexInstanceStatus())
+                }),
+                officialStatus: CodexInstanceStatus()
+            )
+        }
+        let snapshot = try processSnapshotProvider.processSnapshot()
+        try Task.checkCancellation()
+        return ProviderInstanceStatusBatch(
+            managedStatuses: statuses(for: profiles, codexAppURL: codexAppURL, snapshot: snapshot),
+            officialStatus: stockStatus(codexAppURL: codexAppURL, snapshot: snapshot)
+        )
+    }
+
+    private func statuses(
+        for profiles: [CodexProfile],
+        codexAppURL: URL,
+        snapshot: String
+    ) -> [CodexProfile.ID: CodexInstanceStatus] {
         let appExecutableURL = IsolatedCodexLaunchConfiguration.appExecutableURL(
             for: codexAppURL
         )
@@ -906,7 +943,13 @@ public actor CodexInstanceController {
     }
 
     public func stockStatus(codexAppURL: URL) throws -> CodexInstanceStatus {
+        try Task.checkCancellation()
         let snapshot = try processSnapshotProvider.processSnapshot()
+        try Task.checkCancellation()
+        return stockStatus(codexAppURL: codexAppURL, snapshot: snapshot)
+    }
+
+    private func stockStatus(codexAppURL: URL, snapshot: String) -> CodexInstanceStatus {
         return CodexInstanceStatus(
             processIDs: CodexInstanceDiscovery.stockProcessIDs(
                 in: snapshot,

@@ -9,36 +9,76 @@ public enum LocalChatAvailability: Equatable, Sendable {
 private struct ClaudeUsageSummary: Sendable {
     let totalTokens: Int
     let latestUsageLimit: UsageLimitSignal?
+    let isPartial: Bool
+}
+
+private struct LocalFileSignature: Equatable {
+    let device: UInt64
+    let inode: UInt64
+    let size: Int64
+    let modifiedSeconds: Int
+    let modifiedNanoseconds: Int
+    let changedSeconds: Int
+    let changedNanoseconds: Int
 }
 
 private final class ClaudeUsageCache: @unchecked Sendable {
     private struct Entry {
-        let size: UInt64
-        let modifiedAt: Date
+        let signature: LocalFileSignature
         let summary: ClaudeUsageSummary
+        var previous: String?
+        var next: String?
     }
 
     private let lock = NSLock()
+    private let capacity: Int
     private var entries: [String: Entry] = [:]
+    private var oldest: String?
+    private var newest: String?
 
-    func value(for path: String, size: UInt64, modifiedAt: Date) -> ClaudeUsageSummary? {
+    init(capacity: Int) { self.capacity = max(1, capacity) }
+
+    func value(for path: String, signature: LocalFileSignature) -> ClaudeUsageSummary? {
         lock.lock()
         defer { lock.unlock() }
-        guard let entry = entries[path], entry.size == size,
-              abs(entry.modifiedAt.timeIntervalSince(modifiedAt)) < 0.002
-        else {
-            return nil
-        }
+        guard let entry = entries[path], entry.signature == signature
+        else { return nil }
+        moveToNewest(path)
         return entry.summary
     }
 
-    func store(_ summary: ClaudeUsageSummary, for path: String, size: UInt64, modifiedAt: Date) {
+    func store(_ summary: ClaudeUsageSummary, for path: String, signature: LocalFileSignature) {
         lock.lock()
         defer { lock.unlock() }
-        if entries.count >= 10_000, entries[path] == nil {
-            entries.removeAll(keepingCapacity: true)
-        }
-        entries[path] = Entry(size: size, modifiedAt: modifiedAt, summary: summary)
+        if entries[path] != nil { remove(path) }
+        if entries.count >= capacity, let oldest { remove(oldest) }
+        entries[path] = Entry(
+            signature: signature, summary: summary,
+            previous: newest, next: nil
+        )
+        if let newest { entries[newest]?.next = path }
+        else { oldest = path }
+        newest = path
+    }
+
+    private func moveToNewest(_ path: String) {
+        guard newest != path, let entry = entries[path] else { return }
+        remove(path)
+        entries[path] = Entry(
+            signature: entry.signature, summary: entry.summary,
+            previous: newest, next: nil
+        )
+        if let newest { entries[newest]?.next = path }
+        else { oldest = path }
+        newest = path
+    }
+
+    private func remove(_ path: String) {
+        guard let entry = entries.removeValue(forKey: path) else { return }
+        if let previous = entry.previous { entries[previous]?.next = entry.next }
+        else { oldest = entry.next }
+        if let next = entry.next { entries[next]?.previous = entry.previous }
+        else { newest = entry.previous }
     }
 }
 
@@ -271,19 +311,22 @@ public struct LocalChatScanDiagnostics: Equatable, Sendable {
     public let sourceFileCount: Int
     public let usedDatabase: Bool
     public let inventoryTruncated: Bool
+    public let inspectedHistoryBytes: Int
 
     public init(
         cacheHitCount: Int = 0,
         parsedFileCount: Int = 0,
         sourceFileCount: Int = 0,
         usedDatabase: Bool = false,
-        inventoryTruncated: Bool = false
+        inventoryTruncated: Bool = false,
+        inspectedHistoryBytes: Int = 0
     ) {
         self.cacheHitCount = cacheHitCount
         self.parsedFileCount = parsedFileCount
         self.sourceFileCount = sourceFileCount
         self.usedDatabase = usedDatabase
         self.inventoryTruncated = inventoryTruncated
+        self.inspectedHistoryBytes = inspectedHistoryBytes
     }
 }
 
@@ -322,6 +365,7 @@ public struct LocalChatScanner: @unchecked Sendable {
     private let maximumClaudeUsageBytes: Int
     private let indexRootURL: URL
     private let claudeUsageCache: ClaudeUsageCache
+    private let claudeHistoryCache = ClaudeHistoryCache()
 
     public init(
         fileManager: FileManager = .default,
@@ -333,6 +377,7 @@ public struct LocalChatScanner: @unchecked Sendable {
         maximumInventoryFiles: Int? = nil,
         maximumMetadataBytes: Int = 16 * 1_024 * 1_024,
         maximumClaudeUsageBytes: Int = 512 * 1_024 * 1_024,
+        maximumClaudeUsageCacheEntries: Int = 10_000,
         indexRootURL: URL? = nil
     ) {
         self.fileManager = fileManager
@@ -351,7 +396,15 @@ public struct LocalChatScanner: @unchecked Sendable {
         self.indexRootURL = indexRootURL
             ?? fileManager.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
                 .appendingPathComponent("AgentDock/ChatIndexes", isDirectory: true)
-        claudeUsageCache = ClaudeUsageCache()
+        claudeUsageCache = ClaudeUsageCache(capacity: maximumClaudeUsageCacheEntries)
+    }
+
+    func scanForStats(profile: CodexProfile) -> LocalChatScanResult {
+        guard profile.product == .claude else { return scan(profile: profile) }
+        return scanClaudeUserData(
+            userDataURL: profile.claudeUserDataPath,
+            profileID: profile.id, profileName: profile.name, forStats: true
+        )
     }
 
     public func scan(profile: CodexProfile) -> LocalChatScanResult {
@@ -383,17 +436,28 @@ public struct LocalChatScanner: @unchecked Sendable {
         claudeHomeURL: URL,
         claudeCodeHomeURL: URL? = nil
     ) -> LocalChatScanResult {
+        scanOfficialClaude(claudeHomeURL: claudeHomeURL, claudeCodeHomeURL: claudeCodeHomeURL, forStats: false)
+    }
+
+    func scanOfficialClaudeForStats(claudeHomeURL: URL, claudeCodeHomeURL: URL) -> LocalChatScanResult {
+        scanOfficialClaude(claudeHomeURL: claudeHomeURL, claudeCodeHomeURL: claudeCodeHomeURL, forStats: true)
+    }
+
+    private func scanOfficialClaude(
+        claudeHomeURL: URL, claudeCodeHomeURL: URL?, forStats: Bool
+    ) -> LocalChatScanResult {
         let primary = scanClaudeUserData(
             userDataURL: claudeHomeURL,
             profileID: nil,
-            profileName: "Official Claude"
+            profileName: "Official Claude",
+            forStats: forStats
         )
         let fallbackRoot = claudeCodeHomeURL
             ?? (fileManager.fileExists(
                 atPath: claudeHomeURL.appendingPathComponent("history.jsonl").path
             ) ? claudeHomeURL : nil)
         guard let fallbackRoot, !Task.isCancelled else { return primary }
-        let fallback = scanClaudeCode(claudeHomeURL: fallbackRoot)
+        let fallback = scanClaudeCode(claudeHomeURL: fallbackRoot, forStats: forStats)
         let sorted = (primary.sessions + fallback.sessions).sorted {
             if $0.updatedAt == $1.updatedAt { return $0.id > $1.id }
             return $0.updatedAt > $1.updatedAt
@@ -403,14 +467,16 @@ public struct LocalChatScanner: @unchecked Sendable {
         return .init(
             availability: .available,
             sessions: Array(sessions.prefix(maximumSessions)),
-            changeToken: "\(primary.changeToken):\(fallback.changeToken)",
+            changeToken: forStats ? "" : "\(primary.changeToken):\(fallback.changeToken)",
             diagnostics: .init(
+                cacheHitCount: primary.diagnostics.cacheHitCount + fallback.diagnostics.cacheHitCount,
                 parsedFileCount: primary.diagnostics.parsedFileCount
                     + fallback.diagnostics.parsedFileCount,
                 sourceFileCount: primary.diagnostics.sourceFileCount
                     + fallback.diagnostics.sourceFileCount,
                 inventoryTruncated: primary.diagnostics.inventoryTruncated
-                    || fallback.diagnostics.inventoryTruncated
+                    || fallback.diagnostics.inventoryTruncated || sessions.count > maximumSessions,
+                inspectedHistoryBytes: fallback.diagnostics.inspectedHistoryBytes
             )
         )
     }
@@ -749,9 +815,10 @@ public struct LocalChatScanner: @unchecked Sendable {
     private func scanClaudeUserData(
         userDataURL: URL,
         profileID: CodexProfile.ID?,
-        profileName: String
+        profileName: String,
+        forStats: Bool = false
     ) -> LocalChatScanResult {
-        let inventory = claudeUserDataInventory(userDataURL: userDataURL)
+        let inventory = claudeUserDataInventory(userDataURL: userDataURL, forStats: forStats)
         guard !Task.isCancelled else {
             return .init(
                 availability: .available,
@@ -785,14 +852,17 @@ public struct LocalChatScanner: @unchecked Sendable {
             },
             changeToken: inventory.changeToken,
             diagnostics: .init(
-                parsedFileCount: inventory.records.count,
-                sourceFileCount: inventory.records.count
+                cacheHitCount: inventory.cacheHits,
+                parsedFileCount: inventory.records.count - inventory.cacheHits,
+                sourceFileCount: inventory.records.count,
+                inventoryTruncated: inventory.truncated
             )
         )
     }
 
-    private func claudeUserDataInventory(userDataURL: URL) -> ClaudeUserDataInventory {
-        let candidates = claudeMetadataCandidates(userDataURL: userDataURL).sorted {
+    private func claudeUserDataInventory(userDataURL: URL, forStats: Bool = false) -> ClaudeUserDataInventory {
+        let metadataInventory = claudeMetadataCandidates(userDataURL: userDataURL)
+        let candidates = metadataInventory.candidates.sorted {
             if $0.modifiedAt == $1.modifiedAt { return $0.relativePath < $1.relativePath }
             return $0.modifiedAt > $1.modifiedAt
         }
@@ -800,16 +870,20 @@ public struct LocalChatScanner: @unchecked Sendable {
         var tokenParts: [String] = []
         var metadataBytes = 0
         var remainingUsageBytes = maximumClaudeUsageBytes
+        var cacheHits = 0
+        var truncated = metadataInventory.truncated
         for candidate in candidates {
             guard !Task.isCancelled else { break }
-            tokenParts.append(
-                "\(candidate.relativePath)|\(candidate.fileSize)|\(candidate.modifiedAt.timeIntervalSince1970)"
-            )
+            if !forStats {
+                tokenParts.append(
+                    "\(candidate.relativePath)|\(candidate.fileSize)|\(candidate.modifiedAt.timeIntervalSince1970)"
+                )
+            }
             let source = claudeAuditSourceFile(
                 userDataURL: userDataURL,
                 relativeMetadataPath: candidate.relativePath
             )
-            if let source {
+            if !forStats, let source {
                 tokenParts.append(
                     "\(source.relativePath)|\(source.fileSize)|\(source.modifiedAt.timeIntervalSince1970)"
                 )
@@ -819,6 +893,7 @@ public struct LocalChatScanner: @unchecked Sendable {
                 metadataBytes <= maximumMetadataBytes - candidate.fileSize,
                 let source
             else {
+                truncated = true
                 continue
             }
             metadataBytes += candidate.fileSize
@@ -834,6 +909,7 @@ public struct LocalChatScanner: @unchecked Sendable {
                 ),
                 let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
             else {
+                truncated = true
                 continue
             }
             let rawID = (object["sessionId"] as? String)
@@ -843,26 +919,26 @@ public struct LocalChatScanner: @unchecked Sendable {
                 rawID: rawID,
                 relativePath: candidate.relativePath
             )
-            let titleText = Self.cleanTranscriptText(object["title"] as? String ?? "")
-            let prompt = Self.cleanTranscriptText(object["promptSuggestion"] as? String ?? "")
+            let titleText = forStats ? "" : Self.cleanTranscriptText(object["title"] as? String ?? "")
+            let prompt = forStats ? "" : Self.cleanTranscriptText(object["promptSuggestion"] as? String ?? "")
             let createdAt = Self.claudeDate(object["createdAt"]) ?? source.modifiedAt
             let updatedAt = Self.claudeDate(object["lastActivityAt"])
                 ?? Self.claudeDate(object["lastFocusedAt"])
                 ?? source.modifiedAt
             let cwd = (object["cwd"] as? String) ?? (object["originCwd"] as? String)
-            let usage: ClaudeUsageSummary?
-            if source.fileSize <= UInt64(remainingUsageBytes) {
-                remainingUsageBytes -= Int(source.fileSize)
-                usage = claudeUsageSummary(at: source, under: userDataURL)
-            } else {
-                usage = nil
-            }
+            let usageResult = claudeUsageSummary(
+                at: source, under: userDataURL, maximumBytes: remainingUsageBytes
+            )
+            let usage = usageResult.summary
+            if usageResult.cacheHit { cacheHits += 1 }
+            else if usage != nil { remainingUsageBytes -= Int(source.fileSize) }
+            if usage == nil || usage?.isPartial == true { truncated = true }
             records.append(.init(
                 id: id,
-                title: Self.title(from: titleText.isEmpty ? prompt : titleText),
-                preview: Self.preview(from: prompt.isEmpty ? titleText : prompt),
+                title: forStats ? "" : Self.title(from: titleText.isEmpty ? prompt : titleText),
+                preview: forStats ? nil : Self.preview(from: prompt.isEmpty ? titleText : prompt),
                 model: Self.cleanMetadata(object["model"] as? String),
-                repository: Self.safeLastPathComponent(cwd),
+                repository: forStats ? nil : Self.safeLastPathComponent(cwd),
                 startedAt: createdAt,
                 updatedAt: max(createdAt, updatedAt),
                 tokenCount: usage?.totalTokens,
@@ -879,12 +955,14 @@ public struct LocalChatScanner: @unchecked Sendable {
                 : String(
                     Self.fnv1a64(tokenParts.sorted().joined(separator: "\n")),
                     radix: 16
-                )
+                ),
+            cacheHits: min(cacheHits, bounded.count),
+            truncated: truncated || records.count > maximumSessions || Task.isCancelled
         )
     }
 
     private func claudeUserDataChangeToken(userDataURL: URL) -> String {
-        let candidates = claudeMetadataCandidates(userDataURL: userDataURL)
+        let candidates = claudeMetadataCandidates(userDataURL: userDataURL).candidates
         var tokenParts: [String] = []
         tokenParts.reserveCapacity(min(maximumInventoryFiles * 2, 20_000))
         for candidate in candidates {
@@ -905,7 +983,7 @@ public struct LocalChatScanner: @unchecked Sendable {
         return String(Self.fnv1a64(tokenParts.sorted().joined(separator: "\n")), radix: 16)
     }
 
-    private func claudeMetadataCandidates(userDataURL: URL) -> [ClaudeMetadataCandidate] {
+    private func claudeMetadataCandidates(userDataURL: URL) -> (candidates: [ClaudeMetadataCandidate], truncated: Bool) {
         let metadataRoot = userDataURL
             .appendingPathComponent("claude-code-sessions", isDirectory: true)
             .resolvingSymlinksInPath()
@@ -918,12 +996,16 @@ public struct LocalChatScanner: @unchecked Sendable {
             ],
             options: [.skipsHiddenFiles, .skipsPackageDescendants]
         ) else {
-            return []
+            return ([], false)
         }
         var candidates: [ClaudeMetadataCandidate] = []
         var inspectedEntries = 0
+        var truncated = false
         for case let url as URL in enumerator {
-            guard !Task.isCancelled, inspectedEntries < maximumInventoryFiles else { break }
+            guard !Task.isCancelled, inspectedEntries < maximumInventoryFiles else {
+                truncated = true
+                break
+            }
             inspectedEntries += 1
             guard
                 url.pathExtension == "json",
@@ -944,7 +1026,7 @@ public struct LocalChatScanner: @unchecked Sendable {
                 modifiedAt: safe.modifiedAt
             ))
         }
-        return candidates
+        return (candidates, truncated)
     }
 
     private func claudeAuditSourceFile(
@@ -983,19 +1065,21 @@ public struct LocalChatScanner: @unchecked Sendable {
 
     private func claudeUsageSummary(
         at source: SourceFile,
-        under root: URL
-    ) -> ClaudeUsageSummary? {
-        if let cached = claudeUsageCache.value(
-            for: source.url.path,
-            size: source.fileSize,
-            modifiedAt: source.modifiedAt
-        ) {
-            return cached
+        under root: URL,
+        maximumBytes: Int
+    ) -> (summary: ClaudeUsageSummary?, cacheHit: Bool) {
+        guard let signature = fileSignature(at: source.url),
+              signature.size == Int64(clamping: source.fileSize)
+        else { return (nil, false) }
+        if let cached = claudeUsageCache.value(for: source.url.path, signature: signature) {
+            return (cached, true)
         }
 
+        guard source.fileSize <= UInt64(maximumBytes) else { return (nil, false) }
         var totalTokens = 0
         var seenMessageRequests: Set<String> = []
         var latestUsageLimit: UsageLimitSignal?
+        var unreadableUsage = false
         let usageMarker = Data(#""usage""#.utf8)
         let rateLimitMarker = Data(#""rate_limit_event""#.utf8)
         let readResult = forEachForwardLine(
@@ -1012,6 +1096,7 @@ public struct LocalChatScanner: @unchecked Sendable {
                 let object = try? JSONSerialization.jsonObject(with: line) as? [String: Any],
                 let type = object["type"] as? String
             else {
+                unreadableUsage = true
                 return true
             }
 
@@ -1067,18 +1152,17 @@ public struct LocalChatScanner: @unchecked Sendable {
             }
             return true
         }
-        guard readResult.completed, !Task.isCancelled else { return nil }
+        guard readResult.completed, !Task.isCancelled else { return (nil, false) }
+        let unchanged = fileSignature(at: source.url) == signature
         let summary = ClaudeUsageSummary(
             totalTokens: totalTokens,
-            latestUsageLimit: latestUsageLimit
+            latestUsageLimit: latestUsageLimit,
+            isPartial: readResult.skippedLines > 0 || unreadableUsage || !unchanged
         )
-        claudeUsageCache.store(
-            summary,
-            for: source.url.path,
-            size: source.fileSize,
-            modifiedAt: source.modifiedAt
-        )
-        return summary
+        if unchanged {
+            claudeUsageCache.store(summary, for: source.url.path, signature: signature)
+        }
+        return (summary, false)
     }
 
     private func boundedClaudeUserDataRecords(
@@ -1094,8 +1178,8 @@ public struct LocalChatScanner: @unchecked Sendable {
             .map { $0 }
     }
 
-    private func scanClaudeCode(claudeHomeURL: URL) -> LocalChatScanResult {
-        let inventory = claudeInventory(claudeHomeURL: claudeHomeURL)
+    private func scanClaudeCode(claudeHomeURL: URL, forStats: Bool = false) -> LocalChatScanResult {
+        let inventory = claudeInventory(claudeHomeURL: claudeHomeURL, forStats: forStats)
         guard !Task.isCancelled else {
             return .init(
                 availability: .available,
@@ -1103,10 +1187,9 @@ public struct LocalChatScanner: @unchecked Sendable {
                 changeToken: inventory.changeToken
             )
         }
-        var remainingMetadataBytes = max(
-            0,
-            maximumMetadataBytes - inventory.metadataBytes
-        )
+        // History and per-session headers have independent bounded budgets.
+        var remainingMetadataBytes = maximumMetadataBytes
+        var metadataTruncated = false
         let sessions = inventory.records.compactMap { record -> LocalChatSession? in
             guard
                 let source = claudeSourceFile(
@@ -1120,19 +1203,22 @@ public struct LocalChatScanner: @unchecked Sendable {
             let metadata = claudeBodyMetadata(
                 at: source.url,
                 under: claudeHomeURL,
-                maximumBytes: min(256 * 1_024, remainingMetadataBytes)
+                maximumBytes: min(256 * 1_024, remainingMetadataBytes),
+                forStats: forStats
             )
             remainingMetadataBytes -= metadata.inspectedBytes
+            metadataTruncated = metadataTruncated || metadata.skippedLines
+                || (metadata.model == nil && source.fileSize > UInt64(metadata.inspectedBytes))
             return LocalChatSession(
                 id: record.id,
                 provider: .claude,
                 profileID: nil,
                 profileName: "Official Claude",
-                title: Self.title(from: record.display),
-                preview: Self.preview(from: record.display),
+                title: forStats ? "" : Self.title(from: record.display),
+                preview: forStats ? nil : Self.preview(from: record.display),
                 model: metadata.model,
-                repository: Self.safeLastPathComponent(metadata.cwd ?? record.project),
-                branch: metadata.branch,
+                repository: forStats ? nil : Self.safeLastPathComponent(metadata.cwd ?? record.project),
+                branch: forStats ? nil : metadata.branch,
                 startedAt: record.startedAt ?? source.modifiedAt,
                 updatedAt: record.updatedAt ?? source.modifiedAt,
                 tokenCount: nil,
@@ -1148,81 +1234,121 @@ public struct LocalChatScanner: @unchecked Sendable {
             sessions: sessions,
             changeToken: inventory.changeToken,
             diagnostics: .init(
-                parsedFileCount: sessions.count,
-                sourceFileCount: sessions.count
+                cacheHitCount: inventory.cacheHit ? 1 : 0,
+                parsedFileCount: inventory.inspectedBytes > 0 ? 1 : 0,
+                sourceFileCount: sessions.count,
+                inventoryTruncated: inventory.truncated || metadataTruncated,
+                inspectedHistoryBytes: inventory.inspectedBytes
             )
         )
     }
 
-    private func claudeInventory(claudeHomeURL: URL) -> ClaudeInventory {
+    private func claudeInventory(claudeHomeURL: URL, forStats: Bool = false) -> ClaudeInventory {
         let home = claudeHomeURL.resolvingSymlinksInPath().standardizedFileURL
         let historyURL = home.appendingPathComponent("history.jsonl")
-        guard
-            let history = canonicalRegularFile(url: historyURL, under: home),
-            history.fileSize <= maximumMetadataBytes
-        else {
+        guard let handle = openNoFollowRegularFile(at: historyURL, under: home) else {
             return .init(records: [], changeToken: "")
         }
+        defer { try? handle.close() }
+        guard let signature = fileSignature(handle) else {
+            return .init(records: [], changeToken: "", truncated: true)
+        }
+        let cacheKey = historyURL.path + (forStats ? "|stats" : "|presentation")
+        if var cached = claudeHistoryCache.value(for: cacheKey, signature: signature) {
+            cached.cacheHit = true
+            cached.inspectedBytes = 0
+            if forStats { cached.changeToken = "" }
+            return cached
+        }
 
+        let size = UInt64(signature.size)
+        let start = size > UInt64(maximumMetadataBytes) ? size - UInt64(maximumMetadataBytes) : 0
+        guard let window = readRange(handle: handle, start: start, end: size),
+              window.count == Int(size - start)
+        else { return .init(records: [], changeToken: "", truncated: true) }
+        // Drop the first boundary fragment and visit newest complete records first.
+        let first = start == 0 ? 0 : window.firstIndex(of: 0x0A).map { $0 + 1 } ?? window.count
+        var end = window.count
         var recordsByID: [String: ClaudeHistoryRecord] = [:]
         var inspectedRecords = 0
-        _ = forEachForwardLine(
-            at: history.url,
-            under: home,
-            maximumBytes: maximumMetadataBytes
-        ) { line in
-            guard !Task.isCancelled else { return false }
-            guard inspectedRecords < maximumInventoryFiles else { return false }
+        var truncated = start > 0
+        while end > first, !Task.isCancelled {
+            if window[end - 1] == 0x0A { end -= 1 }
+            guard end > first else { break }
+            let begin = window[first..<end].lastIndex(of: 0x0A).map { $0 + 1 } ?? first
+            guard inspectedRecords < maximumInventoryFiles else { truncated = true; break }
             inspectedRecords += 1
+            let lineSize = end - begin
+            defer { end = begin }
+            guard lineSize <= maximumSummaryLineBytes else { truncated = true; continue }
+            let line = window.subdata(in: begin..<end)
             guard
-                line.count <= maximumSummaryLineBytes,
                 let object = try? JSONSerialization.jsonObject(with: line) as? [String: Any],
                 let rawSessionID = object["sessionId"] as? String,
                 Self.safeFilename(rawSessionID),
                 let project = object["project"] as? String,
-                !project.isEmpty
-            else {
-                return true
-            }
+                !project.isEmpty, project.utf8.count <= 4_096
+            else { truncated = true; continue }
             let relativeSource = "projects/\(project.replacingOccurrences(of: "/", with: "-"))/\(rawSessionID).jsonl"
-            let sessionID = Self.stableSourceID(
-                provider: .claude,
-                rawID: rawSessionID,
-                relativePath: relativeSource
-            )
+            let sessionID = Self.stableSourceID(provider: .claude, rawID: rawSessionID, relativePath: relativeSource)
             let timestamp = Self.claudeDate(object["timestamp"])
-            let display = Self.cleanTranscriptText(object["display"] as? String ?? "")
             if var existing = recordsByID[sessionID] {
                 if let timestamp {
                     existing.startedAt = existing.startedAt.map { min($0, timestamp) } ?? timestamp
                     existing.updatedAt = existing.updatedAt.map { max($0, timestamp) } ?? timestamp
                 }
-                if !display.isEmpty {
-                    existing.display = display
+                if existing.display.isEmpty, !forStats {
+                    existing.display = String(Self.cleanTranscriptText(object["display"] as? String ?? "").prefix(32_768))
                 }
-                existing.project = project
                 recordsByID[sessionID] = existing
             } else {
+                guard recordsByID.count < maximumSessions else { truncated = true; continue }
+                let display = forStats ? "" : String(Self.cleanTranscriptText(object["display"] as? String ?? "").prefix(32_768))
                 recordsByID[sessionID] = .init(
-                    id: sessionID,
-                    sourceSessionID: rawSessionID,
-                    project: project,
-                    display: display,
-                    startedAt: timestamp,
-                    updatedAt: timestamp
+                    id: sessionID, sourceSessionID: rawSessionID, project: project, display: display,
+                    startedAt: timestamp, updatedAt: timestamp
                 )
             }
-            return true
         }
-
         let records = recordsByID.values.sorted {
             if $0.updatedAt == $1.updatedAt { return $0.id > $1.id }
             return ($0.updatedAt ?? .distantPast) > ($1.updatedAt ?? .distantPast)
-        }.prefix(maximumSessions)
+        }
+        let result = ClaudeInventory(
+            records: records,
+            changeToken: forStats ? "" : claudeCodeChangeToken(claudeHomeURL: claudeHomeURL),
+            truncated: truncated || Task.isCancelled,
+            inspectedBytes: window.count
+        )
+        // Never cache a result while a writer changed the descriptor during the read.
+        let unchanged = fileSignature(handle) == signature
+        if !Task.isCancelled, unchanged {
+            claudeHistoryCache.store(result, for: cacheKey, signature: signature)
+        }
+        var returned = result
+        if !unchanged { returned.truncated = true }
+        if forStats { returned.changeToken = "" }
+        return returned
+    }
+
+    private func fileSignature(_ handle: FileHandle) -> LocalFileSignature? {
+        var status = Darwin.stat()
+        guard Darwin.fstat(handle.fileDescriptor, &status) == 0 else { return nil }
+        return fileSignature(status)
+    }
+
+    private func fileSignature(at url: URL) -> LocalFileSignature? {
+        var status = Darwin.stat()
+        guard Darwin.lstat(url.path, &status) == 0 else { return nil }
+        return fileSignature(status)
+    }
+
+    private func fileSignature(_ status: Darwin.stat) -> LocalFileSignature? {
+        guard status.st_mode & S_IFMT == S_IFREG, status.st_size >= 0 else { return nil }
         return .init(
-            records: Array(records),
-            changeToken: claudeCodeChangeToken(claudeHomeURL: claudeHomeURL),
-            metadataBytes: min(history.fileSize, maximumMetadataBytes)
+            device: UInt64(bitPattern: Int64(status.st_dev)), inode: status.st_ino, size: status.st_size,
+            modifiedSeconds: status.st_mtimespec.tv_sec, modifiedNanoseconds: status.st_mtimespec.tv_nsec,
+            changedSeconds: status.st_ctimespec.tv_sec, changedNanoseconds: status.st_ctimespec.tv_nsec
         )
     }
 
@@ -1282,12 +1408,13 @@ public struct LocalChatScanner: @unchecked Sendable {
     private func claudeBodyMetadata(
         at url: URL,
         under root: URL,
-        maximumBytes: Int
+        maximumBytes: Int,
+        forStats: Bool = false
     ) -> ClaudeBodyMetadata {
         guard maximumBytes > 0 else { return .init() }
         var metadata = ClaudeBodyMetadata()
         var inspectedBytes = 0
-        _ = forEachForwardLine(
+        let readResult = forEachForwardLine(
             at: url,
             under: root,
             maximumBytes: maximumBytes
@@ -1298,8 +1425,10 @@ public struct LocalChatScanner: @unchecked Sendable {
             else {
                 return inspectedBytes < 256 * 1_024
             }
-            metadata.cwd = Self.cleanMetadata(object["cwd"] as? String) ?? metadata.cwd
-            metadata.branch = Self.cleanMetadata(object["gitBranch"] as? String) ?? metadata.branch
+            if !forStats {
+                metadata.cwd = Self.cleanMetadata(object["cwd"] as? String) ?? metadata.cwd
+                metadata.branch = Self.cleanMetadata(object["gitBranch"] as? String) ?? metadata.branch
+            }
             if
                 let message = object["message"] as? [String: Any],
                 let model = message["model"] as? String
@@ -1307,9 +1436,10 @@ public struct LocalChatScanner: @unchecked Sendable {
                 metadata.model = Self.cleanMetadata(model)
             }
             return inspectedBytes < 256 * 1_024
-                && (metadata.branch == nil || metadata.model == nil)
+                && ((!forStats && metadata.branch == nil) || metadata.model == nil)
         }
-        metadata.inspectedBytes = min(inspectedBytes, maximumBytes)
+        metadata.inspectedBytes = readResult.bytesRead
+        metadata.skippedLines = readResult.skippedLines > 0 || !readResult.completed
         return metadata
     }
 
@@ -2172,24 +2302,25 @@ public struct LocalChatScanner: @unchecked Sendable {
         under root: URL? = nil,
         maximumBytes: Int? = nil,
         body: (Data) -> Bool
-    ) -> (completed: Bool, bytesRead: Int) {
+    ) -> (completed: Bool, bytesRead: Int, skippedLines: Int) {
         guard maximumBytes.map({ $0 > 0 }) ?? true,
               let handle = openNoFollowRegularFile(at: url, under: root)
-        else { return (false, 0) }
+        else { return (false, 0, 0) }
         defer { try? handle.close() }
         var buffer = Data()
         var discardingOversized = false
         var bytesRead = 0
+        var skippedLines = 0
         while !Task.isCancelled {
             let remaining = maximumBytes.map { $0 - bytesRead }
             guard remaining.map({ $0 > 0 }) ?? true else {
                 if !discardingOversized, !buffer.isEmpty { _ = body(buffer) }
-                return (true, bytesRead)
+                return (true, bytesRead, skippedLines)
             }
             let count = min(64 * 1_024, remaining ?? (64 * 1_024))
             guard let chunk = try? handle.read(upToCount: count), !chunk.isEmpty else {
                 if !discardingOversized, !buffer.isEmpty { _ = body(buffer) }
-                return (true, bytesRead)
+                return (true, bytesRead, skippedLines)
             }
             bytesRead += chunk.count
             var cursor = chunk.startIndex
@@ -2203,7 +2334,9 @@ public struct LocalChatScanner: @unchecked Sendable {
                     let lineBytes = chunk.distance(from: cursor, to: newline)
                     if lineBytes <= maximumSummaryLineBytes - buffer.count {
                         buffer.append(chunk[cursor..<newline])
-                        if !buffer.isEmpty, !body(buffer) { return (true, bytesRead) }
+                        if !buffer.isEmpty, !body(buffer) { return (true, bytesRead, skippedLines) }
+                    } else {
+                        skippedLines += 1
                     }
                     buffer.removeAll(keepingCapacity: true)
                     cursor = chunk.index(after: newline)
@@ -2212,12 +2345,13 @@ public struct LocalChatScanner: @unchecked Sendable {
                     if buffer.count > maximumSummaryLineBytes {
                         buffer.removeAll(keepingCapacity: true)
                         discardingOversized = true
+                        skippedLines += 1
                     }
                     break
                 }
             }
         }
-        return (false, bytesRead)
+        return (false, bytesRead, skippedLines)
     }
 
     private func readRange(handle: FileHandle, start: UInt64, end: UInt64) -> Data? {
@@ -2554,13 +2688,38 @@ public struct LocalChatScanner: @unchecked Sendable {
 
     private struct ClaudeInventory {
         let records: [ClaudeHistoryRecord]
-        let changeToken: String
-        var metadataBytes: Int = 0
+        var changeToken: String
+        var truncated = false
+        var inspectedBytes = 0
+        var cacheHit = false
+    }
+
+    private final class ClaudeHistoryCache: @unchecked Sendable {
+        private let lock = NSLock()
+        private var entries: [String: (LocalFileSignature, ClaudeInventory)] = [:]
+
+        func value(for path: String, signature: LocalFileSignature) -> ClaudeInventory? {
+            lock.lock()
+            defer { lock.unlock() }
+            guard let entry = entries[path], entry.0 == signature else { return nil }
+            return entry.1
+        }
+
+        func store(_ inventory: ClaudeInventory, for path: String, signature: LocalFileSignature) {
+            lock.lock()
+            defer { lock.unlock() }
+            if entries.count >= 4, entries[path] == nil, let key = entries.keys.sorted().first {
+                entries.removeValue(forKey: key)
+            }
+            entries[path] = (signature, inventory)
+        }
     }
 
     private struct ClaudeUserDataInventory {
         let records: [ClaudeUserDataRecord]
         let changeToken: String
+        let cacheHits: Int
+        let truncated: Bool
     }
 
     private struct ClaudeUserDataRecord {
@@ -2610,6 +2769,7 @@ public struct LocalChatScanner: @unchecked Sendable {
         var branch: String?
         var model: String?
         var inspectedBytes = 0
+        var skippedLines = false
     }
 
     private struct SourceFile {

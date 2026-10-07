@@ -94,8 +94,16 @@ expiration dates change. Redeemed/expired resets and removed accounts no longer
 have pending alerts after reconciliation. Newly discovered overdue reminders
 produce one catch-up rather than one alert for every missed milestone.
 
-Monitoring refreshes every five minutes while AgentDock runs, plus on launch,
-wake, source changes, activation, and manual refresh. Failed reads retain the
+Monitoring refreshes every five minutes while AgentDock has an active visible
+window, and every thirty minutes while inactive or without windows. Enabled
+reminders bring reconciliation forward to the next queued alert or expiration
+(with a one-minute minimum); this replenishes the finite native queue. Inventory
+still refreshes when reminders are disabled. Launch, source changes, and manual
+refresh request new data; activation and wake reuse recent successful reads and
+back off failed attempts for a minute. Display and reset inventory share each
+account's bounded native quota read, with a maximum one-minute result cache.
+Each new batch validates the installed bundle once before using its executable;
+metadata invalidates cached answers and never establishes bundle trust. Failed reads retain the
 last successful inventory with a stale warning. Count-only responses retain
 previously known expiration details for the same account, labelled stale; a
 confirmed zero clears them. Scheduled notifications can
