@@ -156,6 +156,45 @@ final class ProfileSelectionIsolationTests: XCTestCase {
         XCTAssertEqual(try fixture.indexSnapshot(), remainingIndexes)
     }
 
+    func testProfileSectionControlFitsLabelsAndStaysInPlace() async throws {
+        let fixture = try SyntheticProfileFixture()
+        defer { fixture.remove() }
+        let view = NSHostingView(rootView: ContentView()
+            .environmentObject(fixture.model)
+            .environmentObject(AppUpdater()))
+        view.sizingOptions = []
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 900, height: 600),
+                              styleMask: [.borderless], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        window.contentView = view
+        defer { window.close() }
+        window.orderFrontRegardless()
+        func findPicker(in parent: NSView) -> NSSegmentedControl? {
+            if let control = parent as? NSSegmentedControl,
+               control.segmentCount == 2, control.label(forSegment: 0) == "Overview" {
+                return control
+            }
+            return parent.subviews.lazy.compactMap { findPicker(in: $0) }.first
+        }
+        try await Task.sleep(for: .milliseconds(100))
+        fixture.model.selectProfile(fixture.first.id)
+        var initialFrame: NSRect?
+        for selection in [AgentDockDetailTab.overview, .advanced, .overview, .advanced] {
+            fixture.model.detailTab = selection
+            try await Task.sleep(for: .milliseconds(100))
+            view.layoutSubtreeIfNeeded()
+            let control = try XCTUnwrap(findPicker(in: view))
+            let frame = control.convert(control.bounds, to: view)
+            if let initialFrame { XCTAssertEqual(frame, initialFrame) }
+            else { initialFrame = frame }
+            for index in 0..<control.segmentCount {
+                let label = try XCTUnwrap(control.label(forSegment: index))
+                let labelWidth = (label as NSString).size(withAttributes: [.font: control.font ?? NSFont.systemFont(ofSize: 13)]).width
+                XCTAssertGreaterThanOrEqual(control.bounds.width / 2, labelWidth + 16)
+            }
+        }
+    }
+
     func testSyntheticVisualAudit() async throws {
         guard let output = ProcessInfo.processInfo.environment["AGENTDOCK_VISUAL_AUDIT_DIR"] else {
             throw XCTSkip("Set AGENTDOCK_VISUAL_AUDIT_DIR to render synthetic UI acceptance images.")
@@ -172,11 +211,11 @@ final class ProfileSelectionIsolationTests: XCTestCase {
             try await fixture.refreshStats()
             let updater = AppUpdater()
             for appearance in [AgentDockAppearance.light, .dark] {
-              for destination in ["home", "overview"] {
+              for destination in ["home", "overview", "advanced"] {
                 if destination == "home" { model.selectHome() }
                 else { model.selectProfile(fixture.first.id) }
                 model.preferences.appearance = appearance
-                model.detailTab = .overview
+                model.detailTab = destination == "advanced" ? .advanced : .overview
                 let view = NSHostingView(rootView: ContentView()
                     .environmentObject(model)
                     .environmentObject(updater))
