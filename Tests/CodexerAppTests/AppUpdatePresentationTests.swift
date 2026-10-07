@@ -1,3 +1,4 @@
+import Sparkle
 import XCTest
 @testable import Codexer
 
@@ -15,6 +16,15 @@ final class AppUpdatePresentationTests: XCTestCase {
         XCTAssertEqual(AppUpdateChannel.allCases.first, .stable)
         XCTAssertEqual(AppUpdateChannel.stable.feedURL, AppUpdateChannel.stableFeedURL)
         XCTAssertEqual(AppUpdateChannel.alpha.feedURL, AppUpdateChannel.alphaFeedURL)
+    }
+
+    func testSparkleUsesBuildNumbersForStableAndAlphaOrdering() {
+        let comparator = SUStandardVersionComparator.default
+        // A later Stable build supersedes the installed Alpha build.
+        XCTAssertEqual(comparator.compareVersion("1000071", toVersion: "1000070"), .orderedDescending)
+        // Stable does not replace a more recent Alpha, or reinstall an equal build.
+        XCTAssertEqual(comparator.compareVersion("1000071", toVersion: "1000072"), .orderedAscending)
+        XCTAssertEqual(comparator.compareVersion("1000071", toVersion: "1000071"), .orderedSame)
     }
 
     func testUpdateCheckFrequenciesUseSupportedSparkleIntervals() {
