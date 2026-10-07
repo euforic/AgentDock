@@ -44,6 +44,9 @@ public struct ResetAccount: Codable, Equatable, Identifiable, Sendable {
     public var identityVerified = false
     public var detailsAreStale = false
     public var names: [String]
+    /// Display-only metadata. Account identity still comes from the provider ID.
+    public var accountEmail: String?
+    public var sourceNames: [String: String]?
     public var summary: ResetCreditsSummary
     public var checkedAt: Date
 
@@ -58,6 +61,9 @@ public struct ResetAccount: Codable, Equatable, Identifiable, Sendable {
     }
 
     public var displayName: String { names.joined(separator: ", ") }
+    public var accountName: String {
+        accountEmail ?? (identityVerified ? "Account \(id.prefix(8))" : "Account unavailable")
+    }
     public var detailCount: Int { Set((summary.credits ?? []).map(\.id)).count }
     public var missingDetailCount: Int { max(0, summary.availableCount - detailCount) }
 
@@ -86,6 +92,9 @@ public struct ResetAccount: Codable, Equatable, Identifiable, Sendable {
             guard var newest = group.max(by: { $0.checkedAt < $1.checkedAt }) else { return nil }
             newest.sourceIDs = Array(Set(group.flatMap(\.sourceIDs))).sorted()
             newest.names = Array(Set(group.flatMap(\.names))).sorted()
+            newest.sourceNames = group.sorted { $0.checkedAt > $1.checkedAt }.reduce(into: [String: String]()) { result, account in
+                result.merge(account.sourceNames ?? [:]) { existing, _ in existing }
+            }
             if let credits = newest.summary.credits {
                 newest.summary.credits = Dictionary(grouping: credits, by: \.id)
                     .compactMap { $0.value.first }

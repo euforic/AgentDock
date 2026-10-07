@@ -18,11 +18,21 @@ final class ResetReminderControllerTests: XCTestCase {
         defer { defaults.removePersistentDomain(forName: suite) }
         let store = ResetReminderStore(defaults: defaults)
         let now = Date()
-        let credit = ResetCredit(id: "synthetic-credit", grantedAt: now, expiresAt: now.addingTimeInterval(7200),
-            title: "Full reset (Weekly + 5 hr)", description: "Ready to redeem")
-        let account = ResetAccount(id: "synthetic-account", sourceIDs: ["synthetic"], names: ["Design Studio"],
-            summary: ResetCreditsSummary(availableCount: 3, credits: [credit]), checkedAt: now, identityVerified: true)
-        var snapshot = ResetReminderStore.Snapshot(); snapshot.accounts = [account]; snapshot.policy.enabled = true
+        var accounts: [ResetAccount] = []
+        for (index, name) in ["Personal", "Studio", "Development", "Research"].enumerated() {
+            let credits = (0..<12).map { offset in
+                ResetCredit(id: "synthetic-\(index)-\(offset)", grantedAt: now,
+                    expiresAt: offset == 11 ? nil : now.addingTimeInterval(Double(offset * 86400 + index * 7200 + 3600)),
+                    title: "Full reset", description: "Weekly + 5-hour reset")
+            }
+            var account = ResetAccount(id: "synthetic-account-\(index)", sourceIDs: [name.lowercased()], names: [name],
+                summary: ResetCreditsSummary(availableCount: credits.count + (index == 1 ? 1 : 0), credits: credits),
+                checkedAt: now, identityVerified: true)
+            account.accountEmail = "\(name.lowercased())@example.com"
+            account.sourceNames = [name.lowercased(): name]
+            accounts.append(account)
+        }
+        var snapshot = ResetReminderStore.Snapshot(); snapshot.accounts = accounts; snapshot.policy.enabled = true
         store.save(snapshot)
         let controller = ResetReminderController(store: store, nativeNotifications: false)
         for dark in [false, true] {

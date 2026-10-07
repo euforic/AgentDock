@@ -28,6 +28,11 @@ public final class AppServerRateLimitClient: @unchecked Sendable {
     }
 
     public func fetchRateLimits(codexHomeURL: URL, codexAppURL: URL) -> ProfileRateLimits {
+        fetchRateLimits(codexHomeURL: codexHomeURL, codexAppURL: codexAppURL, includeAccountDetails: false)
+    }
+
+    public func fetchRateLimits(codexHomeURL: URL, codexAppURL: URL,
+                               includeAccountDetails: Bool) -> ProfileRateLimits {
         if executableOverride == nil {
             do {
                 try appValidator.validateCodexApp(at: codexAppURL)
@@ -53,7 +58,8 @@ public final class AppServerRateLimitClient: @unchecked Sendable {
         let initializeCompletion = DispatchSemaphore(value: 0)
         let completion = DispatchSemaphore(value: 0)
         let pipeFinished = DispatchSemaphore(value: 0)
-        let responseState = ResponseState(maximumBytes: maximumResponseBytes)
+        let responseState = ResponseState(maximumBytes: maximumResponseBytes,
+            includesAccountDetails: includeAccountDetails)
 
         do {
             let process = try GroupedSubprocess(
@@ -71,7 +77,7 @@ public final class AppServerRateLimitClient: @unchecked Sendable {
                 if responseState.hasInitializeResponse || responseState.errorMessage != nil {
                     initializeCompletion.signal()
                 }
-                if responseState.responseData != nil || responseState.errorMessage != nil {
+                if responseState.isComplete || responseState.errorMessage != nil {
                     completion.signal()
                 }
             }
@@ -95,7 +101,7 @@ public final class AppServerRateLimitClient: @unchecked Sendable {
                 return ProfileRateLimits(errorMessage: "Codex app-server exited before returning usage limits.")
             }
 
-            try writeRateLimitRequest(to: process.standardInput)
+            try writeRateLimitRequest(to: process.standardInput, includeAccountDetails: includeAccountDetails)
 
             let waitResult = waitForCompletion(completion, process: process)
             if !process.isRunning,
@@ -108,7 +114,11 @@ public final class AppServerRateLimitClient: @unchecked Sendable {
                 _ = pipeFinished.wait(timeout: .now() + 0.1)
             }
             if let responseData = responseState.responseData {
-                return try RateLimitParser.parseResponse(responseData)
+                var limits = try RateLimitParser.parseResponse(responseData)
+                if let data = responseState.accountData {
+                    limits.accountEmail = CodexAccountDisplayParser.email(from: data)
+                }
+                return limits
             }
             if let errorMessage = responseState.errorMessage {
                 return ProfileRateLimits(errorMessage: errorMessage)
@@ -181,7 +191,7 @@ public final class AppServerRateLimitClient: @unchecked Sendable {
         try fileHandle.write(contentsOf: data)
     }
 
-    private func writeRateLimitRequest(to fileHandle: FileHandle) throws {
+    private func writeRateLimitRequest(to fileHandle: FileHandle, includeAccountDetails: Bool) throws {
         let initialized = """
         {"method":"initialized","params":{}}
 
@@ -191,6 +201,10 @@ public final class AppServerRateLimitClient: @unchecked Sendable {
 
         """
         try fileHandle.write(contentsOf: Data(initialized.utf8))
+        if includeAccountDetails {
+            // Display metadata from the same isolated app-server; never refresh credentials.
+            try fileHandle.write(contentsOf: Data("{\"id\":3,\"method\":\"account/read\",\"params\":{\"refreshToken\":false}}\n".utf8))
+        }
         try fileHandle.write(contentsOf: Data(readRateLimits.utf8))
     }
 
@@ -203,15 +217,24 @@ private final class ResponseState: @unchecked Sendable {
 
     private let lock = NSLock()
     private let maximumBytes: Int
+    private let includesAccountDetails: Bool
     private var buffer = Data()
     private var readOffset = 0
     private var storedResponse: Data?
+    private var storedAccount: Data?
     private var storedError: String?
     private var receivedInitializeResponse = false
 
-    init(maximumBytes: Int) {
+    init(maximumBytes: Int, includesAccountDetails: Bool) {
         self.maximumBytes = maximumBytes
+        self.includesAccountDetails = includesAccountDetails
     }
+
+    var isComplete: Bool {
+        lock.withLock { storedResponse != nil && (!includesAccountDetails || storedAccount != nil) }
+    }
+
+    var accountData: Data? { lock.withLock { storedAccount } }
 
     var responseData: Data? {
         lock.withLock { storedResponse }
@@ -227,7 +250,8 @@ private final class ResponseState: @unchecked Sendable {
 
     func consume(_ data: Data) {
         lock.withLock {
-            guard storedResponse == nil, storedError == nil else { return }
+            guard storedError == nil,
+                  storedResponse == nil || (includesAccountDetails && storedAccount == nil) else { return }
             guard !data.isEmpty else { return }
             guard buffer.count - readOffset + data.count <= maximumBytes else {
                 storedError = "Codex app-server response exceeded \(maximumBytes) bytes."
@@ -250,6 +274,8 @@ private final class ResponseState: @unchecked Sendable {
                     receivedInitializeResponse = true
                 } else if envelope.id == 2 {
                     storedResponse = line
+                } else if envelope.id == 3, includesAccountDetails {
+                    storedAccount = line
                 }
             }
             compactBufferIfNeeded()
@@ -262,6 +288,25 @@ private final class ResponseState: @unchecked Sendable {
         }
         buffer.removeSubrange(..<readOffset)
         readOffset = 0
+    }
+}
+
+enum CodexAccountDisplayParser {
+    private struct Envelope: Decodable {
+        struct Result: Decodable {
+            struct Account: Decodable { var type: String; var email: String? }
+            var account: Account?
+        }
+        var result: Result?
+    }
+
+    static func email(from data: Data) -> String? {
+        guard let account = try? JSONDecoder().decode(Envelope.self, from: data).result?.account,
+              account.type == "chatgpt", let email = account.email,
+              !email.isEmpty, email.count <= 320,
+              !email.unicodeScalars.contains(where: CharacterSet.controlCharacters.contains)
+        else { return nil }
+        return email
     }
 }
 

@@ -113,7 +113,8 @@ final class ResetReminderController: NSObject, ObservableObject, UNUserNotificat
             // Serial bounded reads avoid spawning an app-server for every account at once.
             for source in sources {
                 let worker = Task.detached(priority: .utility) {
-                    client.fetchRateLimits(codexHomeURL: source.homeURL, codexAppURL: appURL)
+                    client.fetchRateLimits(codexHomeURL: source.homeURL, codexAppURL: appURL,
+                        includeAccountDetails: true)
                 }
                 let limits = await withTaskCancellationHandler { await worker.value } onCancel: { worker.cancel() }
                 guard !Task.isCancelled, let self else { return }
@@ -124,6 +125,8 @@ final class ResetReminderController: NSObject, ObservableObject, UNUserNotificat
                     var account = ResetAccount(id: ResetAccount.identity(accountID: limits.accountID, sourceID: source.id),
                         sourceIDs: [source.id], names: [source.name], summary: summary, checkedAt: limits.fetchedAt)
                     account.identityVerified = limits.accountID != nil
+                    account.accountEmail = limits.accountEmail
+                    account.sourceNames = [source.id: source.name]
                     let old = self.snapshot.accounts.first { $0.sourceIDs.contains(source.id) }
                     account.retainUnavailableDetails(from: old)
                     for credit in summary.credits ?? [] {

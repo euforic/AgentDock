@@ -1,7 +1,25 @@
 # Banked Reset Reminders
 
 **Available Resets** lists banked Codex resets across the official installation
-and managed Codex profiles, sorted by expiration. These credits are separate
+and managed Codex profiles in a compact, single-line inventory, sorted by
+expiration across all accounts by default. A warning strip shows how many
+reported available resets expire within seven days and within 24 hours.
+**Show expiring soon** filters to the seven-day window. Imminent rows use a
+clock, time remaining, and an amber edge; expired or redeemed rows never count
+as expiring soon.
+
+Use **Group by → Date, Account, or Profile** and choose soonest expiration,
+latest expiration, or recently granted order. Unknown expiration dates stay
+at the end of expiration sorts. Search matches account, profile, reset name,
+description, and status. Profile groups show a shared reset under each matching
+profile; the summary and urgency counts still count the account once.
+Account and profile columns remain separate. Descriptions, full dates, and
+freshness details are available in tooltips. The row menu retains Open Codex,
+Snooze, Stop Reminders, and Resume Now. **Account status** shows confirmed zero,
+count-only or partial inventories, unavailable identity, last check times,
+and source failures without expanding each reset into a card.
+
+These credits are separate
 from automatic five-hour/weekly window resets and pay-as-you-go balances.
 
 AgentDock reads `account/rateLimits/read` using the signed installed app's
@@ -16,6 +34,15 @@ means count-only data; detail lists can be capped. The UI reports missing
 details and never invents expiration dates. Unknown statuses/types remain
 visible but do not trigger expiration alerts. Only available, recognized resets
 with a future reported expiration are scheduled.
+
+The reset inventory optionally reads `account/read` with `refreshToken: false`
+from the same isolated app-server to obtain the signed-in ChatGPT email for
+display. Missing, unsupported, or failed account metadata is labelled as
+unavailable (or by a short hashed account label when identity is verified).
+Display emails never determine identity or combine accounts; they and profile
+aliases are cached locally with the reset inventory and excluded from analytics.
+The additional response shares the existing bounded-I/O and timeout limits;
+missing display metadata does not discard a successful reset response.
 
 Where the provider supplies `accountId`, profiles sharing that identity are
 counted once and receive one reminder per reset. The local cache hashes account
@@ -104,3 +131,13 @@ reminder, native View/Snooze/Stop actions, custom snooze rejection at expiry,
 restart persistence, and delivery after quitting. These manual checks require
 macOS notification permission and a signed-in account with eligible resets;
 passing unit tests or building a package alone does not establish them.
+
+To verify display metadata through the real signed-in installed Codex CLI:
+
+```bash
+AGENTDOCK_LIVE_RESET_ACCOUNT_DISPLAY=1 swift test \
+  --filter CodexAccountDisplayParserTests/testInstalledCodexAccountDisplayRoundTrip
+```
+
+This read uses the official Codex home, requests no proactive token refresh,
+and never prints account metadata. Normal tests skip it.
