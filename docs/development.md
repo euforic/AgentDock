@@ -21,7 +21,10 @@ swift test
 ./script/build_and_run.sh
 ```
 
-Local ad-hoc builds leave `SUPublicEDKey` empty and disable update checks. To
+Local ad-hoc builds leave `SUPublicEDKey` empty and disable update checks.
+They omit hardened runtime because ad-hoc signatures have no Team ID for
+embedded-framework library validation. Developer ID builds retain hardened
+runtime and timestamped signing. To
 exercise the configured updater with an existing public key, run:
 
 ```bash
