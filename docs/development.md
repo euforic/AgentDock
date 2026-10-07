@@ -21,6 +21,11 @@ swift test
 ./script/build_and_run.sh
 ```
 
+App packaging builds only the main app and shortcut launcher with two jobs by
+default. Override `AGENTDOCK_BUILD_JOBS` to change build concurrency. The separate
+transcript-renderer showcase remains available for development, and is not linked
+into the main app.
+
 Local ad-hoc builds leave `SUPublicEDKey` empty and disable update checks.
 They omit hardened runtime because ad-hoc signatures have no Team ID for
 embedded-framework library validation. Developer ID builds retain hardened
@@ -108,7 +113,7 @@ AGENTDOCK_VISUAL_AUDIT_DIR=/tmp/agentdock-visual-audit swift test \
 ```
 
 This opt-in harness uses real temporary profile files and isolated preferences
-to render the home, overview, and chat surfaces in light and dark appearances at
+to render the home and overview surfaces in light and dark appearances at
 regular and compact sizes, including long profile names and a synthetic reset
 inventory. Home fixtures keep notification preferences and inventory inside
 an isolated defaults suite. It briefly presents
@@ -155,8 +160,10 @@ The installed Codex configuration check validates the signed app and runs its
 bundled CLI against a temporary managed MCP configuration without account data.
 Repeat it after provider updates. Both installed-profile checks and runtime
 launches resolve the current nested CLI bundle with a legacy fallback.
-Codex accounting-only `token_usage_record` events are omitted from transcript
-presentation; unknown history events still appear as unsupported records.
+The separate renderer showcase omits Codex accounting-only `token_usage_record`
+events from presentation; unknown history events appear as unsupported records.
+The main app has no chat browser. Its Claude activity summaries retain shared
+bounded session scanning.
 
 These checks can open installed provider applications or terminate the exact
 active managed profile named in the environment. Run them only on a Mac where

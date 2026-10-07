@@ -201,7 +201,7 @@ struct SettingsView: View {
             }
 
             SettingsSectionHeader("Data & Privacy")
-            SettingsRow("Profiles and chat history are stored locally") {
+            SettingsRow("Profile data and activity summaries are stored locally") {
                 Button("Manage…") { section = .privacy }
             }
 
@@ -236,7 +236,7 @@ struct SettingsView: View {
         let delivery = ProductAnalytics.shared.deliveryDiagnostics()
         return SettingsPage(title: "Data & Privacy") {
             SettingsSectionHeader("Local Data")
-            SettingsRow("Profiles and chat history are stored locally") {
+            SettingsRow("Profile data and activity summaries are stored locally") {
                 Button("Reveal in Finder") {
                     NSWorkspace.shared.activateFileViewerSelecting([
                         ProfileStore.defaultRootDirectory()

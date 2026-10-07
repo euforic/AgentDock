@@ -58,9 +58,14 @@ is not evidence of a supported isolation contract.
 - Profile ownership markers: bind managed directories to persisted profiles.
 - Shortcut configuration plist: binds a generated shortcut to one provider,
   profile root, and ownership identity.
-- Chat indexes: versioned, bounded summary metadata with relative source paths
-  and a source-root fingerprint. Readers reject a different source root or
-  duplicate cached paths. Unchanged indexes are not rewritten.
+- Startup preference: Home, Last Opened Profile, or Overview. A stored legacy
+  `AgentDock.defaultView = "chats"` migrates to `"overview"` without changing
+  other preferences.
+- Legacy chat indexes: versioned, bounded summary metadata with relative
+  source paths and a source-root fingerprint. Core readers reject a different
+  source root or duplicate cached paths. The app no longer creates these
+  indexes; explicit profile removal or deletion cleans up that profile's
+  legacy indexes. Claude activity summaries remain in memory.
 - Analytics state: `undecided`, `denied`, or `granted` in UserDefaults. The
   analytics boundary never promotes `undecided` without a user action. A random
   installation UUID exists only while granted and is deleted on opt-out;

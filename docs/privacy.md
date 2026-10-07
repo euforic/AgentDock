@@ -1,8 +1,10 @@
 # Privacy Policy
 
-AgentDock is local-first. Profile metadata, provider state, chat indexes, and
-transcripts remain on the Mac except when a provider application independently
-uses its own services.
+AgentDock is local-first. Profile metadata, provider state, and any legacy
+chat-browser indexes remain on the Mac except when a provider application
+independently uses its own services. AgentDock does not browse chats, copy
+transcripts, or create browser indexes. Claude activity summaries still read
+supported local session files through bounded core readers and remain in memory.
 
 Pseudonymous product analytics remain off until the user explicitly allows
 them. Once allowed, AgentDock sends a random installation identifier and the

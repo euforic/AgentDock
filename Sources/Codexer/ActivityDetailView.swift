@@ -225,32 +225,6 @@ struct ActivityDetailSheet: View {
           ActivitySummaryRow(label: "Weekly tokens", value: stats.weeklyTokens.formatted())
         }
         .background(AgentDockPalette.panel.opacity(0.42), in: .rect(cornerRadius: 8))
-
-        HStack {
-          SectionLabel(title: "Recent Conversations")
-          Spacer()
-          Button("Open Chats") {
-            model.detailTab = .chats
-            dismiss()
-          }
-          .buttonStyle(.bordered)
-        }
-
-        if model.chatSessions.isEmpty {
-          Text("No readable local conversations are available for this selection.")
-            .font(.system(size: 12))
-            .foregroundStyle(.secondary)
-        } else {
-          VStack(spacing: 0) {
-            ForEach(model.chatSessions.prefix(6)) { session in
-              ActivitySessionRow(session: session)
-              if session.id != model.chatSessions.prefix(6).last?.id {
-                Divider().overlay(AgentDockPalette.divider)
-              }
-            }
-          }
-          .background(AgentDockPalette.panel.opacity(0.42), in: .rect(cornerRadius: 8))
-        }
       }
       .padding(20)
     }
@@ -638,47 +612,6 @@ private struct ArchivedThreadRow: View {
   private var maskedID: String {
     guard thread.id.count > 12 else { return thread.id }
     return "\(thread.id.prefix(7))…\(thread.id.suffix(5))"
-  }
-}
-
-private struct ActivitySessionRow: View {
-  let session: LocalChatSession
-
-  var body: some View {
-    HStack(spacing: 10) {
-      Circle()
-        .fill(statusColor)
-        .frame(width: 8, height: 8)
-      VStack(alignment: .leading, spacing: 2) {
-        Text(session.title)
-          .font(.system(size: 13, weight: .medium))
-          .lineLimit(1)
-        Text([session.repository, session.branch].compactMap { $0 }.joined(separator: " · "))
-          .font(.system(size: 11))
-          .foregroundStyle(.secondary)
-          .lineLimit(1)
-      }
-      Spacer()
-      Text(session.updatedAt.formatted(date: .abbreviated, time: .shortened))
-        .font(.system(size: 11))
-        .foregroundStyle(.secondary)
-    }
-    .padding(.horizontal, 14)
-    .frame(minHeight: 46)
-    .accessibilityElement(children: .combine)
-  }
-
-  private var statusColor: Color {
-    switch session.status.lowercased() {
-    case let status where status.contains("complete"):
-      .green
-    case let status where status.contains("progress"):
-      .orange
-    case let status where status.contains("fail"):
-      .red
-    default:
-      .secondary
-    }
   }
 }
 

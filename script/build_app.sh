@@ -68,6 +68,7 @@ SIGNING_KEYCHAIN="${AGENTDOCK_SIGNING_KEYCHAIN:-${CODEXER_SIGNING_KEYCHAIN:-}}"
 
 BUILD_ARGUMENTS=(
   -c release
+  --jobs "${AGENTDOCK_BUILD_JOBS:-2}"
   --scratch-path "$BUILD_SCRATCH_DIR"
   -debug-info-format none
 )
@@ -93,7 +94,8 @@ if [[ -n "${TMPDIR:-}" ]]; then
   append_prefix_map "$TMPDIR" "/workspace/tmp"
 fi
 
-swift build "${BUILD_ARGUMENTS[@]}"
+swift build "${BUILD_ARGUMENTS[@]}" --product "$PRODUCT_BINARY_NAME"
+swift build "${BUILD_ARGUMENTS[@]}" --product AgentDockShortcutLauncher
 BUILD_DIR="$(swift build "${BUILD_ARGUMENTS[@]}" --show-bin-path)"
 BUILD_BINARY="$BUILD_DIR/$PRODUCT_BINARY_NAME"
 HELPER_BINARY="$BUILD_DIR/AgentDockShortcutLauncher"
@@ -111,7 +113,6 @@ mkdir -p "$APP_MACOS" "$APP_RESOURCES" "$APP_FRAMEWORKS" "$APP_LICENSES"
 cp "$BUILD_BINARY" "$APP_BINARY"
 cp "$HELPER_BINARY" "$APP_RESOURCES/AgentDockShortcutLauncher"
 /usr/bin/ditto "$SPARKLE_SOURCE" "$SPARKLE_FRAMEWORK"
-cp -R "$BUILD_DIR/Highlightr_Highlightr.bundle" "$APP_RESOURCES/"
 cp "$ROOT_DIR/LICENSE" "$APP_RESOURCES/LICENSE.txt"
 cp "$ROOT_DIR/THIRD_PARTY_NOTICES.md" "$APP_RESOURCES/THIRD_PARTY_NOTICES.md"
 cp "$ROOT_DIR/Vendor/streamdown-swift/LICENSE" "$APP_LICENSES/Streamdown-FSL-1.1-MIT.txt"

@@ -14,14 +14,12 @@ public enum AgentDockDefaultView: String, Codable, CaseIterable, Sendable {
     case home
     case lastOpened
     case overview
-    case chats
 
     public var displayName: String {
         switch self {
         case .home: "Home"
         case .lastOpened: "Last Opened Profile"
         case .overview: "Overview"
-        case .chats: "Chats"
         }
     }
 }
@@ -68,8 +66,15 @@ public struct AgentDockPreferencesStore {
         let standard = AgentDockPreferences.defaults
         let appearance = defaults.string(forKey: Key.appearance)
             .flatMap(AgentDockAppearance.init(rawValue:)) ?? standard.appearance
-        let defaultView = defaults.string(forKey: Key.defaultView)
-            .flatMap(AgentDockDefaultView.init(rawValue:)) ?? standard.defaultView
+        let storedDefaultView = defaults.string(forKey: Key.defaultView)
+        let defaultView: AgentDockDefaultView
+        if storedDefaultView == "chats" {
+            defaultView = .overview
+            defaults.set(defaultView.rawValue, forKey: Key.defaultView)
+        } else {
+            defaultView = storedDefaultView.flatMap(AgentDockDefaultView.init(rawValue:))
+                ?? standard.defaultView
+        }
         let refresh = defaults.object(forKey: Key.refreshProfileActivity) == nil
             ? standard.refreshProfileActivity
             : defaults.bool(forKey: Key.refreshProfileActivity)

@@ -65,11 +65,11 @@ never leave the app.
 | --- | --- | --- |
 | `app_lifecycle` | `action`, `trigger`, `countBucket` | First/return launch and coarse activation context. |
 | `consent_decision` | `action`, `surface` | User-initiated re-enablement. Denial/revocation is not transmitted. |
-| `navigation` | `action`, `surface`, `provider` | Overview, chats, advanced, and settings adoption. |
+| `navigation` | `action`, `surface`, `provider` | Overview, advanced, and settings adoption. |
 | `profile_lifecycle` | `action`, `outcome`, `provider`, `countBucket`, `durationBucket` | Create, restore, edit, remove, and delete funnels without identity. |
 | `provider_status` | `action`, `outcome`, `provider` | Discovery, configuration, validation, and compatibility. |
 | `launcher_lifecycle` | `action`, `outcome`, `provider`, `trigger`, `durationBucket`, `countBucket` | Open/focus/close and shortcut install/repair/remove outcomes. |
-| `chat_usage` | `action`, `outcome`, `provider`, `countBucket`, `durationBucket` | List, transcript, page, and metadata adoption only. |
+| `chat_usage` | `action`, `outcome`, `provider`, `countBucket`, `durationBucket` | Legacy schema retained for older releases; the current app emits no chat-browser events. |
 | `refresh` | `action`, `outcome`, `surface`, `trigger`, `countBucket`, `durationBucket` | Manual/automatic refresh reliability and coarse workload. |
 | `update_lifecycle` | `action`, `outcome`, `trigger`, `enabled` | Checks and automatic check/download preferences. |
 | `preference_changed` | `action`, `surface`, `enabled` | Settings adoption without selected text/values. |
@@ -120,10 +120,9 @@ Create these funnels:
   opened successfully within 7 days;
 - shortcut: profile created/restored → shortcut installed → shortcut-triggered
   open;
-- chats: launcher opened → chats listed → transcript opened;
 - update: update preference enabled → check → later app version.
 
-Create **activated**, **profile-only**, **shortcut adopter**, **chat adopter**,
+Create **activated**, **profile-only**, **shortcut adopter**,
 **updates enabled**, and **recent safe error** cohorts only from this catalog.
 Use weekly retention with successful activation as the start and
 `app_lifecycle` as the return event. Opted-out users are intentionally invisible

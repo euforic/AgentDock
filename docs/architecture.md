@@ -8,13 +8,10 @@ surface and no application server of its own.
 ### App UI
 
 [Sources/Codexer](../Sources/Codexer) contains the SwiftUI application, navigation, profile
-management, activity views, chat list, and transcript host. `CodexerModel` owns
-UI-facing asynchronous state and suppresses stale refresh results when profiles
-or conversations change. Every sidebar selection change immediately cancels
-pending chat work and clears the previous profile's list, transcript, and paging
-cursor. An invalid selection never resolves to a different profile. See
-[CodexerModel.swift](../Sources/Codexer/CodexerModel.swift) and
-[ChatsView.swift](../Sources/Codexer/ChatsView.swift).
+management, activity views, usage, and reset inventory. `CodexerModel` owns
+UI-facing asynchronous state and suppresses stale refresh results. An invalid
+selection never resolves to a different profile. The app does not browse chats
+or copy transcripts. See [CodexerModel.swift](../Sources/Codexer/CodexerModel.swift).
 
 [`AppUpdater`](../Sources/Codexer/AppUpdater.swift) owns the single Sparkle 2
 `SPUUpdater` and a user driver that preserves Sparkle's standard interface for
@@ -60,7 +57,7 @@ in `CodexerCore`; the UI consumes only `ProfileRateLimits`.
 - shortcut creation and validation;
 - bounded subprocess execution;
 - provider-aware usage retrieval;
-- local activity and transcript scanning;
+- local activity scanning and shared bounded session/transcript readers;
 - profile-specific MCP callback configuration.
 
 Core operations fail closed when a path, process, bundle, signature, ownership
@@ -75,7 +72,9 @@ and [LocalChatSession.swift](../Sources/CodexerCore/LocalChatSession.swift).
 ### Transcript Renderer
 
 [Sources/TranscriptRenderer](../Sources/TranscriptRenderer) defines a provider-neutral event model and SwiftUI
-renderer. It preserves source order, stable row identity, malformed records,
+renderer used by the separate synthetic showcase and renderer tests. The main
+AgentDock application does not host transcripts. It preserves source order,
+stable row identity, malformed records,
 bounded output, and provider capability gating. The renderer does not own chat
 discovery, indexing, or storage. Its public model is in
 [TranscriptModels.swift](../Sources/TranscriptRenderer/TranscriptModels.swift).

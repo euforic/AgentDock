@@ -6,44 +6,37 @@ import XCTest
 
 @MainActor
 final class ProfileSelectionIsolationTests: XCTestCase {
-    func testOverviewSelectionDoesNotReadChatsOrWriteAnIndex() async throws {
+    func testOverviewRefreshPreservesProviderHistoryAndExistingIndexes() async throws {
         let fixture = try SyntheticProfileFixture()
         defer { fixture.remove() }
-        fixture.model.selectProfile(fixture.first.id)
-        try await fixture.waitForChats()
+        let history = try fixture.historySnapshot()
+        let indexes = try fixture.indexSnapshot()
 
-        XCTAssertTrue(fixture.model.chatSessions.isEmpty)
-        XCTAssertTrue(fixture.model.chatTranscriptEntries.isEmpty)
-        XCTAssertFalse(FileManager.default.fileExists(
-            atPath: fixture.root.appendingPathComponent("Indexes").path
-        ))
+        fixture.model.selectProfile(fixture.first.id)
+        try await fixture.refreshStats()
+        fixture.model.selectOfficial(.codex)
+        fixture.model.selectHome()
+        fixture.model.reload(refreshData: false)
+
+        XCTAssertEqual(try fixture.historySnapshot(), history)
+        XCTAssertEqual(try fixture.indexSnapshot(), indexes)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: fixture.root.appendingPathComponent("Indexes").path))
     }
 
-    func testDirectSelectionChangeImmediatelyClearsPreviousProfileContent() async throws {
+    func testDirectSelectionChangeKeepsProfileStatsScoped() async throws {
         let fixture = try SyntheticProfileFixture()
         defer { fixture.remove() }
         let model = fixture.model
-        fixture.showChats()
+        try await fixture.refreshStats()
         model.selectProfile(fixture.first.id)
-        try await fixture.waitForChats()
-        XCTAssertFalse(model.chatTranscriptEntries.isEmpty)
-        let previousChat = try XCTUnwrap(model.selectedChatID)
+        XCTAssertEqual(model.stats(for: try XCTUnwrap(model.selectedProfile)).totalTokens, 111)
 
-        // Direct bindings and reloads must provide the same boundary as sidebar actions.
+        // Direct bindings and sidebar actions must resolve the same data boundary.
         model.sidebarSelection = .profile(fixture.second.id)
 
         XCTAssertEqual(model.selectedProfile?.id, fixture.second.id)
-        XCTAssertTrue(model.chatSessions.isEmpty)
-        XCTAssertTrue(model.chatTranscriptEntries.isEmpty)
-        XCTAssertNil(model.selectedChatID)
-        XCTAssertFalse(model.hasMoreChatTranscript)
-        model.selectChat(previousChat)
-        XCTAssertNil(model.selectedChatID)
-
-        model.refreshChats()
-        try await fixture.waitForChats()
-        XCTAssertEqual(model.chatSessions.map(\.profileID), [fixture.second.id])
-        XCTAssertEqual(model.chatTranscriptEntries.filter { $0.kind == .message }.map(\.text), ["Second profile conversation"])
+        XCTAssertEqual(model.stats(for: try XCTUnwrap(model.selectedProfile)).totalTokens, 222)
+        XCTAssertEqual(model.stats(for: fixture.first).totalTokens, 111)
     }
 
     func testHomeStartsByDefaultAndSurvivesReload() throws {
@@ -55,32 +48,23 @@ final class ProfileSelectionIsolationTests: XCTestCase {
         XCTAssertTrue(fixture.model.showsHome)
     }
 
-    func testHomeClearsPreviousTranscriptAndReturnsToProfileOverview() async throws {
+    func testHomeClosesSourcePanelsAndReturnsToProfileOverview() async throws {
         let fixture = try SyntheticProfileFixture()
         defer { fixture.remove() }
         let model = fixture.model
-        fixture.showChats()
+        try await fixture.refreshStats()
         model.selectProfile(fixture.first.id)
-        try await fixture.waitForChats()
-        XCTAssertFalse(model.chatTranscriptEntries.isEmpty)
-        model.detailTab = .chats
+        model.detailTab = .advanced
         model.resetReminders.showsAvailableResets = true
+
         model.selectHome()
+
         XCTAssertTrue(model.showsHome)
+        XCTAssertNil(model.selectedProfile)
         XCTAssertFalse(model.resetReminders.showsAvailableResets)
-        XCTAssertTrue(model.chatSessions.isEmpty)
-        XCTAssertTrue(model.chatTranscriptEntries.isEmpty)
-        XCTAssertNil(model.selectedChatID)
-        model.refreshChats()
-        try await fixture.waitForChats()
-        XCTAssertTrue(model.chatSessions.isEmpty)
         model.selectProfile(fixture.second.id)
         XCTAssertEqual(model.detailTab, .overview)
-        try await fixture.waitForChats()
-        XCTAssertTrue(model.chatSessions.isEmpty)
-        fixture.showChats()
-        try await fixture.waitForChats()
-        XCTAssertEqual(model.chatSessions.map(\.profileID), [fixture.second.id])
+        XCTAssertEqual(model.stats(for: try XCTUnwrap(model.selectedProfile)).totalTokens, 222)
     }
 
     func testInvalidOrEmptySelectionNeverResolvesToAnotherProfile() throws {
@@ -92,26 +76,84 @@ final class ProfileSelectionIsolationTests: XCTestCase {
         XCTAssertNil(fixture.model.selectedProfile)
     }
 
-    func testOfficialSelectionUsesOnlyTheConfiguredDataRoot() async throws {
+    func testOfficialCodexStatsUseOnlyTheConfiguredDataRoot() async throws {
         let fixture = try SyntheticProfileFixture()
         defer { fixture.remove() }
         let officialRoot = fixture.root.appendingPathComponent("Official", isDirectory: true)
         try FileManager.default.createDirectory(at: officialRoot, withIntermediateDirectories: true)
-        try FileManager.default.copyItem(
-            at: fixture.first.codexHomePath,
-            to: officialRoot.appendingPathComponent(".codex", isDirectory: true)
-        )
+        try FileManager.default.copyItem(at: fixture.first.codexHomePath,
+                                        to: officialRoot.appendingPathComponent(".codex", isDirectory: true))
 
-        fixture.showChats()
         fixture.model.selectOfficial(.codex)
-        try await fixture.waitForChats()
+        try await fixture.refreshStats()
 
-        XCTAssertEqual(fixture.model.chatSessions.count, 1)
-        XCTAssertEqual(fixture.model.chatTranscriptEntries.filter { $0.kind == .message }.map(\.text),
-                       ["First profile conversation"])
-        XCTAssertTrue(fixture.model.chatSessions.allSatisfy {
-            $0.sourceURL.path.hasPrefix(officialRoot.path + "/")
-        })
+        XCTAssertNil(fixture.model.selectedProfile)
+        XCTAssertEqual(fixture.model.selectedOfficialProduct, .codex)
+        XCTAssertEqual(fixture.model.officialCodexStats.totalTokens, 111)
+        XCTAssertEqual(fixture.model.stats(for: fixture.second).totalTokens, 222)
+    }
+
+    func testOfficialClaudeStatsRemainSourceScopedWithoutBrowserIndexes() async throws {
+        let fixture = try SyntheticProfileFixture(includeClaude: true)
+        defer { fixture.remove() }
+        let managed = try XCTUnwrap(fixture.model.profiles.first { $0.product == .claude })
+        try fixture.writeClaudeSession(under: managed.claudeUserDataPath, id: "managed-claude", tokens: 333)
+        try fixture.writeClaudeSession(under: fixture.root.appendingPathComponent("Official/Claude"),
+                                       id: "official-claude", tokens: 777)
+        let history = try fixture.historySnapshot()
+        let indexes = try fixture.indexSnapshot()
+
+        fixture.model.selectOfficial(.claude)
+        try await fixture.refreshStats()
+
+        XCTAssertEqual(fixture.model.officialClaudeStats.totalSessions, 1)
+        XCTAssertEqual(fixture.model.officialClaudeStats.totalTokens, 777)
+        XCTAssertEqual(fixture.model.stats(for: managed).totalSessions, 1)
+        XCTAssertEqual(fixture.model.stats(for: managed).totalTokens, 333)
+        XCTAssertEqual(try fixture.historySnapshot(), history)
+        XCTAssertEqual(try fixture.indexSnapshot(), indexes)
+    }
+
+    func testRemovingFromListPreservesHistoryAndRemovesOnlySelectedLegacyIndexes() async throws {
+        let fixture = try SyntheticProfileFixture()
+        defer { fixture.remove() }
+        let history = try fixture.historySnapshot()
+        let indexes = try fixture.indexSnapshot()
+        let selectedPrefix = "managed-\(fixture.first.id.uuidString.lowercased())-v"
+        let remainingIndexes = indexes.filter { !($0.key as NSString).lastPathComponent.hasPrefix(selectedPrefix) }
+        XCTAssertEqual(indexes.count - remainingIndexes.count, 2)
+
+        fixture.model.removeProfileFromList(fixture.first)
+        try await fixture.waitUntil { !fixture.model.storeMutationInProgress }
+
+        XCTAssertNil(fixture.model.errorMessage)
+        XCTAssertFalse(fixture.model.profiles.contains { $0.id == fixture.first.id })
+        XCTAssertEqual(try fixture.historySnapshot(), history)
+        XCTAssertEqual(try fixture.indexSnapshot(), remainingIndexes)
+    }
+
+    func testPermanentDeletionRemovesOnlySelectedProfileDataAndLegacyIndexes() async throws {
+        let fixture = try SyntheticProfileFixture()
+        defer { fixture.remove() }
+        let official = fixture.root.appendingPathComponent("Official/.codex", isDirectory: true)
+        try FileManager.default.copyItem(at: fixture.first.codexHomePath, to: official)
+        let history = try fixture.historySnapshot()
+        let selectedHistoryPrefix = String(fixture.first.profileDirectory.path.dropFirst(fixture.root.path.count + 1)) + "/"
+        let remainingHistory = history.filter { !$0.key.hasPrefix(selectedHistoryPrefix) }
+        let indexes = try fixture.indexSnapshot()
+        let selectedIndexPrefix = "managed-\(fixture.first.id.uuidString.lowercased())-v"
+        let remainingIndexes = indexes.filter { !($0.key as NSString).lastPathComponent.hasPrefix(selectedIndexPrefix) }
+        XCTAssertLessThan(remainingHistory.count, history.count)
+        XCTAssertEqual(indexes.count - remainingIndexes.count, 2)
+
+        fixture.model.deleteProfileData(fixture.first)
+        try await fixture.waitUntil { !fixture.model.storeMutationInProgress }
+
+        XCTAssertNil(fixture.model.errorMessage)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: fixture.first.profileDirectory.path))
+        XCTAssertFalse(fixture.model.profiles.contains { $0.id == fixture.first.id })
+        XCTAssertEqual(try fixture.historySnapshot(), remainingHistory)
+        XCTAssertEqual(try fixture.indexSnapshot(), remainingIndexes)
     }
 
     func testSyntheticVisualAudit() async throws {
@@ -126,17 +168,15 @@ final class ProfileSelectionIsolationTests: XCTestCase {
                 ? "Design Studio — Product and Platform Engineering" : "Design Studio", includeClaude: true)
             defer { fixture.remove() }
             let model = fixture.model
-            fixture.showChats()
             model.selectProfile(fixture.first.id)
-            try await fixture.waitForChats()
+            try await fixture.refreshStats()
             let updater = AppUpdater()
             for appearance in [AgentDockAppearance.light, .dark] {
-              for destination in ["home", "overview", "chats"] {
+              for destination in ["home", "overview"] {
                 if destination == "home" { model.selectHome() }
                 else { model.selectProfile(fixture.first.id) }
-                let tab: AgentDockDetailTab = destination == "chats" ? .chats : .overview
                 model.preferences.appearance = appearance
-                model.detailTab = tab
+                model.detailTab = .overview
                 let view = NSHostingView(rootView: ContentView()
                     .environmentObject(model)
                     .environmentObject(updater))
@@ -187,96 +227,6 @@ final class ProfileSelectionIsolationTests: XCTestCase {
         }
     }
 
-    func testChatPollingStopsWhileHiddenAndWhileInactive() async throws {
-        let fixture = try SyntheticProfileFixture(startMonitoring: true)
-        defer { fixture.remove() }
-        let model = fixture.model
-        model.selectProfile(fixture.first.id)
-        fixture.showChats()
-        try await fixture.waitForChats()
-        XCTAssertEqual(model.chatSessions.count, 1)
-
-        for inactive in [false, true] {
-            if inactive { model.setApplicationActive(false) }
-            else {
-                model.detailTab = .overview
-                fixture.hideChats()
-            }
-            let previousEntries = model.chatTranscriptEntries
-            let indexes = fixture.root.appendingPathComponent("Indexes")
-            let indexFiles = try FileManager.default.contentsOfDirectory(
-                at: indexes, includingPropertiesForKeys: nil
-            )
-            XCTAssertFalse(indexFiles.isEmpty)
-            let previousDates = try indexFiles.map {
-                try FileManager.default.attributesOfItem(atPath: $0.path)[.modificationDate] as? Date
-            }
-            let message = inactive ? "Updated while inactive" : "Updated while hidden"
-            try fixture.appendAssistantMessage(message)
-            model.refreshChats()
-            model.loadMoreChatTranscript()
-            // Two five-second polls would reload this changed source if monitoring leaked.
-            try await Task.sleep(for: .seconds(11))
-
-            XCTAssertFalse(model.chatsLoading)
-            XCTAssertFalse(model.chatTranscriptLoading)
-            XCTAssertFalse(model.chatOlderTranscriptLoading)
-            XCTAssertEqual(model.chatTranscriptEntries, previousEntries)
-            XCTAssertEqual(try indexFiles.map {
-                try FileManager.default.attributesOfItem(atPath: $0.path)[.modificationDate] as? Date
-            }, previousDates)
-
-            if inactive { model.setApplicationActive(true) }
-            else { fixture.showChats() }
-            try await fixture.waitForChats()
-            XCTAssertEqual(model.chatTranscriptEntries.last?.text, message)
-        }
-
-        try fixture.appendAssistantMessage("Updated while visible")
-        let deadline = ContinuousClock.now.advanced(by: .seconds(15))
-        while model.chatTranscriptEntries.last?.text != "Updated while visible",
-              ContinuousClock.now < deadline {
-            try await Task.sleep(for: .milliseconds(50))
-        }
-        XCTAssertEqual(model.chatTranscriptEntries.last?.text, "Updated while visible")
-    }
-
-    func testHidingChatsCancelsLoadingWithoutLeavingSpinners() async throws {
-        let fixture = try SyntheticProfileFixture()
-        defer { fixture.remove() }
-        fixture.model.selectProfile(fixture.first.id)
-        fixture.showChats()
-        XCTAssertTrue(fixture.model.chatsLoading)
-        fixture.hideChats()
-        try await Task.sleep(for: .milliseconds(100))
-
-        XCTAssertFalse(fixture.model.chatsLoading)
-        XCTAssertFalse(fixture.model.chatTranscriptLoading)
-        XCTAssertTrue(fixture.model.chatSessions.isEmpty)
-        fixture.showChats()
-        try await fixture.waitForChats()
-        XCTAssertEqual(fixture.model.chatSessions.count, 1)
-    }
-
-    func testClosingOneChatBrowserKeepsTheOtherBrowserActive() async throws {
-        let fixture = try SyntheticProfileFixture()
-        defer { fixture.remove() }
-        let model = fixture.model
-        model.selectProfile(fixture.first.id)
-        fixture.showChats()
-        try await fixture.waitForChats()
-        let otherBrowser = UUID()
-        model.setChatBrowserVisible(true, browserID: otherBrowser)
-        fixture.hideChats()
-        try fixture.appendAssistantMessage("Other window remains visible")
-        model.refreshChats()
-        try await fixture.waitForChats()
-        XCTAssertEqual(model.chatTranscriptEntries.last?.text, "Other window remains visible")
-
-        model.setChatBrowserVisible(false, browserID: otherBrowser)
-        model.refreshChats()
-        XCTAssertFalse(model.chatsLoading)
-    }
 }
 
 /// Real on-disk provider records and production services, with no live account reads.
@@ -287,13 +237,12 @@ private final class SyntheticProfileFixture {
     let model: CodexerModel
     let first: CodexProfile
     let second: CodexProfile
-    private let chatBrowserID = UUID()
 
-    init(firstName: String = "Design Studio", includeClaude: Bool = false,
-         startMonitoring: Bool = false) throws {
-        root = FileManager.default.temporaryDirectory
+    init(firstName: String = "Design Studio", includeClaude: Bool = false) throws {
+        let temporaryRoot = FileManager.default.temporaryDirectory
             .appendingPathComponent("AgentDock-Selection-\(UUID().uuidString)", isDirectory: true)
-            .standardizedFileURL.resolvingSymlinksInPath()
+        try FileManager.default.createDirectory(at: temporaryRoot, withIntermediateDirectories: true)
+        root = temporaryRoot.resolvingSymlinksInPath().standardizedFileURL
         defaultsName = "AgentDock.SelectionTests.\(UUID().uuidString)"
         let defaults = try XCTUnwrap(UserDefaults(suiteName: defaultsName))
         let store = try ProfileStore(rootDirectory: root,
@@ -301,7 +250,8 @@ private final class SyntheticProfileFixture {
         first = try store.createProfile(name: firstName)
         second = try store.createProfile(name: "Engineering")
         if includeClaude { _ = try store.createProfile(product: .claude, name: "Studio") }
-        for (profile, prompt) in [(first, "First profile conversation"), (second, "Second profile conversation")] {
+        for (profile, prompt, tokens) in [(first, "First profile conversation", 111),
+                                          (second, "Second profile conversation", 222)] {
             let sessions = profile.codexHomePath.appendingPathComponent("sessions/2026/09/07", isDirectory: true)
             try FileManager.default.createDirectory(at: sessions, withIntermediateDirectories: true)
             let records: [[String: Any]] = [
@@ -314,6 +264,26 @@ private final class SyntheticProfileFixture {
             let data = try records.map { try JSONSerialization.data(withJSONObject: $0) }
                 .reduce(into: Data()) { $0.append($1); $0.append(0x0a) }
             try data.write(to: sessions.appendingPathComponent("rollout-synthetic.jsonl"))
+            let process = Process()
+            process.executableURL = URL(fileURLWithPath: "/usr/bin/sqlite3")
+            process.arguments = [profile.codexHomePath.appendingPathComponent("state_5.sqlite").path, """
+                CREATE TABLE threads (id TEXT, tokens_used INTEGER, updated_at INTEGER, archived INTEGER);
+                INSERT INTO threads VALUES ('shared-session-id', \(tokens), \(Int(Date().timeIntervalSince1970)), 0);
+                """]
+            try process.run()
+            process.waitUntilExit()
+            XCTAssertEqual(process.terminationStatus, 0)
+        }
+        let indexRoot = root.appendingPathComponent("Official/ChatIndexes", isDirectory: true)
+        try FileManager.default.createDirectory(at: indexRoot, withIntermediateDirectories: true)
+        for scope in ["managed-\(first.id.uuidString.lowercased())",
+                      "managed-\(second.id.uuidString.lowercased())", "official-0123456789abcdef"] {
+            for version in [1, 2] {
+                let data = try JSONSerialization.data(withJSONObject: [
+                    "version": version, "scopeKey": scope, "sourceRootKey": "synthetic", "records": []
+                ] as [String: Any], options: [.sortedKeys])
+                try data.write(to: indexRoot.appendingPathComponent("\(scope)-v\(version).json"))
+            }
         }
         let resetStore = ResetReminderStore(defaults: defaults)
         let expirationHours: Double = firstName.contains("Engineering") ? 12 : 48
@@ -329,44 +299,71 @@ private final class SyntheticProfileFixture {
             officialDataRootURL: root.appendingPathComponent("Official"),
             codexAppURL: root.appendingPathComponent("Unavailable.app"),
             claudeAppURL: root.appendingPathComponent("Unavailable.app"),
+            statsScanner: ProfileStatsScanner(claudeChatScanner: LocalChatScanner(indexRootURL: indexRoot)),
             preferencesStore: AgentDockPreferencesStore(defaults: defaults),
-            chatScanner: LocalChatScanner(indexRootURL: root.appendingPathComponent("Indexes")),
-            startMonitoring: startMonitoring,
+            startMonitoring: false,
             loadActivityOnInit: false,
             resetReminders: ResetReminderController(store: resetStore, nativeNotifications: false)
         )
     }
 
-    func showChats() {
-        model.detailTab = .chats
-        model.setChatBrowserVisible(true, browserID: chatBrowserID)
-    }
-
-    func hideChats() {
-        model.setChatBrowserVisible(false, browserID: chatBrowserID)
-    }
-
-    func appendAssistantMessage(_ text: String) throws {
-        let transcript = first.codexHomePath
-            .appendingPathComponent("sessions/2026/09/07/rollout-synthetic.jsonl")
-        let writer = try FileHandle(forWritingTo: transcript)
-        defer { try? writer.close() }
-        try writer.seekToEnd()
-        let record: [String: Any] = [
-            "timestamp": "2026-09-07T10:00:02Z", "type": "response_item",
-            "payload": ["type": "message", "role": "assistant",
-                        "content": [["type": "output_text", "text": text]]]
-        ]
-        var data = try JSONSerialization.data(withJSONObject: record)
+    func writeClaudeSession(under userData: URL, id: String, tokens: Int) throws {
+        let metadata = userData.appendingPathComponent("claude-code-sessions/org/workspace/local_fixture.json")
+        let audit = userData.appendingPathComponent("local-agent-mode-sessions/org/workspace/local_fixture/audit.jsonl")
+        for file in [metadata, audit] {
+            try FileManager.default.createDirectory(at: file.deletingLastPathComponent(), withIntermediateDirectories: true)
+        }
+        let timestamp = Date().timeIntervalSince1970 * 1_000
+        try JSONSerialization.data(withJSONObject: [
+            "sessionId": id, "title": "Synthetic Claude session", "model": "claude-opus-4-1",
+            "createdAt": timestamp, "lastActivityAt": timestamp, "isArchived": false
+        ]).write(to: metadata)
+        var data = try JSONSerialization.data(withJSONObject: [
+            "type": "assistant", "requestId": "synthetic-request",
+            "message": ["id": "synthetic-message", "usage": ["input_tokens": tokens, "output_tokens": 0]]
+        ])
         data.append(0x0a)
-        try writer.write(contentsOf: data)
+        try data.write(to: audit)
     }
 
-    func waitForChats() async throws {
+    func historySnapshot() throws -> [String: Data] {
+        try snapshot { url in
+            url.lastPathComponent == "state_5.sqlite"
+                || url.pathExtension == "jsonl"
+                || url.lastPathComponent == "local_fixture.json"
+        }
+    }
+
+    func indexSnapshot() throws -> [String: Data] {
+        try snapshot { $0.path.hasPrefix(root.appendingPathComponent("Official/ChatIndexes").path + "/") }
+    }
+
+    private func snapshot(including predicate: (URL) -> Bool) throws -> [String: Data] {
+        let enumerator = try XCTUnwrap(FileManager.default.enumerator(at: root,
+            includingPropertiesForKeys: [.isRegularFileKey]))
+        var files: [String: Data] = [:]
+        let rootPrefix = root.resolvingSymlinksInPath().standardizedFileURL.path + "/"
+        for case let enumeratedURL as URL in enumerator {
+            let url = enumeratedURL.resolvingSymlinksInPath().standardizedFileURL
+            guard predicate(url),
+                  try url.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile == true else { continue }
+            XCTAssertTrue(url.path.hasPrefix(rootPrefix), "Fixture record escaped its canonical root")
+            guard url.path.hasPrefix(rootPrefix) else { continue }
+            files[String(url.path.dropFirst(rootPrefix.count))] = try Data(contentsOf: url)
+        }
+        return files
+    }
+
+    func refreshStats() async throws {
+        model.refreshStats()
+        try await waitUntil { !self.model.officialStatsLoading && self.model.statsLoadingProfileIDs.isEmpty }
+    }
+
+    func waitUntil(_ condition: @escaping @MainActor () -> Bool) async throws {
         let deadline = ContinuousClock.now.advanced(by: .seconds(5))
-        while model.chatsLoading || model.chatTranscriptLoading {
+        while !condition() {
             guard ContinuousClock.now < deadline else {
-                XCTFail("Synthetic transcript did not finish loading")
+                XCTFail("Synthetic profile operation did not finish")
                 return
             }
             try await Task.sleep(for: .milliseconds(10))

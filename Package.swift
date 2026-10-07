@@ -25,7 +25,6 @@ let package = Package(
             name: "Codexer",
             dependencies: [
                 "CodexerCore",
-                "TranscriptRenderer",
                 .product(name: "Sparkle", package: "Sparkle")
             ],
             linkerSettings: [
