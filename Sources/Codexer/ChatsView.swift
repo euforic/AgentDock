@@ -4,6 +4,7 @@ import TranscriptRenderer
 
 struct ChatsView: View {
     @EnvironmentObject private var model: CodexerModel
+    @State private var browserID = UUID()
     @State private var searchText = ""
     @State private var dateFilter: ChatDateFilter = .all
     @State private var showsMetadata = false
@@ -44,6 +45,8 @@ struct ChatsView: View {
                 }
             }
         }
+        .onAppear { model.setChatBrowserVisible(true, browserID: browserID) }
+        .onDisappear { model.setChatBrowserVisible(false, browserID: browserID) }
         .onReceive(NotificationCenter.default.publisher(for: .agentDockFocusSearch)) { _ in
             searchFocused = true
         }

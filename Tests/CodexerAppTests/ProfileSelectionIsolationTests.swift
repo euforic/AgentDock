@@ -6,10 +6,24 @@ import XCTest
 
 @MainActor
 final class ProfileSelectionIsolationTests: XCTestCase {
+    func testOverviewSelectionDoesNotReadChatsOrWriteAnIndex() async throws {
+        let fixture = try SyntheticProfileFixture()
+        defer { fixture.remove() }
+        fixture.model.selectProfile(fixture.first.id)
+        try await fixture.waitForChats()
+
+        XCTAssertTrue(fixture.model.chatSessions.isEmpty)
+        XCTAssertTrue(fixture.model.chatTranscriptEntries.isEmpty)
+        XCTAssertFalse(FileManager.default.fileExists(
+            atPath: fixture.root.appendingPathComponent("Indexes").path
+        ))
+    }
+
     func testDirectSelectionChangeImmediatelyClearsPreviousProfileContent() async throws {
         let fixture = try SyntheticProfileFixture()
         defer { fixture.remove() }
         let model = fixture.model
+        fixture.showChats()
         model.selectProfile(fixture.first.id)
         try await fixture.waitForChats()
         XCTAssertFalse(model.chatTranscriptEntries.isEmpty)
@@ -45,6 +59,7 @@ final class ProfileSelectionIsolationTests: XCTestCase {
         let fixture = try SyntheticProfileFixture()
         defer { fixture.remove() }
         let model = fixture.model
+        fixture.showChats()
         model.selectProfile(fixture.first.id)
         try await fixture.waitForChats()
         XCTAssertFalse(model.chatTranscriptEntries.isEmpty)
@@ -61,6 +76,9 @@ final class ProfileSelectionIsolationTests: XCTestCase {
         XCTAssertTrue(model.chatSessions.isEmpty)
         model.selectProfile(fixture.second.id)
         XCTAssertEqual(model.detailTab, .overview)
+        try await fixture.waitForChats()
+        XCTAssertTrue(model.chatSessions.isEmpty)
+        fixture.showChats()
         try await fixture.waitForChats()
         XCTAssertEqual(model.chatSessions.map(\.profileID), [fixture.second.id])
     }
@@ -84,6 +102,7 @@ final class ProfileSelectionIsolationTests: XCTestCase {
             to: officialRoot.appendingPathComponent(".codex", isDirectory: true)
         )
 
+        fixture.showChats()
         fixture.model.selectOfficial(.codex)
         try await fixture.waitForChats()
 
@@ -107,6 +126,7 @@ final class ProfileSelectionIsolationTests: XCTestCase {
                 ? "Design Studio — Product and Platform Engineering" : "Design Studio", includeClaude: true)
             defer { fixture.remove() }
             let model = fixture.model
+            fixture.showChats()
             model.selectProfile(fixture.first.id)
             try await fixture.waitForChats()
             let updater = AppUpdater()
@@ -166,6 +186,97 @@ final class ProfileSelectionIsolationTests: XCTestCase {
             }
         }
     }
+
+    func testChatPollingStopsWhileHiddenAndWhileInactive() async throws {
+        let fixture = try SyntheticProfileFixture(startMonitoring: true)
+        defer { fixture.remove() }
+        let model = fixture.model
+        model.selectProfile(fixture.first.id)
+        fixture.showChats()
+        try await fixture.waitForChats()
+        XCTAssertEqual(model.chatSessions.count, 1)
+
+        for inactive in [false, true] {
+            if inactive { model.setApplicationActive(false) }
+            else {
+                model.detailTab = .overview
+                fixture.hideChats()
+            }
+            let previousEntries = model.chatTranscriptEntries
+            let indexes = fixture.root.appendingPathComponent("Indexes")
+            let indexFiles = try FileManager.default.contentsOfDirectory(
+                at: indexes, includingPropertiesForKeys: nil
+            )
+            XCTAssertFalse(indexFiles.isEmpty)
+            let previousDates = try indexFiles.map {
+                try FileManager.default.attributesOfItem(atPath: $0.path)[.modificationDate] as? Date
+            }
+            let message = inactive ? "Updated while inactive" : "Updated while hidden"
+            try fixture.appendAssistantMessage(message)
+            model.refreshChats()
+            model.loadMoreChatTranscript()
+            // Two five-second polls would reload this changed source if monitoring leaked.
+            try await Task.sleep(for: .seconds(11))
+
+            XCTAssertFalse(model.chatsLoading)
+            XCTAssertFalse(model.chatTranscriptLoading)
+            XCTAssertFalse(model.chatOlderTranscriptLoading)
+            XCTAssertEqual(model.chatTranscriptEntries, previousEntries)
+            XCTAssertEqual(try indexFiles.map {
+                try FileManager.default.attributesOfItem(atPath: $0.path)[.modificationDate] as? Date
+            }, previousDates)
+
+            if inactive { model.setApplicationActive(true) }
+            else { fixture.showChats() }
+            try await fixture.waitForChats()
+            XCTAssertEqual(model.chatTranscriptEntries.last?.text, message)
+        }
+
+        try fixture.appendAssistantMessage("Updated while visible")
+        let deadline = ContinuousClock.now.advanced(by: .seconds(15))
+        while model.chatTranscriptEntries.last?.text != "Updated while visible",
+              ContinuousClock.now < deadline {
+            try await Task.sleep(for: .milliseconds(50))
+        }
+        XCTAssertEqual(model.chatTranscriptEntries.last?.text, "Updated while visible")
+    }
+
+    func testHidingChatsCancelsLoadingWithoutLeavingSpinners() async throws {
+        let fixture = try SyntheticProfileFixture()
+        defer { fixture.remove() }
+        fixture.model.selectProfile(fixture.first.id)
+        fixture.showChats()
+        XCTAssertTrue(fixture.model.chatsLoading)
+        fixture.hideChats()
+        try await Task.sleep(for: .milliseconds(100))
+
+        XCTAssertFalse(fixture.model.chatsLoading)
+        XCTAssertFalse(fixture.model.chatTranscriptLoading)
+        XCTAssertTrue(fixture.model.chatSessions.isEmpty)
+        fixture.showChats()
+        try await fixture.waitForChats()
+        XCTAssertEqual(fixture.model.chatSessions.count, 1)
+    }
+
+    func testClosingOneChatBrowserKeepsTheOtherBrowserActive() async throws {
+        let fixture = try SyntheticProfileFixture()
+        defer { fixture.remove() }
+        let model = fixture.model
+        model.selectProfile(fixture.first.id)
+        fixture.showChats()
+        try await fixture.waitForChats()
+        let otherBrowser = UUID()
+        model.setChatBrowserVisible(true, browserID: otherBrowser)
+        fixture.hideChats()
+        try fixture.appendAssistantMessage("Other window remains visible")
+        model.refreshChats()
+        try await fixture.waitForChats()
+        XCTAssertEqual(model.chatTranscriptEntries.last?.text, "Other window remains visible")
+
+        model.setChatBrowserVisible(false, browserID: otherBrowser)
+        model.refreshChats()
+        XCTAssertFalse(model.chatsLoading)
+    }
 }
 
 /// Real on-disk provider records and production services, with no live account reads.
@@ -176,8 +287,10 @@ private final class SyntheticProfileFixture {
     let model: CodexerModel
     let first: CodexProfile
     let second: CodexProfile
+    private let chatBrowserID = UUID()
 
-    init(firstName: String = "Design Studio", includeClaude: Bool = false) throws {
+    init(firstName: String = "Design Studio", includeClaude: Bool = false,
+         startMonitoring: Bool = false) throws {
         root = FileManager.default.temporaryDirectory
             .appendingPathComponent("AgentDock-Selection-\(UUID().uuidString)", isDirectory: true)
             .standardizedFileURL.resolvingSymlinksInPath()
@@ -218,9 +331,35 @@ private final class SyntheticProfileFixture {
             claudeAppURL: root.appendingPathComponent("Unavailable.app"),
             preferencesStore: AgentDockPreferencesStore(defaults: defaults),
             chatScanner: LocalChatScanner(indexRootURL: root.appendingPathComponent("Indexes")),
+            startMonitoring: startMonitoring,
             loadActivityOnInit: false,
             resetReminders: ResetReminderController(store: resetStore, nativeNotifications: false)
         )
+    }
+
+    func showChats() {
+        model.detailTab = .chats
+        model.setChatBrowserVisible(true, browserID: chatBrowserID)
+    }
+
+    func hideChats() {
+        model.setChatBrowserVisible(false, browserID: chatBrowserID)
+    }
+
+    func appendAssistantMessage(_ text: String) throws {
+        let transcript = first.codexHomePath
+            .appendingPathComponent("sessions/2026/09/07/rollout-synthetic.jsonl")
+        let writer = try FileHandle(forWritingTo: transcript)
+        defer { try? writer.close() }
+        try writer.seekToEnd()
+        let record: [String: Any] = [
+            "timestamp": "2026-09-07T10:00:02Z", "type": "response_item",
+            "payload": ["type": "message", "role": "assistant",
+                        "content": [["type": "output_text", "text": text]]]
+        ]
+        var data = try JSONSerialization.data(withJSONObject: record)
+        data.append(0x0a)
+        try writer.write(contentsOf: data)
     }
 
     func waitForChats() async throws {

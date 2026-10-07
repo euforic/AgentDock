@@ -71,6 +71,13 @@ profile path.
 
 ## Local Chat Indexing
 
+Chat inventories, transcript reads, and five-second change checks run only
+while Chats is visible and AgentDock is active. Selecting a profile's Overview
+does not load its chats. Leaving Chats or switching away from AgentDock cancels
+pending chat work; returning to Chats refreshes its list and transcript.
+Automatic activity and process-status polling also skip inactive periods.
+Native reset reminders continue to operate in the background.
+
 1. [`LocalChatSession`](../Sources/CodexerCore/LocalChatSession.swift) inventories
    only supported provider metadata sources. Codex database rows accelerate
    metadata lookup but are merged with the bounded session-file inventory

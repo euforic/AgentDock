@@ -62,9 +62,6 @@ struct ContentView: View {
         } message: {
             Text("This permanently removes the managed local sessions, settings, and shortcut for \(model.pendingDeleteProfile?.name ?? "this profile"). Credentials in shared macOS Keychain or external provider stores are not deleted. This cannot be undone.")
         }
-        .task {
-            model.refreshChats()
-        }
         .onReceive(NotificationCenter.default.publisher(for: .agentDockFocusSearch)) { _ in
             guard showsSettings || model.showsHome || model.resetReminders.showsAvailableResets || model.detailTab != .chats else { return }
             searchFocused = true
