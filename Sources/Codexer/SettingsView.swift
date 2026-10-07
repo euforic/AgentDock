@@ -99,6 +99,9 @@ struct SettingsView: View {
     private var sectionContent: some View {
         switch section {
         case .general: general
+        case .notifications: SettingsPage(title: "Notifications") {
+            ResetNotificationSettings(controller: model.resetReminders)
+        }
         case .providerApps: providerApps
         case .privacy: privacy
         case .about: about
@@ -589,6 +592,7 @@ private struct ProviderSettingsRow: View {
 
 private enum SettingsSection: String, CaseIterable, Identifiable {
     case general
+    case notifications
     case providerApps
     case privacy
     case about
@@ -598,6 +602,7 @@ private enum SettingsSection: String, CaseIterable, Identifiable {
     var title: String {
         switch self {
         case .general: "General"
+        case .notifications: "Notifications"
         case .providerApps: "Provider Apps"
         case .privacy: "Data & Privacy"
         case .about: "About"
@@ -607,6 +612,7 @@ private enum SettingsSection: String, CaseIterable, Identifiable {
     var icon: String {
         switch self {
         case .general: "gearshape"
+        case .notifications: "bell"
         case .providerApps: "square.grid.2x2"
         case .privacy: "lock"
         case .about: "info.circle"
@@ -615,7 +621,7 @@ private enum SettingsSection: String, CaseIterable, Identifiable {
 
     var analyticsSurface: AnalyticsSurface {
         switch self {
-        case .general: .settingsGeneral
+        case .general, .notifications: .settingsGeneral
         case .providerApps: .settingsProviders
         case .privacy: .settingsPrivacy
         case .about: .settingsAbout

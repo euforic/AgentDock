@@ -71,6 +71,12 @@ struct ContentView: View {
         .onReceive(NotificationCenter.default.publisher(for: .agentDockFocusProfileSearch)) { _ in
             searchFocused = true
         }
+        .onReceive(model.resetReminders.$showsAvailableResets) { visible in
+            if visible { showsSettings = false }
+        }
+        .onChange(of: model.sidebarSelection) {
+            model.resetReminders.showsAvailableResets = false
+        }
         .onChange(of: model.detailTab) { _, tab in
             let surface: AnalyticsSurface = switch tab {
             case .overview: .overview
@@ -98,6 +104,10 @@ struct ContentView: View {
 
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 4) {
+                    ResetSidebarButton(controller: model.resetReminders) {
+                        showsSettings = false
+                        model.resetReminders.showsAvailableResets = true
+                    }
                     providerSection(.codex)
                     providerSection(.claude)
                 }
@@ -241,19 +251,21 @@ struct ContentView: View {
             if showsSettings {
                 SettingsView(presentation: .embedded)
             } else {
-                VStack(spacing: 0) {
-                    detailToolbar
-                    Divider()
-                        .overlay(AgentDockPalette.divider)
-                    Group {
-                        switch model.detailTab {
-                        case .overview:
-                            OverviewView()
-                        case .chats:
-                            ChatsView()
-                                .id(model.sidebarSelection)
-                        case .advanced:
-                            AdvancedView()
+                ResetDetailContainer(controller: model.resetReminders, model: model) {
+                    VStack(spacing: 0) {
+                        detailToolbar
+                        Divider()
+                            .overlay(AgentDockPalette.divider)
+                        Group {
+                            switch model.detailTab {
+                            case .overview:
+                                OverviewView()
+                            case .chats:
+                                ChatsView()
+                                    .id(model.sidebarSelection)
+                            case .advanced:
+                                AdvancedView()
+                            }
                         }
                     }
                 }

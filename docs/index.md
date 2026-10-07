@@ -13,6 +13,8 @@ implementation, contribution, and operations details needed for focused work.
   release artifact flows.
 - [Interfaces and contracts](apis.md): Swift modules, process contracts,
   environment variables, and persistent formats.
+- [Banked reset reminders](reset-reminders.md): inventory, native expiration alerts,
+  snoozing, freshness, and validation.
 - [Development and testing](development.md): local setup, commands, validation,
   and opt-in installed-app checks.
 - [Release operations](operations.md): packaging, signing, notarization,

@@ -192,11 +192,12 @@ sign_component() {
   local target="$2"
   SIGNING_ARGUMENTS=(
     --force
-    --options runtime
     --sign "$SIGNING_IDENTITY"
   )
   if [[ "$SIGNING_IDENTITY" != "-" ]]; then
-    SIGNING_ARGUMENTS+=(--timestamp)
+    # Hardened runtime library validation requires a real signing team.
+    # Ad-hoc development bundles cannot satisfy it for embedded frameworks.
+    SIGNING_ARGUMENTS+=(--options runtime --timestamp)
   fi
   if [[ -n "$SIGNING_KEYCHAIN" ]]; then
     SIGNING_ARGUMENTS+=(--keychain "$SIGNING_KEYCHAIN")

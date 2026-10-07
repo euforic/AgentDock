@@ -1,0 +1,106 @@
+# Banked Reset Reminders
+
+**Available Resets** lists banked Codex resets across the official installation
+and managed Codex profiles, sorted by expiration. These credits are separate
+from automatic five-hour/weekly window resets and pay-as-you-go balances.
+
+AgentDock reads `account/rateLimits/read` using the signed installed app's
+bundled CLI and each source's own `CODEX_HOME`. This inventory is independent
+of the selected model provider and activity-refresh settings. It does not read
+transcripts, redeem resets, or access undocumented backend endpoints.
+
+The response's `rateLimitResetCredits.availableCount` is authoritative. Optional
+`credits` rows supply ID, reset type, status, grant time, expiration, title, and
+description. A missing summary means unavailable, not zero. A null detail list
+means count-only data; detail lists can be capped. The UI reports missing
+details and never invents expiration dates. Unknown statuses/types remain
+visible but do not trigger expiration alerts. Only available, recognized resets
+with a future reported expiration are scheduled.
+
+Where the provider supplies `accountId`, profiles sharing that identity are
+counted once and receive one reminder per reset. The local cache hashes account
+identities and reminder keys; reported reset metadata stays local. Without account identity, profiles remain separate and
+are labelled as potentially duplicated. Counts reflect the last successful
+provider response; expired detail rows are labelled locally until refresh.
+
+## Configure Alerts
+
+Open **Settings → Notifications** and enable reset expiration notifications.
+macOS asks for notification permission. Defaults are:
+
+- Warn seven days, one day, and one hour before expiration.
+- Send one reminder at each selected time; additional repetition is off.
+- Play a sound, with no quiet hours.
+- Snooze notification actions for one hour.
+
+Choose multiple warning times in **Settings → Notifications**. Presets include
+seven days, three days, one day, six hours, one hour, and fifteen minutes.
+Custom warnings accept minutes, hours, or days. An optional repeat interval
+adds reminders between the earliest selected warning and expiration; zero
+uses only the selected warning times. Settings apply equally to every account
+and reset, with no per-account or per-reset configuration overrides.
+Quiet hours use the current local timezone; reminders move before quiet hours
+when postponing would pass expiration.
+
+**Notification Settings** opens the native settings pane. Choose **Alerts**
+there for persistent alerts; macOS controls banner style, sound, previews, and
+Focus suppression. **Send Test Notification** verifies native presentation
+without creating a reset or using account data.
+
+## Snooze and Act
+
+Notifications offer **View Reset**, **Snooze**, and **Stop Reminders**.
+View Reset opens the corresponding row and refreshes its account inventory.
+**Open Codex** opens/focuses a matching managed profile or the official app,
+where the user can redeem the reset through the provider UI.
+
+Snooze uses the configured duration. The row also offers one hour, four hours,
+tomorrow, or a custom time. Snoozes must end before expiration. **Resume Now**
+clears snooze/stop state. Dismissing a banner leaves later reminders enabled.
+Snooze and stop state persist across restarts.
+
+## Delivery and Freshness
+
+Notifications are finite, one-shot `UNUserNotificationCenter` requests with
+stable IDs. They are cancelled/replaced when settings, account inventory, or
+expiration dates change. Redeemed/expired resets and removed accounts no longer
+have pending alerts after reconciliation. Newly discovered overdue reminders
+produce one catch-up rather than one alert for every missed milestone.
+
+Monitoring refreshes every five minutes while AgentDock runs, plus on launch,
+wake, source changes, activation, and manual refresh. Failed reads retain the
+last successful inventory with a stale warning. Count-only responses retain
+previously known expiration details for the same account, labelled stale; a
+confirmed zero clears them. Scheduled notifications can
+appear while AgentDock is closed, using its last checked availability; changes
+made elsewhere cannot be detected until it runs again. Focus, sleep, shutdown,
+and system notification preferences can delay or suppress presentation.
+
+The nearest 60 upcoming alerts are scheduled to keep native queue usage bounded.
+A visible warning indicates when later alerts require a refresh. Keep
+AgentDock running for ongoing inventory and schedule updates.
+
+Global preferences, snoozes, scheduling state, and last-known
+reset metadata are stored locally in a bounded UserDefaults snapshot. No
+credentials, home paths, or reset/account metadata are sent to analytics.
+
+## Validation
+
+Run `swift test`. Reset tests exercise parsing real-shaped synthetic JSON,
+provider counts/partial details, account deduplication, finite schedules,
+quiet hours, snoozing, unsupported states, and real isolated preferences.
+They do not use mocked provider services.
+
+For synthetic view inspection:
+
+```bash
+AGENTDOCK_RESET_VISUAL_AUDIT_DIR=/tmp/agentdock-reset-visuals swift test \
+  --filter ResetReminderControllerTests/testSyntheticResetViews
+```
+
+In the packaged application, enable native alerts, send a test notification,
+and verify banner/alert presentation. Check a real available reset's next
+reminder, native View/Snooze/Stop actions, custom snooze rejection at expiry,
+restart persistence, and delivery after quitting. These manual checks require
+macOS notification permission and a signed-in account with eligible resets;
+passing unit tests or building a package alone does not establish them.

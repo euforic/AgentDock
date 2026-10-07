@@ -1,6 +1,8 @@
 import Foundation
 
 public struct ProfileRateLimits: Equatable, Sendable {
+    public var accountID: String?
+    public var resetCredits: ResetCreditsSummary?
     public var planType: String?
     public var buckets: [RateLimitBucket]
     public var credits: CreditsUsage?
@@ -9,6 +11,8 @@ public struct ProfileRateLimits: Equatable, Sendable {
     public var warningMessage: String?
 
     public init(
+        accountID: String? = nil,
+        resetCredits: ResetCreditsSummary? = nil,
         planType: String? = nil,
         buckets: [RateLimitBucket] = [],
         credits: CreditsUsage? = nil,
@@ -16,6 +20,8 @@ public struct ProfileRateLimits: Equatable, Sendable {
         errorMessage: String? = nil,
         warningMessage: String? = nil
     ) {
+        self.accountID = accountID
+        self.resetCredits = resetCredits
         self.planType = planType
         self.buckets = buckets
         self.credits = credits
@@ -67,7 +73,9 @@ public struct CreditsUsage: Equatable, Sendable {
 
 public enum RateLimitParser {
     public static func parseResponse(_ data: Data, fetchedAt: Date = Date()) throws -> ProfileRateLimits {
-        let envelope = try JSONDecoder().decode(AppServerRateLimitEnvelope.self, from: data)
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .secondsSince1970
+        let envelope = try decoder.decode(AppServerRateLimitEnvelope.self, from: data)
         guard let result = envelope.result else {
             throw RateLimitParserError.missingResult
         }
@@ -96,6 +104,8 @@ public enum RateLimitParser {
         }
 
         return ProfileRateLimits(
+            accountID: result.accountId,
+            resetCredits: result.rateLimitResetCredits,
             planType: primarySnapshot.planType,
             buckets: buckets,
             credits: primarySnapshot.credits?.usage,
@@ -133,6 +143,8 @@ private struct AppServerRateLimitEnvelope: Decodable {
 }
 
 private struct AppServerRateLimitResult: Decodable {
+    var accountId: String?
+    var rateLimitResetCredits: ResetCreditsSummary?
     var rateLimits: AppServerRateLimitSnapshot?
     var rateLimitsByLimitId: [String: AppServerRateLimitSnapshot]?
 }

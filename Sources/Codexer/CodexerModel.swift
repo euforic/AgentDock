@@ -25,6 +25,26 @@ enum AgentDockDetailTab: String, CaseIterable, Identifiable {
 
 @MainActor
 final class CodexerModel: ObservableObject {
+    let resetReminders = ResetReminderController()
+
+    var resetSources: [ResetSource] {
+        [ResetSource(id: "official", name: "Official Codex", homeURL: officialCodexHomeURL)]
+            + profiles.filter { $0.product == .codex }.map {
+                ResetSource(id: $0.id.uuidString, name: $0.name, homeURL: $0.codexHomePath)
+            }
+    }
+
+    func openResetAccount(_ account: ResetAccount) {
+        resetReminders.showsAvailableResets = false
+        if let profile = profiles.first(where: { account.sourceIDs.contains($0.id.uuidString) }) {
+            selectProfile(profile.id)
+            launch(profile)
+        } else if account.sourceIDs.contains("official") {
+            selectOfficial(.codex)
+            openStock(.codex)
+        }
+    }
+
     @Published private(set) var profiles: [CodexProfile] = []
     @Published var sidebarSelection: CodexerSidebarSelection? {
         didSet {
@@ -303,6 +323,7 @@ final class CodexerModel: ObservableObject {
     }
 
     func selectOfficial(_ product: DesktopProduct) {
+        resetReminders.showsAvailableResets = false
         if detailTab == .advanced {
             detailTab = .overview
         }
@@ -315,6 +336,7 @@ final class CodexerModel: ObservableObject {
     }
 
     func selectProfile(_ id: CodexProfile.ID?) {
+        resetReminders.showsAvailableResets = false
         sidebarSelection = id.map(CodexerSidebarSelection.profile)
         refreshChats()
         ProductAnalytics.shared.capture(AnalyticsEvent(
