@@ -380,42 +380,52 @@ jobs:
             echo "Published release ZIP does not match the notarized workflow artifact." >&2
             exit 1
           fi
-          curl -fsSL "https://gh.euforic.one/AgentDock/appcast.xml" \
-            -o "$archive_dir/appcast.xml" || true
-
           swift package resolve
           generate_appcast=".build/artifacts/sparkle/Sparkle/bin/generate_appcast"
           sign_update=".build/artifacts/sparkle/Sparkle/bin/sign_update"
           test -x "$generate_appcast"
           test -x "$sign_update"
-          channel_arguments=()
-          if [[ "$RELEASE_CHANNEL" == "alpha" ]]; then
-            channel_arguments=(--channel alpha)
+          feed_filenames=("$FEED_FILENAME")
+          if [[ "$RELEASE_CHANNEL" == "stable" ]]; then
+            # Alpha subscribers also accept newer default-channel builds.
+            feed_filenames+=(appcast-alpha.xml)
           fi
-          printf '%s' "$SPARKLE_PRIVATE_ED_KEY" \
-            | "$generate_appcast" \
-              --ed-key-file - \
-              --download-url-prefix "https://github.com/euforic/AgentDock/releases/download/$GITHUB_REF_NAME/" \
-              --link "https://github.com/euforic/AgentDock" \
-              --maximum-versions 3 \
-              --maximum-deltas 0 \
-              "${channel_arguments[@]}" \
-              -o "$archive_dir/appcast.xml" \
-              "$archive_dir"
+          echo "FEED_FILENAMES=${feed_filenames[*]}" >> "$GITHUB_ENV"
+          for output_filename in "${feed_filenames[@]}"; do
+            appcast="$archive_dir/$output_filename"
+            seed_filename="$output_filename"
+            channel_arguments=()
+            if [[ "$RELEASE_CHANNEL" == "alpha" ]]; then
+              seed_filename=appcast.xml
+              channel_arguments=(--channel alpha)
+            fi
+            curl -fsSL "https://gh.euforic.one/AgentDock/$seed_filename" -o "$appcast"
+            printf '%s' "$SPARKLE_PRIVATE_ED_KEY" \
+              | "$sign_update" --verify --ed-key-file - "$appcast" >/dev/null
+            printf '%s' "$SPARKLE_PRIVATE_ED_KEY" \
+              | "$generate_appcast" \
+                --ed-key-file - \
+                --download-url-prefix "https://github.com/euforic/AgentDock/releases/download/$GITHUB_REF_NAME/" \
+                --link "https://github.com/euforic/AgentDock" \
+                --maximum-versions 3 \
+                --maximum-deltas 0 \
+                "${channel_arguments[@]}" \
+                -o "$appcast" \
+                "$archive_dir"
 
-          appcast="$archive_dir/appcast.xml"
-          /usr/bin/xmllint --noout "$appcast"
-          /usr/bin/grep -Fq \
-            "url=\"https://github.com/euforic/AgentDock/releases/download/$GITHUB_REF_NAME/$archive_name\"" \
-            "$appcast"
-          /usr/bin/grep -Fq 'sparkle:edSignature=' "$appcast"
-          /usr/bin/grep -Fq '<!-- sparkle-signatures:' "$appcast"
-          if [[ "$RELEASE_CHANNEL" == "alpha" ]]; then
-            /usr/bin/grep -Fq '<sparkle:channel>alpha</sparkle:channel>' "$appcast"
-          fi
-          printf '%s' "$SPARKLE_PRIVATE_ED_KEY" \
-            | "$sign_update" --verify --ed-key-file - "$appcast" >/dev/null
-          cp "$appcast" "$RUNNER_TEMP/$FEED_FILENAME"
+            /usr/bin/xmllint --noout "$appcast"
+            /usr/bin/grep -Fq \
+              "url=\"https://github.com/euforic/AgentDock/releases/download/$GITHUB_REF_NAME/$archive_name\"" \
+              "$appcast"
+            /usr/bin/grep -Fq 'sparkle:edSignature=' "$appcast"
+            /usr/bin/grep -Fq '<!-- sparkle-signatures:' "$appcast"
+            if [[ "$RELEASE_CHANNEL" == "alpha" ]]; then
+              /usr/bin/grep -Fq '<sparkle:channel>alpha</sparkle:channel>' "$appcast"
+            fi
+            printf '%s' "$SPARKLE_PRIVATE_ED_KEY" \
+              | "$sign_update" --verify --ed-key-file - "$appcast" >/dev/null
+            cp "$appcast" "$RUNNER_TEMP/$output_filename"
+          done
 
       - name: Publish GitHub Pages appcast
         run: |
@@ -426,9 +436,12 @@ jobs:
             git checkout --orphan gh-pages
             git rm -rf .
           fi
-          cp "$RUNNER_TEMP/$FEED_FILENAME" "$FEED_FILENAME"
+          for output_filename in $FEED_FILENAMES; do
+            cp "$RUNNER_TEMP/$output_filename" "$output_filename"
+            git add "$output_filename"
+          done
           touch .nojekyll
-          git add "$FEED_FILENAME" .nojekyll
+          git add .nojekyll
           if git diff --cached --quiet; then
             echo "Appcast is already current."
             exit 0
@@ -441,21 +454,23 @@ jobs:
       - name: Verify public appcast bytes and signature
         run: |
           sign_update=".build/artifacts/sparkle/Sparkle/bin/sign_update"
-          public_appcast="$RUNNER_TEMP/public-appcast.xml"
-          published=0
-          for attempt in 1 2 3 4 5 6 7 8 9 10 11 12; do
-            if curl -fsSL \
-              "https://gh.euforic.one/AgentDock/$FEED_FILENAME?release-run=$GITHUB_RUN_ID&attempt=$attempt" \
-              -o "$public_appcast" \
-              && cmp -s "$RUNNER_TEMP/$FEED_FILENAME" "$public_appcast"; then
-              published=1
-              break
+          for output_filename in $FEED_FILENAMES; do
+            public_appcast="$RUNNER_TEMP/public-$output_filename"
+            published=0
+            for attempt in 1 2 3 4 5 6 7 8 9 10 11 12; do
+              if curl -fsSL \
+                "https://gh.euforic.one/AgentDock/$output_filename?release-run=$GITHUB_RUN_ID&attempt=$attempt" \
+                -o "$public_appcast" \
+                && cmp -s "$RUNNER_TEMP/$output_filename" "$public_appcast"; then
+                published=1
+                break
+              fi
+              sleep 10
+            done
+            if [[ "$published" != "1" ]]; then
+              echo "The public $output_filename did not converge to the generated signed bytes." >&2
+              exit 1
             fi
-            sleep 10
+            printf '%s' "$SPARKLE_PRIVATE_ED_KEY" \
+              | "$sign_update" --verify --ed-key-file - "$public_appcast" >/dev/null
           done
-          if [[ "$published" != "1" ]]; then
-            echo "The public appcast did not converge to the generated signed bytes." >&2
-            exit 1
-          fi
-          printf '%s' "$SPARKLE_PRIVATE_ED_KEY" \
-            | "$sign_update" --verify --ed-key-file - "$public_appcast" >/dev/null

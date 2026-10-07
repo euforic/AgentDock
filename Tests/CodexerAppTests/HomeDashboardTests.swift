@@ -73,14 +73,37 @@ final class HomeDashboardTests: XCTestCase {
         XCTAssertFalse(digest(expiry: now.addingTimeInterval(3600), status: "used").hasExpirationWithin24Hours)
     }
 
+    func testUsageResetCountdownUsesItsOwnWindowAndNeverGoesNegative() {
+        let now = Date(timeIntervalSince1970: 1_800_000_000)
+        func window(after seconds: TimeInterval?) -> HomeUsageWindow {
+            HomeUsageWindow(id: "codex.secondary", title: "Weekly", usage: RateLimitWindowUsage(
+                usedPercent: 8, windowDurationMins: 10080,
+                resetsAt: seconds.map { now.addingTimeInterval($0) }))
+        }
+        XCTAssertEqual(window(after: nil).timeRemaining(at: now), "Reset time unavailable")
+        XCTAssertEqual(window(after: .infinity).timeRemaining(at: now), "Reset time unavailable")
+        XCTAssertEqual(window(after: -60).timeRemaining(at: now), "Reset due · Refresh usage")
+        XCTAssertEqual(window(after: 0).timeRemaining(at: now), "Reset due · Refresh usage")
+        XCTAssertEqual(window(after: 1).timeRemaining(at: now), "1m left")
+        XCTAssertEqual(window(after: 59 * 60).timeRemaining(at: now), "59m left")
+        XCTAssertEqual(window(after: 3 * 3600 + 15 * 60).timeRemaining(at: now), "3h 15m left")
+        let weekly = window(after: 2 * 86400 + 3 * 3600)
+        XCTAssertEqual(weekly.timeRemaining(at: now), "2d 3h left")
+        XCTAssertEqual(weekly.timeRemaining(at: now.addingTimeInterval(3600)), "2d 2h left")
+    }
+
     func testUsageWindowSummaryPreservesProviderBucketsAndDurations() throws {
         let data = Data("""
-        {"result":{"rateLimits":{"limitId":"codex","primary":{"usedPercent":32,"windowDurationMins":300},"secondary":{"usedPercent":58,"windowDurationMins":10080}},"rateLimitsByLimitId":{"codex":{"limitId":"codex","primary":{"usedPercent":32,"windowDurationMins":300},"secondary":{"usedPercent":58,"windowDurationMins":10080}},"custom":{"limitId":"custom","limitName":"Research","primary":{"usedPercent":17,"windowDurationMins":1440}}}}}
+        {"result":{"rateLimits":{"limitId":"codex","primary":{"usedPercent":32,"windowDurationMins":300,"resetsAt":1800000300},"secondary":{"usedPercent":58,"windowDurationMins":10080,"resetsAt":1800259200}},"rateLimitsByLimitId":{"codex":{"limitId":"codex","primary":{"usedPercent":32,"windowDurationMins":300,"resetsAt":1800000300},"secondary":{"usedPercent":58,"windowDurationMins":10080,"resetsAt":1800259200}},"custom":{"limitId":"custom","limitName":"Research","primary":{"usedPercent":17,"windowDurationMins":1440}}}}}
         """.utf8)
         let limits = try RateLimitParser.parseResponse(data)
         let windows = HomeUsageWindow.windows(in: limits)
         XCTAssertEqual(windows.map(\.title), ["5-hour", "Weekly", "Research · 1-day"])
         XCTAssertEqual(windows.map(\.usage.usedPercent), [32, 58, 17])
+        XCTAssertEqual(windows.map(\.usage.resetsAt), [
+            Date(timeIntervalSince1970: 1_800_000_300),
+            Date(timeIntervalSince1970: 1_800_259_200), nil
+        ])
         XCTAssertEqual(Set(windows.map(\.id)).count, 3)
     }
 }

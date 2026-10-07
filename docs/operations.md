@@ -63,13 +63,17 @@ The tag workflow:
 6. publishes the ZIP, DMG, and checksums to the immutable GitHub Release;
 7. downloads the public ZIP and byte-compares it with the notarized workflow
    artifact before generating an Ed25519-signed appcast;
-8. pushes the selected appcast to `gh-pages` only after every earlier gate succeeds;
-9. polls the public Pages URL until its bytes exactly match the generated feed,
-   then verifies its Ed25519 signature again.
+8. pushes the signed feeds to `gh-pages` only after every earlier gate succeeds;
+9. polls each published Pages URL until its bytes exactly match the generated
+   feed, then verifies its Ed25519 signature again.
 
 Stable clients use `https://gh.euforic.one/AgentDock/appcast.xml`. Alpha
 clients use `https://gh.euforic.one/AgentDock/appcast-alpha.xml`, which
-also retains Stable entries as a fallback. Stable is the app default and users
+also retains Stable entries as a fallback. Every Stable release refreshes both
+feeds, preserving the latest Alpha entry in the Alpha feed. Alpha subscribers
+receive a Stable build when its numeric build number is newer than their
+installed build, without changing their selected channel. Older Stable builds
+do not replace newer Alpha builds. Stable is the app default and users
 can change channels at any time in Settings. Configure
 GitHub Pages to publish from the root of the `gh-pages` branch before the first
 Sparkle-enabled release.

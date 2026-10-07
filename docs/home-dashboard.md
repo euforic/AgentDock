@@ -19,9 +19,12 @@ Usage comes directly from the model's existing `ProfileRateLimits` snapshots.
 Home shows the first two reported windows with their actual duration and bucket
 name; additional windows remain available in Overview. No account quotas are
 added together. Missing snapshots and failed reads show explicit unavailable
-states. Reset times are available in meter tooltips. No checked-time timestamp is
-shown; snapshots older than ten minutes show a last-known qualifier, and provider
-warnings remain visible.
+states. Each meter shows its reported usage reset date/time and time remaining,
+updated locally once per minute without additional provider reads. Unknown reset
+times stay explicit; elapsed dates show a reset-due prompt to refresh usage. These
+dates describe usage allowances, not banked-reset expiration. No checked-time
+timestamp is shown; snapshots older than ten minutes show a last-known qualifier,
+and provider warnings remain visible.
 
 Banked resets come from `ResetReminderController.accounts`. The top panel uses
 its verified account grouping and the provider's reported count. Each Codex row
