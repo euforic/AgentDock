@@ -3,6 +3,7 @@ import CodexerCore
 import SwiftUI
 
 enum CodexerSidebarSelection: Hashable {
+    case home
     case official(DesktopProduct)
     case profile(CodexProfile.ID)
 }
@@ -25,7 +26,7 @@ enum AgentDockDetailTab: String, CaseIterable, Identifiable {
 
 @MainActor
 final class CodexerModel: ObservableObject {
-    let resetReminders = ResetReminderController()
+    let resetReminders: ResetReminderController
 
     var resetSources: [ResetSource] {
         [ResetSource(id: "official", name: "Official Codex", homeURL: officialCodexHomeURL)]
@@ -46,7 +47,7 @@ final class CodexerModel: ObservableObject {
     }
 
     @Published private(set) var profiles: [CodexProfile] = []
-    @Published var sidebarSelection: CodexerSidebarSelection? {
+    @Published var sidebarSelection: CodexerSidebarSelection? = .home {
         didSet {
             guard sidebarSelection != oldValue else { return }
             cancelChatWork()
@@ -131,6 +132,7 @@ final class CodexerModel: ObservableObject {
     private let officialClaudeCodeHomeURL: URL
 
     init() {
+        resetReminders = ResetReminderController()
         officialCodexHomeURL = FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent(".codex", isDirectory: true)
         officialClaudeUserDataURL = FileManager.default.urls(
@@ -236,8 +238,10 @@ final class CodexerModel: ObservableObject {
         preferencesStore: AgentDockPreferencesStore = AgentDockPreferencesStore(),
         chatScanner: LocalChatScanner? = nil,
         startMonitoring: Bool = false,
-        loadActivityOnInit: Bool = true
+        loadActivityOnInit: Bool = true,
+        resetReminders: ResetReminderController? = nil
     ) {
+        self.resetReminders = resetReminders ?? ResetReminderController()
         officialCodexHomeURL = officialDataRootURL.appendingPathComponent(".codex", isDirectory: true)
         officialClaudeUserDataURL = officialDataRootURL.appendingPathComponent("Claude", isDirectory: true)
         officialClaudeCodeHomeURL = officialDataRootURL.appendingPathComponent(".claude", isDirectory: true)
@@ -316,6 +320,14 @@ final class CodexerModel: ObservableObject {
     var selectedOfficialProduct: DesktopProduct? {
         guard case let .official(product) = sidebarSelection else { return nil }
         return product
+    }
+
+    var showsHome: Bool { sidebarSelection == .home }
+
+    func selectHome() {
+        resetReminders.showsAvailableResets = false
+        sidebarSelection = .home
+        detailTab = .overview
     }
 
     func selectOfficialCodex() {
@@ -431,14 +443,15 @@ final class CodexerModel: ObservableObject {
         installedShortcutProfileIDs = Set(
             profiles.lazy.filter { self.shortcutInstaller.shortcutExists(for: $0) }.map(\.id)
         )
-        if selectedOfficialProduct == nil,
-           selectedProfileID == nil || !profiles.contains(where: { $0.id == selectedProfileID })
-        {
-            selectedProfileID = profiles.first?.id
+        if case let .profile(id) = sidebarSelection, !profiles.contains(where: { $0.id == id }) {
+            selectHome()
         }
         if !appliedInitialDefaultView {
             switch preferences.defaultView {
+            case .home:
+                selectHome()
             case .lastOpened:
+                selectedProfileID = profiles.first?.id
                 if let lastOpened = profiles
                     .filter({ $0.lastLaunchedAt != nil })
                     .max(by: {
@@ -450,8 +463,10 @@ final class CodexerModel: ObservableObject {
                 }
                 detailTab = .overview
             case .overview:
+                selectedProfileID = profiles.first?.id
                 detailTab = .overview
             case .chats:
+                selectedProfileID = profiles.first?.id
                 detailTab = .chats
             }
             appliedInitialDefaultView = true
@@ -1339,7 +1354,7 @@ final class CodexerModel: ObservableObject {
                         claudeHomeURL: officialClaudeUserData,
                         claudeCodeHomeURL: officialClaudeCodeHome
                     )
-                case nil:
+                case .home, nil:
                     return LocalChatScanResult(availability: .available, sessions: [])
                 }
             }
@@ -1504,7 +1519,7 @@ final class CodexerModel: ObservableObject {
         initialToken: String,
         generation: Int
     ) {
-        guard selection != nil, detailTab == .chats else { return }
+        guard selection != nil, selection != .home, detailTab == .chats else { return }
         let scanner = chatScanner
         let profiles = profiles
         let officialHome = officialCodexHomeURL
@@ -1534,7 +1549,7 @@ final class CodexerModel: ObservableObject {
                             claudeHomeURL: officialClaudeUserData,
                             claudeCodeHomeURL: officialClaudeCodeHome
                         )
-                    case nil:
+                    case .home, nil:
                         return ""
                     }
                 }

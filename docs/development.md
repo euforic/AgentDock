@@ -108,8 +108,10 @@ AGENTDOCK_VISUAL_AUDIT_DIR=/tmp/agentdock-visual-audit swift test \
 ```
 
 This opt-in harness uses real temporary profile files and isolated preferences
-to render the overview and chat surfaces in light and dark appearances at
-regular and compact sizes, including long profile names. It briefly presents
+to render the home, overview, and chat surfaces in light and dark appearances at
+regular and compact sizes, including long profile names and a synthetic reset
+inventory. Home fixtures keep notification preferences and inventory inside
+an isolated defaults suite. It briefly presents
 synthetic windows and requires Screen Recording access for native window
 capture. Inspect the resulting images for hierarchy, clipping, contrast, and source identity;
 render completion alone is not visual acceptance.

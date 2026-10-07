@@ -41,6 +41,8 @@ and can have its own Dock-pinnable shortcut.
 - Check for, download, and install signed AgentDock updates with Sparkle.
 - Browse supported local chat histories with safe links, tables, selectable
   prose, syntax-highlighted code, and bounded tool output.
+- Start from Home to see official and managed profiles together, open or focus
+  each source, compare reported usage, and spot banked resets expiring soon.
 - View supported local activity, storage, usage-limit, and lifecycle
   information for official installations and managed profiles.
 - See banked Codex resets across accounts and receive configurable native
@@ -100,6 +102,12 @@ remain fixed.
 The action changes to **Focus** while a profile is running. **Close** targets
 only the selected profile. **Remove From List** preserves its local data;
 permanent deletion is a separate confirmed action.
+
+Home is the default startup screen. Existing explicit startup choices remain
+available in Settings. **Command-1** returns to Home; selecting a source opens
+its existing Overview, Chats, and supported Advanced sections. Codex rows show
+reported available resets for that account, with an amber icon for a known
+expiration within seven days. Select the count to view the reset inventory.
 
 Use **Command-F** to search the current profile or chat list,
 **Command-Shift-F** to search profiles from anywhere, and **Command-R** to
