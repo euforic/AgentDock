@@ -11,12 +11,14 @@ public enum AgentDockAppearance: String, Codable, CaseIterable, Sendable {
 }
 
 public enum AgentDockDefaultView: String, Codable, CaseIterable, Sendable {
+    case home
     case lastOpened
     case overview
     case chats
 
     public var displayName: String {
         switch self {
+        case .home: "Home"
         case .lastOpened: "Last Opened Profile"
         case .overview: "Overview"
         case .chats: "Chats"
@@ -33,7 +35,7 @@ public struct AgentDockPreferences: Equatable, Sendable {
 
     public static let defaults = AgentDockPreferences(
         appearance: .system,
-        defaultView: .lastOpened,
+        defaultView: .home,
         refreshProfileActivity: true,
         refreshIntervalMinutes: 5,
         showStatusInProfileList: true
