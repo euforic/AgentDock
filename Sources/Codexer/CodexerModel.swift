@@ -67,7 +67,13 @@ final class CodexerModel: ObservableObject {
     @Published var errorMessage: String?
     @Published var showAddProfile = false
     @Published var showEditProfile = false
-    @Published var detailTab: AgentDockDetailTab = .overview
+    @Published var detailTab: AgentDockDetailTab = .overview {
+        didSet {
+            guard detailTab != oldValue else { return }
+            if canReadChats { refreshChats() }
+            else { suspendChatWork() }
+        }
+    }
     @Published var pendingRemoveProfile: CodexProfile?
     @Published var pendingDeleteProfile: CodexProfile?
     @Published private(set) var chatSessions: [LocalChatSession] = []
@@ -120,6 +126,8 @@ final class CodexerModel: ObservableObject {
     private var workspaceNotificationTasks: [Task<Void, Never>] = []
     private var workspaceRefreshTask: Task<Void, Never>?
     private var allowsAutomaticRefresh = false
+    private var isApplicationActive = true
+    private var visibleChatBrowsers: Set<UUID> = []
     private var statsGeneration = 0
     private var rateLimitGeneration = 0
     private var chatGeneration = 0
@@ -1314,7 +1322,40 @@ final class CodexerModel: ObservableObject {
         NSPasteboard.general.setString(url.path, forType: .string)
     }
 
+    private var canReadChats: Bool {
+        isApplicationActive && !visibleChatBrowsers.isEmpty && detailTab == .chats
+    }
+
+    func setApplicationActive(_ active: Bool) {
+        guard isApplicationActive != active else { return }
+        isApplicationActive = active
+        if canReadChats { refreshChats() }
+        else { suspendChatWork() }
+        if active, allowsAutomaticRefresh {
+            Task { [weak self] in await self?.refreshInstanceStatuses() }
+        } else if !active {
+            workspaceRefreshTask?.cancel()
+        }
+    }
+
+    func setChatBrowserVisible(_ visible: Bool, browserID: UUID) {
+        let wasVisible = !visibleChatBrowsers.isEmpty
+        if visible { visibleChatBrowsers.insert(browserID) }
+        else { visibleChatBrowsers.remove(browserID) }
+        guard wasVisible != !visibleChatBrowsers.isEmpty else { return }
+        if canReadChats { refreshChats() }
+        else { suspendChatWork() }
+    }
+
+    private func suspendChatWork() {
+        cancelChatWork()
+        chatsLoading = false
+        chatTranscriptLoading = false
+        chatOlderTranscriptLoading = false
+    }
+
     func refreshChats() {
+        guard canReadChats, sidebarSelection != nil, sidebarSelection != .home else { return }
         let analyticsStart = ContinuousClock.now
         chatGeneration += 1
         let generation = chatGeneration
@@ -1396,7 +1437,8 @@ final class CodexerModel: ObservableObject {
     }
 
     func selectChat(_ id: LocalChatSession.ID) {
-        guard loadedChatSelection == sidebarSelection,
+        guard canReadChats,
+              loadedChatSelection == sidebarSelection,
               chatSessions.contains(where: { $0.id == id }),
               id != selectedChatID
         else { return }
@@ -1409,6 +1451,7 @@ final class CodexerModel: ObservableObject {
     }
 
     private func loadSelectedChatTranscript() {
+        guard canReadChats else { return }
         chatTranscriptGeneration += 1
         let generation = chatTranscriptGeneration
         chatTranscriptTask?.cancel()
@@ -1461,6 +1504,7 @@ final class CodexerModel: ObservableObject {
 
     func loadMoreChatTranscript() {
         guard
+            canReadChats,
             !chatTranscriptLoading,
             !chatOlderTranscriptLoading,
             let cursor = chatTranscriptCursor,
@@ -1519,7 +1563,8 @@ final class CodexerModel: ObservableObject {
         initialToken: String,
         generation: Int
     ) {
-        guard selection != nil, selection != .home, detailTab == .chats else { return }
+        guard allowsAutomaticRefresh, canReadChats,
+              selection != nil, selection != .home else { return }
         let scanner = chatScanner
         let profiles = profiles
         let officialHome = officialCodexHomeURL
@@ -1535,6 +1580,9 @@ final class CodexerModel: ObservableObject {
                 } catch {
                     return
                 }
+                guard let self, self.canReadChats,
+                      self.chatGeneration == generation,
+                      self.sidebarSelection == selection else { return }
                 let worker = Task.detached(priority: .background) {
                     switch selection {
                     case let .profile(id):
@@ -1560,7 +1608,7 @@ final class CodexerModel: ObservableObject {
                 }
                 guard
                     !Task.isCancelled,
-                    let self,
+                    self.canReadChats,
                     self.chatGeneration == generation,
                     self.sidebarSelection == selection
                 else {
@@ -1974,7 +2022,9 @@ final class CodexerModel: ObservableObject {
         instanceMonitorTask = Task { [weak self] in
             while !Task.isCancelled {
                 guard self != nil else { return }
-                await self?.refreshInstanceStatuses()
+                if self?.isApplicationActive == true {
+                    await self?.refreshInstanceStatuses()
+                }
                 do {
                     try await Task.sleep(for: .seconds(60))
                 } catch {
@@ -1990,6 +2040,7 @@ final class CodexerModel: ObservableObject {
     }
 
     private func scheduleWorkspaceStatusRefresh() {
+        guard isApplicationActive else { return }
         workspaceRefreshTask?.cancel()
         workspaceRefreshTask = Task { [weak self] in
             do {
@@ -2013,6 +2064,7 @@ final class CodexerModel: ObservableObject {
                     return
                 }
                 guard !Task.isCancelled, let self else { return }
+                guard self.isApplicationActive else { continue }
                 ProductAnalytics.shared.capture(AnalyticsEvent(
                     .refresh,
                     [.action(.automaticRefresh), .surface(.overview), .trigger(.automatic), .countBucket(.init(self.profiles.count))]

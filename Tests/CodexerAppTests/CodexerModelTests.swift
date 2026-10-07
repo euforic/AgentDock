@@ -463,19 +463,7 @@ final class CodexerModelTests: XCTestCase {
             prompt: "Current conversation",
             response: "Current profile response"
         ).write(to: currentSessions.appendingPathComponent("rollout-current.jsonl"))
-        let model = CodexerModel(
-            store: store,
-            officialDataRootURL: root.appendingPathComponent("Official"),
-            codexAppURL: URL(fileURLWithPath: "/Applications/Codex.app"),
-            instanceController: RecordingInstanceManager(),
-            shortcutInstaller: NoopShortcutManager(),
-            statsScanner: FixedStatsScanner(),
-            rateLimitClient: FixedRateLimitClient(),
-            chatScanner: LocalChatScanner(
-                indexRootURL: root.appendingPathComponent("ChatIndexes")
-            ),
-            startMonitoring: false
-        )
+        let model = makeChatModel(store: store)
 
         model.selectProfile(slow.id)
         model.selectProfile(current.id)
@@ -517,19 +505,7 @@ final class CodexerModelTests: XCTestCase {
             [.modificationDate: Date().addingTimeInterval(2)],
             ofItemAtPath: small.path
         )
-        let model = CodexerModel(
-            store: store,
-            officialDataRootURL: root.appendingPathComponent("Official"),
-            codexAppURL: URL(fileURLWithPath: "/Applications/Codex.app"),
-            instanceController: RecordingInstanceManager(),
-            shortcutInstaller: NoopShortcutManager(),
-            statsScanner: FixedStatsScanner(),
-            rateLimitClient: FixedRateLimitClient(),
-            chatScanner: LocalChatScanner(
-                indexRootURL: root.appendingPathComponent("ChatIndexes")
-            ),
-            startMonitoring: false
-        )
+        let model = makeChatModel(store: store)
         model.selectProfile(profile.id)
         await waitUntil(timeout: .seconds(5)) { !model.chatsLoading }
         let largeID = try XCTUnwrap(model.chatSessions.first { $0.title == "Large" }?.id)
@@ -766,19 +742,20 @@ final class CodexerModelTests: XCTestCase {
     }
 
     private func makeChatModel(store: ProfileStore) -> CodexerModel {
-        CodexerModel(
+        let model = CodexerModel(
             store: store,
             officialDataRootURL: root.appendingPathComponent("Official"),
-            codexAppURL: URL(fileURLWithPath: "/Applications/Codex.app"),
-            instanceController: RecordingInstanceManager(),
-            shortcutInstaller: NoopShortcutManager(),
-            statsScanner: FixedStatsScanner(),
-            rateLimitClient: FixedRateLimitClient(),
+            codexAppURL: root.appendingPathComponent("Unavailable.app"),
+            claudeAppURL: root.appendingPathComponent("Unavailable.app"),
             chatScanner: LocalChatScanner(
                 indexRootURL: root.appendingPathComponent("ChatIndexes")
             ),
-            startMonitoring: false
+            startMonitoring: false,
+            loadActivityOnInit: false
         )
+        model.detailTab = .chats
+        model.setChatBrowserVisible(true, browserID: UUID())
+        return model
     }
 
     private func makeModel(
