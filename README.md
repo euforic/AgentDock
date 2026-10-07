@@ -43,6 +43,8 @@ and can have its own Dock-pinnable shortcut.
   prose, syntax-highlighted code, and bounded tool output.
 - View supported local activity, storage, usage-limit, and lifecycle
   information for official installations and managed profiles.
+- See banked Codex resets across accounts and receive configurable native
+  expiration alerts with persistent snooze controls. See [Reset reminders](docs/reset-reminders.md).
 - Verify official app identity and code signatures before managed operations.
 - Preserve profile data by default when removing a profile from the app.
 

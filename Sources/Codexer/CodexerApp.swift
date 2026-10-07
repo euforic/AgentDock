@@ -2,6 +2,7 @@ import SwiftUI
 
 @main
 struct CodexerApp: App {
+    @Environment(\.scenePhase) private var scenePhase
     @StateObject private var model = CodexerModel()
     @StateObject private var updater = AppUpdater()
 
@@ -11,6 +12,21 @@ struct CodexerApp: App {
                 .environmentObject(model)
                 .environmentObject(updater)
                 .frame(minWidth: 900, minHeight: 600)
+                .task {
+                    model.resetReminders.configure(sources: model.resetSources, appURL: model.codexAppURL)
+                }
+                .onChange(of: model.profiles) {
+                    model.resetReminders.configure(sources: model.resetSources, appURL: model.codexAppURL)
+                }
+                .onChange(of: model.codexAppURL) {
+                    model.resetReminders.configure(sources: model.resetSources, appURL: model.codexAppURL)
+                }
+                .onChange(of: scenePhase) {
+                    if scenePhase == .active {
+                        model.resetReminders.refresh()
+                        Task { await model.resetReminders.updatePermission() }
+                    }
+                }
                 .onAppear {
                     NSApp.setActivationPolicy(.regular)
                     NSApp.activate(ignoringOtherApps: true)
