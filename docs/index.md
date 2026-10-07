@@ -9,7 +9,7 @@ implementation, contribution, and operations details needed for focused work.
   constraints.
 - [Code map](code-map.md): important source, test, workflow, and script
   locations.
-- [Data flows](data-flows.md): profile lifecycle, transcript indexing, and
+- [Data flows](data-flows.md): profile lifecycle, activity summaries, and
   release artifact flows.
 - [Interfaces and contracts](apis.md): Swift modules, process contracts,
   environment variables, and persistent formats.
@@ -49,9 +49,9 @@ against these repository sources:
   [`script/package_app.sh`](../script/package_app.sh)
 - Profile lifecycle and launch safety:
   [`Sources/CodexerCore`](../Sources/CodexerCore)
-- Chat integration: [`Sources/Codexer/ChatsView.swift`](../Sources/Codexer/ChatsView.swift),
-  [`Sources/CodexerCore/LocalChatSession.swift`](../Sources/CodexerCore/LocalChatSession.swift),
-  and [`Sources/TranscriptRenderer`](../Sources/TranscriptRenderer)
+- Local activity: [`Sources/CodexerCore/ProfileStats.swift`](../Sources/CodexerCore/ProfileStats.swift)
+  and shared [`Sources/CodexerCore/LocalChatSession.swift`](../Sources/CodexerCore/LocalChatSession.swift) readers
+- Separate renderer showcase: [`Sources/TranscriptRenderer`](../Sources/TranscriptRenderer)
 - Validation: [`Tests`](../Tests)
 
 Documentation should change in the same pull request as any user-visible

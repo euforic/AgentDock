@@ -39,8 +39,6 @@ and can have its own Dock-pinnable shortcut.
 - Install native, profile-specific shortcuts under
   `~/Applications/AgentDock/`.
 - Check for, download, and install signed AgentDock updates with Sparkle.
-- Browse supported local chat histories with safe links, tables, selectable
-  prose, syntax-highlighted code, and bounded tool output.
 - Start from Home to see official and managed profiles together, open or focus
   each source, compare reported usage, and spot banked resets expiring soon.
 - View supported local activity, storage, usage-limit, and lifecycle
@@ -103,13 +101,14 @@ The action changes to **Focus** while a profile is running. **Close** targets
 only the selected profile. **Remove From List** preserves its local data;
 permanent deletion is a separate confirmed action.
 
-Home is the default startup screen. Existing explicit startup choices remain
-available in Settings. **Command-1** returns to Home; selecting a source opens
-its existing Overview, Chats, and supported Advanced sections. Codex rows show
+Home is the default startup screen. Last Opened Profile and Overview remain
+available in Settings; a legacy Chats startup choice migrates to Overview.
+**Command-1** returns to Home; selecting a source opens
+its Overview and supported Advanced sections. Codex rows show
 reported available resets for that account, with an amber icon for a known
 expiration within seven days. Select the count to view the reset inventory.
 
-Use **Command-F** to search the current profile or chat list,
+Use **Command-F** to search profiles,
 **Command-Shift-F** to search profiles from anywhere, and **Command-R** to
 refresh. The selected profile remains visible above each detail section.
 
@@ -119,13 +118,14 @@ AgentDock is local-first. It does not provide cloud synchronization or upload
 managed profile data. Optional pseudonymous product analytics remain off until
 you explicitly allow them and can be disabled immediately in Settings. They never
 include profile, account, path, command, prompt, chat, transcript, session,
-configuration, log, or crash content. AgentDock stores profile metadata and indexes under
+configuration, log, or crash content. AgentDock stores profile metadata under
 `~/Library/Application Support/AgentDock/` and creates shortcuts under
 `~/Applications/AgentDock/`.
 
-Local transcript support is source-dependent:
+AgentDock has no chat browser or transcript-copying action. Local activity and
+usage summaries are source-dependent:
 
-- Codex uses supported local databases and session JSONL fallbacks.
+- Codex activity uses supported local databases.
   Native OpenAI profiles read account limits through the bundled Codex
   app-server. When a profile selects a custom `model_provider`, AgentDock tries
   that provider's configured `GET /usage` quota endpoint instead and shows its
@@ -139,13 +139,14 @@ Local transcript support is source-dependent:
   session, weekly, model-scoped, reset, and extra-usage status. The cross-source
   card keeps the official installation visible alongside every managed account.
   Local rate-limit events remain a clearly separate last-observed fallback.
-- Ordinary synced claude.ai web chats are unavailable because Claude Desktop
-  does not expose a stable local transcript contract. AgentDock reads only the
-  provider-owned OAuth cache and active-organization cookie required to resolve
-  live usage; it does not index ordinary web-chat content.
+- AgentDock does not index ordinary synced claude.ai web-chat content. Live
+  Claude usage reads the provider-owned OAuth cache and active-organization
+  cookie required to resolve the signed-in account.
 
-Indexes contain bounded list metadata, not full transcript bodies or absolute
-working directories. See [Security and privacy](docs/security.md),
+Claude activity scanning still reads supported local session files and keeps
+bounded summaries in memory. The app does not create chat-browser indexes.
+Older versions may have left metadata-only indexes; explicitly removing a
+profile cleans up its legacy indexes. See [Security and privacy](docs/security.md),
 [Data flows](docs/data-flows.md), and the exact optional
 [Product analytics event catalog](docs/analytics.md).
 

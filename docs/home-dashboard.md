@@ -1,7 +1,8 @@
 # Home dashboard
 
 Home is the primary sidebar destination and the default startup choice. Existing
-persisted Last Opened Profile, Overview, and Chats preferences remain supported.
+persisted Last Opened Profile and Overview preferences remain supported. A legacy
+Chats startup preference migrates to Overview, preserving other preferences.
 Command-1 returns to Home. Profile and official-app overviews remain accessible
 through the sidebar, the source name, or the row's chevron.
 
@@ -9,8 +10,8 @@ Home groups the official installation and managed profiles under their provider.
 Each row shows the source identity, observed running state, reported usage, and
 an Open or Focus action. Those actions reuse the existing validated launch and
 focus paths. Missing process status is shown as unavailable rather than stopped.
-A profile metadata reload leaves Home selected. Returning Home cancels and clears
-the previous source's transcript work.
+A profile metadata reload leaves Home selected. AgentDock has no chat-browser
+destination or transcript-copying action.
 
 ## Data and reset counts
 
@@ -70,7 +71,7 @@ AGENTDOCK_VISUAL_AUDIT_DIR=/tmp/agentdock-home-audit swift test \
 swift test
 ```
 
-The native visual audit renders Home, Overview, and Chats in light/dark appearances
+The native visual audit renders Home and Overview in light/dark appearances
 at 1080×720 and 900×600 with real temporary profile records, production services,
 and an isolated synthetic reset inventory. Review the images for readable rows,
 long-name truncation, contrast, and navigation identity. Rendering does not prove

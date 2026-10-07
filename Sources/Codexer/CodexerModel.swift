@@ -10,7 +10,6 @@ enum CodexerSidebarSelection: Hashable {
 
 enum AgentDockDetailTab: String, CaseIterable, Identifiable {
     case overview
-    case chats
     case advanced
 
     var id: Self { self }
@@ -20,7 +19,7 @@ enum AgentDockDetailTab: String, CaseIterable, Identifiable {
     }
 
     static func availableTabs(hasManagedProfile: Bool) -> [Self] {
-        hasManagedProfile ? allCases : [.overview, .chats]
+        hasManagedProfile ? allCases : [.overview]
     }
 }
 
@@ -47,43 +46,14 @@ final class CodexerModel: ObservableObject {
     }
 
     @Published private(set) var profiles: [CodexProfile] = []
-    @Published var sidebarSelection: CodexerSidebarSelection? = .home {
-        didSet {
-            guard sidebarSelection != oldValue else { return }
-            cancelChatWork()
-            loadedChatSelection = nil
-            selectedChatID = nil
-            chatSessions = []
-            chatAvailability = .available
-            chatTranscriptEntries = []
-            chatTranscriptCursor = nil
-            chatTranscriptSourceChanged = false
-            chatsLoading = false
-            chatTranscriptLoading = false
-            chatOlderTranscriptLoading = false
-        }
-    }
+    @Published var sidebarSelection: CodexerSidebarSelection? = .home
     @Published private(set) var appURLs: [DesktopProduct: URL]
     @Published var errorMessage: String?
     @Published var showAddProfile = false
     @Published var showEditProfile = false
-    @Published var detailTab: AgentDockDetailTab = .overview {
-        didSet {
-            guard detailTab != oldValue else { return }
-            if canReadChats { refreshChats() }
-            else { suspendChatWork() }
-        }
-    }
+    @Published var detailTab: AgentDockDetailTab = .overview
     @Published var pendingRemoveProfile: CodexProfile?
     @Published var pendingDeleteProfile: CodexProfile?
-    @Published private(set) var chatSessions: [LocalChatSession] = []
-    @Published private(set) var chatAvailability: LocalChatAvailability = .available
-    @Published private(set) var chatsLoading = false
-    @Published private(set) var chatTranscriptLoading = false
-    @Published private(set) var chatOlderTranscriptLoading = false
-    @Published private(set) var chatTranscriptEntries: [LocalChatTranscriptEntry] = []
-    @Published private(set) var chatTranscriptSourceChanged = false
-    @Published var selectedChatID: LocalChatSession.ID?
     @Published private(set) var analyticsConsent = ProductAnalytics.shared.consent
     @Published var preferences: AgentDockPreferences {
         didSet {
@@ -113,27 +83,19 @@ final class CodexerModel: ObservableObject {
     private let statsScanner: any ProfileStatsScanning
     private let rateLimitClient: any ProfileRateLimitFetching
     private let claudeUsageClient: any ClaudeUsageFetching
-    private let chatScanner: LocalChatScanner
     private let preferencesStore: AgentDockPreferencesStore
+    private let legacyChatIndexRootURL: URL?
     private let appPathKeyPrefix = "AgentDock.desktopAppPath"
     private var statsRefreshTask: Task<Void, Never>?
     private var rateLimitRefreshTask: Task<Void, Never>?
     private var instanceMonitorTask: Task<Void, Never>?
-    private var chatRefreshTask: Task<Void, Never>?
-    private var chatTranscriptTask: Task<Void, Never>?
-    private var chatChangeMonitorTask: Task<Void, Never>?
     private var profileActivityRefreshTask: Task<Void, Never>?
     private var workspaceNotificationTasks: [Task<Void, Never>] = []
     private var workspaceRefreshTask: Task<Void, Never>?
     private var allowsAutomaticRefresh = false
     private var isApplicationActive = true
-    private var visibleChatBrowsers: Set<UUID> = []
     private var statsGeneration = 0
     private var rateLimitGeneration = 0
-    private var chatGeneration = 0
-    private var chatTranscriptGeneration = 0
-    private var chatTranscriptCursor: LocalChatTranscriptCursor?
-    private var loadedChatSelection: CodexerSidebarSelection?
     private var appliedInitialDefaultView = false
     private let officialCodexHomeURL: URL
     private let officialClaudeUserDataURL: URL
@@ -141,6 +103,7 @@ final class CodexerModel: ObservableObject {
 
     init() {
         resetReminders = ResetReminderController()
+        legacyChatIndexRootURL = nil
         officialCodexHomeURL = FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent(".codex", isDirectory: true)
         officialClaudeUserDataURL = FileManager.default.urls(
@@ -153,7 +116,6 @@ final class CodexerModel: ObservableObject {
         self.preferencesStore = preferencesStore
         preferences = preferencesStore.load()
         officialCodexProfileSettings = preferencesStore.loadOfficialCodexProfileSettings()
-        chatScanner = LocalChatScanner()
         instanceController = DesktopInstanceController()
         shortcutInstaller = ShortcutInstaller()
         statsScanner = ProfileStatsScanner()
@@ -244,21 +206,18 @@ final class CodexerModel: ObservableObject {
         rateLimitClient: any ProfileRateLimitFetching = CodexRateLimitClient(),
         claudeUsageClient: any ClaudeUsageFetching = ClaudeUsageClient(),
         preferencesStore: AgentDockPreferencesStore = AgentDockPreferencesStore(),
-        chatScanner: LocalChatScanner? = nil,
         startMonitoring: Bool = false,
         loadActivityOnInit: Bool = true,
         resetReminders: ResetReminderController? = nil
     ) {
         self.resetReminders = resetReminders ?? ResetReminderController()
+        legacyChatIndexRootURL = officialDataRootURL.appendingPathComponent("ChatIndexes", isDirectory: true)
         officialCodexHomeURL = officialDataRootURL.appendingPathComponent(".codex", isDirectory: true)
         officialClaudeUserDataURL = officialDataRootURL.appendingPathComponent("Claude", isDirectory: true)
         officialClaudeCodeHomeURL = officialDataRootURL.appendingPathComponent(".claude", isDirectory: true)
         self.preferencesStore = preferencesStore
         preferences = preferencesStore.load()
         officialCodexProfileSettings = preferencesStore.loadOfficialCodexProfileSettings()
-        self.chatScanner = chatScanner ?? LocalChatScanner(
-            indexRootURL: officialDataRootURL.appendingPathComponent("ChatIndexes", isDirectory: true)
-        )
         self.store = store
         appURLs = [.codex: codexAppURL, .claude: claudeAppURL]
         self.instanceController = instanceController
@@ -278,9 +237,6 @@ final class CodexerModel: ObservableObject {
         statsRefreshTask?.cancel()
         rateLimitRefreshTask?.cancel()
         instanceMonitorTask?.cancel()
-        chatRefreshTask?.cancel()
-        chatTranscriptTask?.cancel()
-        chatChangeMonitorTask?.cancel()
         profileActivityRefreshTask?.cancel()
         workspaceNotificationTasks.forEach { $0.cancel() }
         workspaceRefreshTask?.cancel()
@@ -348,7 +304,6 @@ final class CodexerModel: ObservableObject {
             detailTab = .overview
         }
         sidebarSelection = .official(product)
-        refreshChats()
         ProductAnalytics.shared.capture(AnalyticsEvent(
             .navigation,
             [.action(.selected), .surface(.overview), .provider(product.analyticsProvider)]
@@ -358,7 +313,6 @@ final class CodexerModel: ObservableObject {
     func selectProfile(_ id: CodexProfile.ID?) {
         resetReminders.showsAvailableResets = false
         sidebarSelection = id.map(CodexerSidebarSelection.profile)
-        refreshChats()
         ProductAnalytics.shared.capture(AnalyticsEvent(
             .navigation,
             [.action(.selected), .surface(.overview)]
@@ -473,9 +427,6 @@ final class CodexerModel: ObservableObject {
             case .overview:
                 selectedProfileID = profiles.first?.id
                 detailTab = .overview
-            case .chats:
-                selectedProfileID = profiles.first?.id
-                detailTab = .chats
             }
             appliedInitialDefaultView = true
         }
@@ -1143,15 +1094,14 @@ final class CodexerModel: ObservableObject {
             present(CodexerModelError.storeUnavailable)
             return
         }
-        cancelChatWork()
-        let chatScanner = chatScanner
+        let legacyChatIndexRootURL = legacyChatIndexRootURL
         Task { [weak self] in
             guard let self else { return }
             defer { storeMutationInProgress = false }
             do {
                 try await Task.detached(priority: .userInitiated) {
                     try store.removeProfile(id: profile.id, policy: .removeFromList)
-                    chatScanner.removeIndex(profileID: profile.id)
+                    LocalChatScanner(indexRootURL: legacyChatIndexRootURL).removeIndex(profileID: profile.id)
                 }.value
                 reload()
                 errorMessage = nil
@@ -1231,9 +1181,8 @@ final class CodexerModel: ObservableObject {
             return
         }
         cancelRefreshes()
-        cancelChatWork()
         busyProfileIDs.insert(profile.id)
-        let chatScanner = chatScanner
+        let legacyChatIndexRootURL = legacyChatIndexRootURL
 
         Task { [weak self] in
             guard let self else { return }
@@ -1244,7 +1193,7 @@ final class CodexerModel: ObservableObject {
             do {
                 try await Task.detached(priority: .utility) {
                     try store.removeProfile(id: profile.id, policy: .deleteAllData)
-                    chatScanner.removeIndex(profileID: profile.id)
+                    LocalChatScanner(indexRootURL: legacyChatIndexRootURL).removeIndex(profileID: profile.id)
                 }.value
                 pendingDeleteProfile = nil
                 reload()
@@ -1285,353 +1234,18 @@ final class CodexerModel: ObservableObject {
         NSWorkspace.shared.activateFileViewerSelecting([profile.shortcutPath])
     }
 
-    func revealChat(_ session: LocalChatSession) {
-        NSWorkspace.shared.activateFileViewerSelecting([session.sourceURL])
-    }
-
-    func copyChatMetadata(_ session: LocalChatSession) {
-        var lines = [
-            "Provider: \(session.provider.displayName)",
-            "Profile: \(session.profileName)",
-            "Started: \(session.startedAt.formatted(date: .abbreviated, time: .shortened))",
-            "Updated: \(session.updatedAt.formatted(date: .abbreviated, time: .shortened))",
-            "Activity span: \(Self.durationText(session.duration))",
-            "Status: \(session.status)"
-        ]
-        if let model = session.model { lines.append("Model: \(model)") }
-        if let repository = session.repository { lines.append("Folder: \(repository)") }
-        if let branch = session.branch { lines.append("Branch: \(branch)") }
-        if let tokenCount = session.tokenCount { lines.append("Tokens: \(tokenCount)") }
-        let sanitizedID = session.id.count > 12
-            ? "\(session.id.prefix(8))…\(session.id.suffix(6))"
-            : session.id
-        lines.append("Session ID: \(sanitizedID)")
-        NSPasteboard.general.clearContents()
-        NSPasteboard.general.setString(lines.joined(separator: "\n"), forType: .string)
-    }
-
-    private static func durationText(_ duration: TimeInterval) -> String {
-        let formatter = DateComponentsFormatter()
-        formatter.allowedUnits = duration >= 3600 ? [.hour, .minute] : [.minute, .second]
-        formatter.unitsStyle = .abbreviated
-        return formatter.string(from: duration) ?? "Unavailable"
-    }
-
     func copyPath(_ url: URL) {
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(url.path, forType: .string)
     }
 
-    private var canReadChats: Bool {
-        isApplicationActive && !visibleChatBrowsers.isEmpty && detailTab == .chats
-    }
-
     func setApplicationActive(_ active: Bool) {
         guard isApplicationActive != active else { return }
         isApplicationActive = active
-        if canReadChats { refreshChats() }
-        else { suspendChatWork() }
         if active, allowsAutomaticRefresh {
             Task { [weak self] in await self?.refreshInstanceStatuses() }
         } else if !active {
             workspaceRefreshTask?.cancel()
-        }
-    }
-
-    func setChatBrowserVisible(_ visible: Bool, browserID: UUID) {
-        let wasVisible = !visibleChatBrowsers.isEmpty
-        if visible { visibleChatBrowsers.insert(browserID) }
-        else { visibleChatBrowsers.remove(browserID) }
-        guard wasVisible != !visibleChatBrowsers.isEmpty else { return }
-        if canReadChats { refreshChats() }
-        else { suspendChatWork() }
-    }
-
-    private func suspendChatWork() {
-        cancelChatWork()
-        chatsLoading = false
-        chatTranscriptLoading = false
-        chatOlderTranscriptLoading = false
-    }
-
-    func refreshChats() {
-        guard canReadChats, sidebarSelection != nil, sidebarSelection != .home else { return }
-        let analyticsStart = ContinuousClock.now
-        chatGeneration += 1
-        let generation = chatGeneration
-        chatRefreshTask?.cancel()
-        chatTranscriptTask?.cancel()
-        chatChangeMonitorTask?.cancel()
-        let scanner = chatScanner
-        let selection = sidebarSelection
-        let profiles = profiles
-        let officialHome = officialCodexHomeURL
-        let officialClaudeUserData = officialClaudeUserDataURL
-        let officialClaudeCodeHome = officialClaudeCodeHomeURL
-        let preferredChatID = loadedChatSelection == selection ? selectedChatID : nil
-        chatTranscriptGeneration += 1
-        if loadedChatSelection != selection {
-            selectedChatID = nil
-            chatSessions = []
-            chatTranscriptEntries = []
-            chatTranscriptCursor = nil
-            chatTranscriptSourceChanged = false
-        }
-        chatsLoading = true
-        chatTranscriptLoading = false
-        chatOlderTranscriptLoading = false
-        chatRefreshTask = Task { [weak self] in
-            let worker = Task.detached(priority: .utility) {
-                switch selection {
-                case let .profile(id):
-                    guard let profile = profiles.first(where: { $0.id == id }) else {
-                        return LocalChatScanResult(availability: .available, sessions: [])
-                    }
-                    return scanner.scan(profile: profile)
-                case .official(.codex):
-                    return scanner.scanOfficialCodex(codexHomeURL: officialHome)
-                case .official(.claude):
-                    return scanner.scanOfficialClaude(
-                        claudeHomeURL: officialClaudeUserData,
-                        claudeCodeHomeURL: officialClaudeCodeHome
-                    )
-                case .home, nil:
-                    return LocalChatScanResult(availability: .available, sessions: [])
-                }
-            }
-            let result = await withTaskCancellationHandler {
-                await worker.value
-            } onCancel: {
-                worker.cancel()
-            }
-            guard
-                !Task.isCancelled,
-                let self,
-                self.chatGeneration == generation,
-                self.sidebarSelection == selection
-            else {
-                return
-            }
-            chatSessions = result.sessions
-            chatAvailability = result.availability
-            loadedChatSelection = selection
-            selectedChatID = preferredChatID.flatMap { preferred in
-                result.sessions.contains(where: { $0.id == preferred }) ? preferred : nil
-            } ?? result.sessions.first?.id
-            chatsLoading = false
-            ProductAnalytics.shared.capture(AnalyticsEvent(
-                .chatUsage,
-                [.action(.listed), .outcome(.succeeded), .countBucket(.init(result.sessions.count)), .durationBucket(analyticsDurationBucket(since: analyticsStart))]
-            ))
-            ProductAnalytics.shared.capture(AnalyticsEvent(
-                .featureAdoption,
-                [.action(.viewed), .feature(.chats), .surface(.chats)]
-            ))
-            loadSelectedChatTranscript()
-            startChatChangeMonitoring(
-                selection: selection,
-                initialToken: result.changeToken,
-                generation: generation
-            )
-        }
-    }
-
-    func selectChat(_ id: LocalChatSession.ID) {
-        guard canReadChats,
-              loadedChatSelection == sidebarSelection,
-              chatSessions.contains(where: { $0.id == id }),
-              id != selectedChatID
-        else { return }
-        selectedChatID = id
-        ProductAnalytics.shared.capture(AnalyticsEvent(
-            .chatUsage,
-            [.action(.transcriptOpened)]
-        ))
-        loadSelectedChatTranscript()
-    }
-
-    private func loadSelectedChatTranscript() {
-        guard canReadChats else { return }
-        chatTranscriptGeneration += 1
-        let generation = chatTranscriptGeneration
-        chatTranscriptTask?.cancel()
-        chatTranscriptEntries = []
-        chatTranscriptCursor = nil
-        chatTranscriptSourceChanged = false
-        chatOlderTranscriptLoading = false
-        guard
-            let selectedChatID,
-            let summary = chatSessions.first(where: { $0.id == selectedChatID })
-        else {
-            chatTranscriptLoading = false
-            return
-        }
-        let scanner = chatScanner
-        chatTranscriptLoading = true
-        chatTranscriptTask = Task { [weak self] in
-            let worker = Task.detached(priority: .utility) {
-                scanner.loadTranscriptForwardPage(for: summary)
-            }
-            let page = await withTaskCancellationHandler {
-                await worker.value
-            } onCancel: {
-                worker.cancel()
-            }
-            guard
-                !Task.isCancelled,
-                let self,
-                self.selectedChatID == selectedChatID,
-                self.chatTranscriptGeneration == generation
-            else {
-                return
-            }
-            chatTranscriptEntries = page.entries
-            chatTranscriptCursor = page.olderCursor
-            chatTranscriptSourceChanged = page.sourceChanged
-            chatTranscriptLoading = false
-            if
-                let continuation = page.olderCursor,
-                page.entries.isEmpty || continuation.skippingOversizedLine
-            {
-                loadMoreChatTranscript()
-            }
-        }
-    }
-
-    var hasMoreChatTranscript: Bool {
-        chatTranscriptCursor != nil
-    }
-
-    func loadMoreChatTranscript() {
-        guard
-            canReadChats,
-            !chatTranscriptLoading,
-            !chatOlderTranscriptLoading,
-            let cursor = chatTranscriptCursor,
-            let selectedChatID,
-            let summary = chatSessions.first(where: { $0.id == selectedChatID })
-        else {
-            return
-        }
-        ProductAnalytics.shared.capture(AnalyticsEvent(
-            .chatUsage,
-            [.action(.transcriptPageLoaded)]
-        ))
-        let scanner = chatScanner
-        let generation = chatTranscriptGeneration
-        chatOlderTranscriptLoading = true
-        chatTranscriptTask = Task { [weak self] in
-            let worker = Task.detached(priority: .utility) {
-                scanner.loadTranscriptForwardPage(for: summary, after: cursor)
-            }
-            let page = await withTaskCancellationHandler {
-                await worker.value
-            } onCancel: {
-                worker.cancel()
-            }
-            guard
-                !Task.isCancelled,
-                let self,
-                self.selectedChatID == selectedChatID,
-                self.chatTranscriptGeneration == generation
-            else {
-                return
-            }
-            if page.sourceChanged {
-                chatTranscriptEntries = []
-                chatTranscriptCursor = nil
-                chatTranscriptSourceChanged = true
-                chatOlderTranscriptLoading = false
-                loadSelectedChatTranscript()
-                return
-            }
-            chatTranscriptEntries += page.entries
-            chatTranscriptCursor = page.olderCursor
-            chatTranscriptSourceChanged = chatTranscriptSourceChanged || page.sourceChanged
-            chatOlderTranscriptLoading = false
-            if
-                let continuation = page.olderCursor,
-                page.entries.isEmpty || continuation.skippingOversizedLine
-            {
-                loadMoreChatTranscript()
-            }
-        }
-    }
-
-    private func startChatChangeMonitoring(
-        selection: CodexerSidebarSelection?,
-        initialToken: String,
-        generation: Int
-    ) {
-        guard allowsAutomaticRefresh, canReadChats,
-              selection != nil, selection != .home else { return }
-        let scanner = chatScanner
-        let profiles = profiles
-        let officialHome = officialCodexHomeURL
-        let officialClaudeUserData = officialClaudeUserDataURL
-        let officialClaudeCodeHome = officialClaudeCodeHomeURL
-        chatChangeMonitorTask?.cancel()
-        chatChangeMonitorTask = Task { [weak self] in
-            var pendingToken: String?
-            var matchingPolls = 0
-            while !Task.isCancelled {
-                do {
-                    try await Task.sleep(for: .seconds(5))
-                } catch {
-                    return
-                }
-                guard let self, self.canReadChats,
-                      self.chatGeneration == generation,
-                      self.sidebarSelection == selection else { return }
-                let worker = Task.detached(priority: .background) {
-                    switch selection {
-                    case let .profile(id):
-                        guard let profile = profiles.first(where: { $0.id == id }) else {
-                            return ""
-                        }
-                        return scanner.changeToken(profile: profile)
-                    case .official(.codex):
-                        return scanner.officialCodexChangeToken(codexHomeURL: officialHome)
-                    case .official(.claude):
-                        return scanner.officialClaudeChangeToken(
-                            claudeHomeURL: officialClaudeUserData,
-                            claudeCodeHomeURL: officialClaudeCodeHome
-                        )
-                    case .home, nil:
-                        return ""
-                    }
-                }
-                let token = await withTaskCancellationHandler {
-                    await worker.value
-                } onCancel: {
-                    worker.cancel()
-                }
-                guard
-                    !Task.isCancelled,
-                    self.canReadChats,
-                    self.chatGeneration == generation,
-                    self.sidebarSelection == selection
-                else {
-                    return
-                }
-                if token == initialToken {
-                    pendingToken = nil
-                    matchingPolls = 0
-                } else if token == pendingToken {
-                    matchingPolls += 1
-                } else {
-                    pendingToken = token
-                    matchingPolls = 1
-                }
-                if matchingPolls >= 2 {
-                    ProductAnalytics.shared.capture(AnalyticsEvent(
-                        .refresh,
-                        [.action(.automaticRefresh), .surface(.chats), .trigger(.automatic)]
-                    ))
-                    refreshChats()
-                    return
-                }
-            }
         }
     }
 
@@ -2070,9 +1684,6 @@ final class CodexerModel: ObservableObject {
                     [.action(.automaticRefresh), .surface(.overview), .trigger(.automatic), .countBucket(.init(self.profiles.count))]
                 ))
                 self.refreshStats()
-                if self.detailTab == .chats {
-                    self.refreshChats()
-                }
             }
         }
     }
@@ -2125,17 +1736,6 @@ final class CodexerModel: ObservableObject {
         rateLimitRefreshTask?.cancel()
         statsRefreshTask = nil
         rateLimitRefreshTask = nil
-    }
-
-    private func cancelChatWork() {
-        chatGeneration += 1
-        chatTranscriptGeneration += 1
-        chatRefreshTask?.cancel()
-        chatTranscriptTask?.cancel()
-        chatChangeMonitorTask?.cancel()
-        chatRefreshTask = nil
-        chatTranscriptTask = nil
-        chatChangeMonitorTask = nil
     }
 
     nonisolated private static func validatedAppSelections(

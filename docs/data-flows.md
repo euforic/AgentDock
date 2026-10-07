@@ -69,30 +69,25 @@ profile path.
    shown as unavailable for that provider. AgentDock never substitutes native
    OpenAI quota for traffic sent to another provider.
 
-## Local Chat Indexing
+## Local Activity Summaries
 
-Chat inventories, transcript reads, and five-second change checks run only
-while Chats is visible and AgentDock is active. Selecting a profile's Overview
-does not load its chats. Leaving Chats or switching away from AgentDock cancels
-pending chat work; returning to Chats refreshes its list and transcript.
-Automatic activity and process-status polling also skip inactive periods.
-Native reset reminders continue to operate in the background.
+AgentDock has no chat browser, transcript paging UI, transcript-copying action,
+or five-second chat change monitor. Automatic activity and process-status
+polling skip inactive periods. Native reset reminders continue to operate in
+the background independently of activity settings.
 
-1. [`LocalChatSession`](../Sources/CodexerCore/LocalChatSession.swift) inventories
-   only supported provider metadata sources. Codex database rows accelerate
-   metadata lookup but are merged with the bounded session-file inventory
-   rather than treated as a complete list.
-2. The scanner validates source roots, rejects symlinks, bounds file counts and
-   bytes, and uses no-follow reads.
-3. AgentDock writes a versioned profile-scoped summary index atomically with
-   owner-only permissions.
-4. The list presents bounded titles, previews, and source metadata.
-5. Opening a chat reads a bounded transcript page and converts source events
-   into the provider-neutral renderer model.
-6. Unsupported source events render as bounded, content-free placeholders;
-   malformed records remain visibly distinct.
-7. Additional pages append in source order while stable IDs prevent duplicate
-   rows and stale chat switches are suppressed.
+1. [`ProfileStatsScanner`](../Sources/CodexerCore/ProfileStats.swift) reads
+   supported Codex databases for local activity and token statistics.
+2. Claude summaries use shared
+   [`LocalChatSession`](../Sources/CodexerCore/LocalChatSession.swift) readers
+   for supported local Cowork/agent-session sources and, for the official
+   installation, supported Claude Code history/session sources.
+3. These readers validate source roots, reject symlinks, bound file counts and
+   bytes, and use no-follow reads. Claude activity and usage summaries are
+   cached in memory; the app no longer writes chat-browser indexes.
+
+Removing the browser does not eliminate Claude local history reads needed for
+activity and token summaries.
 
 For official and managed Claude sources, the same validated Cowork audit
 sources also feed an in-memory usage summary. Assistant token records are
@@ -119,9 +114,10 @@ Live Claude quota refresh is a separate flow:
 5. HTTP 429 responses create a credential-scoped cooldown and retain only the
    last successful in-memory snapshot for that same login.
 
-Full transcript bodies and tool output are not stored in the summary index.
-Malformed, partial, and unsupported events remain visible instead of silently
-disappearing.
+Older browser versions may have left metadata-only indexes containing no full
+transcript bodies or tool output. Explicit profile removal or deletion cleans
+up that profile's legacy indexes. Partial source coverage remains explicit in
+the activity summary.
 
 ## Product Analytics
 

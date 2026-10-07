@@ -397,234 +397,44 @@ final class CodexerModelTests: XCTestCase {
         XCTAssertNil(model.rateLimits(for: profile))
     }
 
-    func testSidebarSelectionPreservesCurrentDetailSection() throws {
+    func testManagedProfileSelectionPreservesAdvancedSection() throws {
         let store = try makeStore()
-        let profile = try store.createProfile(name: "Personal")
+        let first = try store.createProfile(name: "Personal")
+        let second = try store.createProfile(name: "Work")
         let model = makeModel(store: store)
 
-        model.detailTab = .chats
-        model.selectOfficial(.codex)
-        XCTAssertEqual(model.detailTab, .chats)
+        model.selectProfile(first.id)
+        model.detailTab = .advanced
+        model.selectProfile(second.id)
 
-        model.selectProfile(profile.id)
-        XCTAssertEqual(model.detailTab, .chats)
+        XCTAssertEqual(model.selectedProfile?.id, second.id)
+        XCTAssertEqual(model.detailTab, .advanced)
     }
 
-    func testOverviewAndChatsAreAlwaysAvailableWhileAdvancedIsProfileScoped() {
+    func testOverviewIsAlwaysAvailableWhileAdvancedIsProfileScoped() {
         XCTAssertEqual(
             AgentDockDetailTab.availableTabs(hasManagedProfile: false),
-            [.overview, .chats]
+            [.overview]
         )
         XCTAssertEqual(
             AgentDockDetailTab.availableTabs(hasManagedProfile: true),
-            [.overview, .chats, .advanced]
+            [.overview, .advanced]
         )
     }
 
-    func testOfficialSelectionLeavesChatsSelectedAndFallsBackFromAdvanced() throws {
+    func testOfficialSelectionFallsBackFromAdvancedAndPreservesOverview() throws {
         let store = try makeStore()
         let profile = try store.createProfile(name: "Personal")
         let model = makeModel(store: store)
-
-        model.selectProfile(profile.id)
-        model.detailTab = .chats
-        model.selectOfficial(.codex)
-        XCTAssertEqual(model.detailTab, .chats)
 
         model.selectProfile(profile.id)
         model.detailTab = .advanced
         model.selectOfficial(.codex)
         XCTAssertEqual(model.detailTab, .overview)
-    }
-
-    func testRapidProfileSwitchSuppressesStaleChatListAndTranscript() async throws {
-        let store = try makeStore()
-        let slow = try store.createProfile(name: "Slow History")
-        let current = try store.createProfile(name: "Current History")
-        let slowSessions = slow.codexHomePath.appendingPathComponent(
-            "sessions/2026/07/28",
-            isDirectory: true
-        )
-        let currentSessions = current.codexHomePath.appendingPathComponent(
-            "sessions/2026/07/28",
-            isDirectory: true
-        )
-        try FileManager.default.createDirectory(at: slowSessions, withIntermediateDirectories: true)
-        try FileManager.default.createDirectory(at: currentSessions, withIntermediateDirectories: true)
-        for index in 0..<500 {
-            try chatFixture(
-                id: "slow-\(index)",
-                prompt: "Slow conversation \(index)",
-                response: "Old profile response"
-            ).write(to: slowSessions.appendingPathComponent("rollout-\(index).jsonl"))
-        }
-        try chatFixture(
-            id: "current",
-            prompt: "Current conversation",
-            response: "Current profile response"
-        ).write(to: currentSessions.appendingPathComponent("rollout-current.jsonl"))
-        let model = makeChatModel(store: store)
-
-        model.selectProfile(slow.id)
-        model.selectProfile(current.id)
-        await waitUntil(timeout: .seconds(5)) {
-            !model.chatsLoading && !model.chatTranscriptLoading
-        }
-
-        XCTAssertEqual(model.chatSessions.map(\.profileID), [current.id])
-        XCTAssertEqual(model.chatSessions.first?.title, "Current conversation")
-        XCTAssertEqual(
-            model.chatTranscriptEntries.filter { $0.kind == .message }.map(\.text),
-            ["Current conversation", "Current profile response"]
-        )
-    }
-
-    func testRapidConversationSwitchSuppressesCancelledTranscriptPage() async throws {
-        let store = try makeStore()
-        let profile = try store.createProfile(name: "Conversation Switch")
-        let sessions = profile.codexHomePath.appendingPathComponent(
-            "sessions/2026/07/28",
-            isDirectory: true
-        )
-        try FileManager.default.createDirectory(at: sessions, withIntermediateDirectories: true)
-        let large = sessions.appendingPathComponent("rollout-large.jsonl")
-        try chatFixture(id: "large", prompt: "Large", response: nil).write(to: large)
-        let handle = try FileHandle(forWritingTo: large)
-        try handle.seekToEnd()
-        try handle.write(contentsOf: Data("\n{\"type\":\"tool_output\",\"payload\":{\"blob\":\"".utf8))
-        try handle.write(contentsOf: Data(repeating: 0x61, count: 24 * 1_024 * 1_024))
-        try handle.write(contentsOf: Data("\"}}\n".utf8))
-        try handle.close()
-        let small = sessions.appendingPathComponent("rollout-small.jsonl")
-        try chatFixture(
-            id: "small",
-            prompt: "Small",
-            response: "Selected response"
-        ).write(to: small)
-        try FileManager.default.setAttributes(
-            [.modificationDate: Date().addingTimeInterval(2)],
-            ofItemAtPath: small.path
-        )
-        let model = makeChatModel(store: store)
-        model.selectProfile(profile.id)
-        await waitUntil(timeout: .seconds(5)) { !model.chatsLoading }
-        let largeID = try XCTUnwrap(model.chatSessions.first { $0.title == "Large" }?.id)
-        let smallID = try XCTUnwrap(model.chatSessions.first { $0.title == "Small" }?.id)
-
-        model.selectChat(largeID)
-        model.selectChat(smallID)
-        await waitUntil(timeout: .seconds(5)) { !model.chatTranscriptLoading }
-
-        XCTAssertEqual(model.selectedChatID, smallID)
-        XCTAssertEqual(
-            model.chatTranscriptEntries.filter { $0.kind == .message }.map(\.text),
-            ["Small", "Selected response"]
-        )
-        XCTAssertFalse(model.chatTranscriptEntries.contains { $0.text == "Large" })
-    }
-
-    func testFilteredSelectionDoesNotDisplayAnotherChatsTranscript() {
-        XCTAssertNil(
-            ChatSelectionResolver.displayedID(
-                currentID: "chat-a",
-                visibleIDs: ["chat-b"]
-            )
-        )
-        XCTAssertEqual(
-            ChatSelectionResolver.replacementID(
-                currentID: "chat-a",
-                visibleIDs: ["chat-b"]
-            ),
-            "chat-b"
-        )
-        XCTAssertEqual(
-            ChatSelectionResolver.displayedID(
-                currentID: "chat-b",
-                visibleIDs: ["chat-b", "chat-c"]
-            ),
-            "chat-b"
-        )
-    }
-
-    func testOneLoadMoreRequestContinuesAcrossEmptyOversizedPages() async throws {
-        let store = try makeStore()
-        let profile = try store.createProfile(name: "Oversized Paging")
-        let sessions = profile.codexHomePath.appendingPathComponent(
-            "sessions/2026/07/28",
-            isDirectory: true
-        )
-        try FileManager.default.createDirectory(at: sessions, withIntermediateDirectories: true)
-        let file = sessions.appendingPathComponent("rollout-oversized.jsonl")
-        try chatFixture(id: "oversized", prompt: "Before oversized", response: nil).write(to: file)
-        let writer = try FileHandle(forWritingTo: file)
-        try writer.seekToEnd()
-        try writer.write(contentsOf: Data("\n{\"type\":\"tool_output\",\"payload\":{\"blob\":\"".utf8))
-        try writer.write(contentsOf: Data(repeating: 0x61, count: 3 * 1_024 * 1_024))
-        try writer.write(contentsOf: Data("\"}}\n".utf8))
-        try writer.write(contentsOf: try transcriptMessageLine(
-            role: "assistant",
-            text: "After oversized",
-            second: 3
-        ))
-        try writer.close()
-        let model = makeChatModel(store: store)
 
         model.selectProfile(profile.id)
-        await waitUntil(timeout: .seconds(5)) {
-            !model.chatsLoading && !model.chatTranscriptLoading
-        }
-        model.loadMoreChatTranscript()
-        await waitUntil(timeout: .seconds(5)) {
-            model.chatTranscriptEntries.contains { $0.text == "After oversized" }
-                && !model.chatOlderTranscriptLoading
-        }
-
-        XCTAssertEqual(
-            model.chatTranscriptEntries.filter { $0.kind == .message }.map(\.text),
-            ["Before oversized", "After oversized"]
-        )
-        XCTAssertTrue(model.chatTranscriptEntries.contains { $0.kind == .oversized })
-    }
-
-    func testForwardPagingRetainsEveryLoadedEntryInSourceOrder() async throws {
-        let store = try makeStore()
-        let profile = try store.createProfile(name: "Long Paging")
-        let sessions = profile.codexHomePath.appendingPathComponent(
-            "sessions/2026/07/28",
-            isDirectory: true
-        )
-        try FileManager.default.createDirectory(at: sessions, withIntermediateDirectories: true)
-        let file = sessions.appendingPathComponent("rollout-long.jsonl")
-        var data = try chatFixture(id: "long", prompt: "Message 0", response: nil)
-        for index in 1..<700 {
-            data.append(try transcriptMessageLine(
-                role: "assistant",
-                text: "Message \(index)",
-                second: index % 60
-            ))
-        }
-        try data.write(to: file)
-        let model = makeChatModel(store: store)
-
-        model.selectProfile(profile.id)
-        await waitUntil(timeout: .seconds(5)) {
-            !model.chatsLoading && !model.chatTranscriptLoading
-        }
-        while model.hasMoreChatTranscript {
-            model.loadMoreChatTranscript()
-            await waitUntil(timeout: .seconds(5)) { !model.chatOlderTranscriptLoading }
-        }
-
-        let messages = model.chatTranscriptEntries
-            .filter { $0.kind == .message }
-            .map(\.text)
-        XCTAssertEqual(messages.count, 700)
-        XCTAssertEqual(messages.first, "Message 0")
-        XCTAssertEqual(messages.last, "Message 699")
-        let ordinals = model.chatTranscriptEntries.compactMap(\.sourceOrdinal)
-        XCTAssertEqual(ordinals.count, 700)
-        let firstOrdinal = try XCTUnwrap(ordinals.first)
-        XCTAssertEqual(ordinals, Array(firstOrdinal..<(firstOrdinal + 700)))
+        model.selectOfficial(.claude)
+        XCTAssertEqual(model.detailTab, .overview)
     }
 
     func testProfileEditRebuildsInstalledShortcutIconAndDisplayName() async throws {
@@ -678,84 +488,6 @@ final class CodexerModelTests: XCTestCase {
             shortcutDirectory: root.appendingPathComponent("Shortcuts"),
             usageChecker: NeverInUseModelChecker()
         )
-    }
-
-    private func chatFixture(
-        id: String,
-        prompt: String,
-        response: String?
-    ) throws -> Data {
-        var records: [[String: Any]] = [
-            [
-                "timestamp": "2026-07-28T10:00:00Z",
-                "type": "session_meta",
-                "payload": ["id": id, "timestamp": "2026-07-28T10:00:00Z"]
-            ],
-            [
-                "timestamp": "2026-07-28T10:00:01Z",
-                "type": "response_item",
-                "payload": [
-                    "type": "message",
-                    "role": "user",
-                    "content": [["type": "input_text", "text": prompt]]
-                ]
-            ]
-        ]
-        if let response {
-            records.append([
-                "timestamp": "2026-07-28T10:00:02Z",
-                "type": "response_item",
-                "payload": [
-                    "type": "message",
-                    "role": "assistant",
-                    "content": [["type": "output_text", "text": response]]
-                ]
-            ])
-        }
-        return try records.map {
-            String(decoding: try JSONSerialization.data(withJSONObject: $0), as: UTF8.self)
-        }
-        .joined(separator: "\n")
-        .data(using: .utf8)!
-    }
-
-    private func transcriptMessageLine(
-        role: String,
-        text: String,
-        second: Int
-    ) throws -> Data {
-        let record: [String: Any] = [
-            "timestamp": String(format: "2026-07-28T10:00:%02dZ", second),
-            "type": "response_item",
-            "payload": [
-                "type": "message",
-                "role": role,
-                "content": [[
-                    "type": role == "user" ? "input_text" : "output_text",
-                    "text": text
-                ]]
-            ]
-        ]
-        var data = Data("\n".utf8)
-        data.append(try JSONSerialization.data(withJSONObject: record))
-        return data
-    }
-
-    private func makeChatModel(store: ProfileStore) -> CodexerModel {
-        let model = CodexerModel(
-            store: store,
-            officialDataRootURL: root.appendingPathComponent("Official"),
-            codexAppURL: root.appendingPathComponent("Unavailable.app"),
-            claudeAppURL: root.appendingPathComponent("Unavailable.app"),
-            chatScanner: LocalChatScanner(
-                indexRootURL: root.appendingPathComponent("ChatIndexes")
-            ),
-            startMonitoring: false,
-            loadActivityOnInit: false
-        )
-        model.detailTab = .chats
-        model.setChatBrowserVisible(true, browserID: UUID())
-        return model
     }
 
     private func makeModel(

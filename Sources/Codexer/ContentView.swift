@@ -63,7 +63,6 @@ struct ContentView: View {
             Text("This permanently removes the managed local sessions, settings, and shortcut for \(model.pendingDeleteProfile?.name ?? "this profile"). Credentials in shared macOS Keychain or external provider stores are not deleted. This cannot be undone.")
         }
         .onReceive(NotificationCenter.default.publisher(for: .agentDockFocusSearch)) { _ in
-            guard showsSettings || model.showsHome || model.resetReminders.showsAvailableResets || model.detailTab != .chats else { return }
             searchFocused = true
         }
         .onReceive(NotificationCenter.default.publisher(for: .agentDockFocusProfileSearch)) { _ in
@@ -79,7 +78,6 @@ struct ContentView: View {
         .onChange(of: model.detailTab) { _, tab in
             let surface: AnalyticsSurface = switch tab {
             case .overview: .overview
-            case .chats: .chats
             case .advanced: .advanced
             }
             ProductAnalytics.shared.capture(AnalyticsEvent(
@@ -275,9 +273,6 @@ struct ContentView: View {
                                 switch model.detailTab {
                                 case .overview:
                                     OverviewView()
-                                case .chats:
-                                    ChatsView()
-                                        .id(model.sidebarSelection)
                                 case .advanced:
                                     AdvancedView()
                                 }
@@ -329,7 +324,7 @@ struct ContentView: View {
                     .frame(width: 14, height: 14)
             }
             .agentDockToolbarAction()
-            .help(model.showsHome ? "Refresh accounts, usage and banked resets" : "Refresh profile activity and chats")
+            .help(model.showsHome ? "Refresh accounts, usage and banked resets" : "Refresh profile activity")
             .accessibilityLabel("Refresh")
             .keyboardShortcut("r", modifiers: .command)
 
@@ -440,13 +435,11 @@ struct ContentView: View {
         ))
         model.refreshStats(allowCredentialInteraction: true)
         if model.showsHome { model.resetReminders.refresh() }
-        else { model.refreshChats() }
     }
 
     private var selectedDetailAnalyticsSurface: AnalyticsSurface {
         switch model.detailTab {
         case .overview: .overview
-        case .chats: .chats
         case .advanced: .advanced
         }
     }

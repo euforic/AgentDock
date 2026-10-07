@@ -12,10 +12,10 @@ Security-sensitive operations validate:
 - exact managed profile roots and ownership markers;
 - process ancestry, PIDs, and profile arguments;
 - path containment and symlink rejection;
-- bounded file counts, bytes, subprocess output, and transcript pages.
+- bounded file counts, bytes, subprocess output, and shared session readers.
 
 If those checks fail, managed launch, focus, close, restore, delete, or
-transcript reads fail closed.
+local activity reads fail closed.
 
 These boundaries are implemented in
 [DesktopAppRegistry.swift](../Sources/CodexerCore/DesktopAppRegistry.swift),
@@ -39,14 +39,17 @@ resources must not be shared.
 
 ## Local Data
 
-AgentDock stores profile metadata and bounded chat indexes under
+AgentDock stores profile metadata under
 `~/Library/Application Support/AgentDock/`. New shortcuts live under
 `~/Applications/AgentDock/`.
 
-Chat indexes contain bounded titles, previews, timestamps, provider metadata,
-and relative source paths. They do not contain full transcript bodies, tool
-output, or absolute working directories. Transcript bodies are read on demand
-from validated supported local sources.
+Older versions may have left session indexes with bounded titles, previews,
+timestamps, provider metadata, and relative source paths. They contain no full
+transcript bodies, tool output, or absolute working directories. The app no
+longer creates browser indexes; explicit profile removal or deletion cleans up
+that profile's legacy indexes. Claude activity summaries still scan validated
+supported local session sources and cache summaries in memory. AgentDock has no chat browser or
+transcript-copying action; removing that UI does not remove activity-source reads.
 
 AgentDock does not provide cloud synchronization, scrape browser cookies, or
 read ordinary web-chat caches.

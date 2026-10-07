@@ -25,7 +25,7 @@ final class AgentDockPreferencesTests: XCTestCase {
 
         let expected = AgentDockPreferences(
             appearance: .dark,
-            defaultView: .chats,
+            defaultView: .overview,
             refreshProfileActivity: false,
             refreshIntervalMinutes: 30,
             showStatusInProfileList: false
@@ -58,6 +58,25 @@ final class AgentDockPreferencesTests: XCTestCase {
             store.load().refreshIntervalMinutes,
             AgentDockPreferences.defaults.refreshIntervalMinutes
         )
+    }
+
+    func testLegacyChatsStartupMigratesToOverviewWithoutChangingOtherPreferences() {
+        let store = AgentDockPreferencesStore(defaults: defaults)
+        let expected = AgentDockPreferences(
+            appearance: .dark,
+            defaultView: .overview,
+            refreshProfileActivity: false,
+            refreshIntervalMinutes: 30,
+            showStatusInProfileList: false
+        )
+        store.save(expected)
+        defaults.set("chats", forKey: "AgentDock.defaultView")
+        defaults.set("builtIn", forKey: "AgentDock.officialCodex.launchSelectionKind")
+
+        XCTAssertEqual(store.load(), expected)
+        XCTAssertEqual(defaults.string(forKey: "AgentDock.defaultView"), "overview")
+        XCTAssertEqual(store.loadOfficialCodexProfileSettings().launchSelection, .builtIn)
+        XCTAssertEqual(store.load(), expected)
     }
 
     func testLegacyAppDefaultCanBeMigratedAndCleared() throws {
