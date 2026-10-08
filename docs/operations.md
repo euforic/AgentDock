@@ -77,7 +77,8 @@ The tag workflow:
    artifact before generating an Ed25519-signed appcast;
 8. pushes the signed feeds to `gh-pages` only after every earlier gate succeeds;
 9. polls each published Pages URL until its bytes exactly match the generated
-   feed, then verifies its Ed25519 signature again;
+   feed (allowing up to ten minutes for deployment), then verifies its Ed25519
+   signature again;
 10. removes superseded GitHub Releases and their downloads only after public
     feed verification succeeds. Git tags remain available for version checks.
 

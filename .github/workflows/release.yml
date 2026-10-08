@@ -481,7 +481,8 @@ jobs:
           for output_filename in $FEED_FILENAMES; do
             public_appcast="$RUNNER_TEMP/public-$output_filename"
             published=0
-            for attempt in 1 2 3 4 5 6 7 8 9 10 11 12; do
+            # Pages deployment can take several minutes after the branch push.
+            for attempt in $(seq 1 60); do
               if curl -fsSL \
                 "https://gh.euforic.one/AgentDock/$output_filename?release-run=$GITHUB_RUN_ID&attempt=$attempt" \
                 -o "$public_appcast" \
