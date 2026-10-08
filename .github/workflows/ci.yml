@@ -1,0 +1,50 @@
+name: Quality
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+concurrency:
+  group: quality-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  quality:
+    name: Test, package, and privacy audit
+    runs-on: macos-26
+    env:
+      AGENTDOCK_BUILD_SCRATCH_DIR: /tmp/agentdock-ci-build
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+
+      - name: Run application tests
+        run: swift test
+
+      - name: Run vendored renderer tests
+        run: swift test --package-path Vendor/streamdown-swift
+
+      - name: Install privacy scanner
+        run: brew install gitleaks
+
+      - name: Run privacy audit
+        run: ./script/audit_privacy.sh
+
+      - name: Build app bundle
+        run: ./script/build_app.sh
+
+      - name: Package app
+        run: ./script/package_app.sh
+
+      - name: Verify packaged artifacts exist
+        run: |
+          test -f dist/AgentDock-*.zip
+          test -f dist/AgentDock-*.dmg

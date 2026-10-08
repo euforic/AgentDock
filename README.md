@@ -1,0 +1,204 @@
+<p align="center">
+  <img src="docs/assets/agentdock-icon.png" width="128" height="128" alt="AgentDock app icon">
+</p>
+
+# AgentDock
+
+[![Quality](https://github.com/euforic/AgentDock/actions/workflows/ci.yml/badge.svg)](https://github.com/euforic/AgentDock/actions/workflows/ci.yml)
+[![Build and Release](https://github.com/euforic/AgentDock/actions/workflows/release.yml/badge.svg)](https://github.com/euforic/AgentDock/actions/workflows/release.yml)
+[![License: FSL-1.1-MIT](https://img.shields.io/badge/license-FSL--1.1--MIT-6f5cff)](LICENSE)
+
+AgentDock is a native macOS app for running multiple isolated profiles of the
+official OpenAI Codex and Anthropic Claude desktop apps. Each profile receives
+separate application state, can run alongside the stock app and other profiles,
+and can have its own Dock-pinnable shortcut.
+
+[View releases](https://github.com/euforic/AgentDock/releases)
+· [Visit the website](https://gh.euforic.one/AgentDock/)
+· [Read the documentation](docs/index.md)
+· [Report a bug](https://github.com/euforic/AgentDock/issues/new?template=bug_report.yml)
+· [Contribute](CONTRIBUTING.md)
+· [Security](SECURITY.md)
+· [License](LICENSE)
+
+> [!IMPORTANT]
+> AgentDock isolates supported application state; it is not an operating-system
+> sandbox. Managed instances retain normal access to your files, shell,
+> network, Keychain, Git configuration, and SSH credentials.
+
+## Highlights
+
+- Run multiple app profiles side by side with separate local state.
+- Open or focus the normal official installation independently of managed
+  profiles.
+- Focus and close an exact profile without quitting another running instance.
+- Select a named Codex config profile such as Ollama for each managed profile,
+  switch a running profile with an automatic restart, and return to the
+  managed profile's own default or Built-in Codex OAuth at any time.
+- Install native, profile-specific shortcuts under
+  `~/Applications/AgentDock/`.
+- Check for, download, and install signed AgentDock updates with Sparkle.
+- Start from Home to see official and managed profiles together, open or focus
+  each source, compare reported usage, and spot banked resets expiring soon.
+- View supported local activity, storage, usage-limit, and lifecycle
+  information for official installations and managed profiles.
+- See banked Codex resets across accounts and receive configurable native
+  expiration alerts with persistent snooze controls. See [Reset reminders](docs/reset-reminders.md).
+- Verify official app identity and code signatures before managed operations.
+- Preserve profile data by default when removing a profile from the app.
+
+## Requirements
+
+- An Apple silicon Mac running macOS 26 or newer.
+- The official Codex app, the official Claude app, or both.
+- Swift 6.2 or newer only when building from source.
+
+AgentDock does not redistribute or modify either provider app. If an app is not
+installed in `/Applications`, select its signed `.app` bundle in AgentDock
+settings.
+
+## Install
+
+Previous releases have been withdrawn during repository privacy cleanup.
+Downloads and automatic updates are temporarily unavailable. You can
+[build from source](docs/development.md) in the meantime.
+
+When a new release is available:
+
+1. Download the DMG from the
+   [latest release](https://github.com/euforic/AgentDock/releases/latest).
+2. Open it and drag AgentDock onto the Applications shortcut.
+3. Launch AgentDock. The release is Developer ID signed, hardened, notarized,
+   and stapled for Gatekeeper verification.
+
+AgentDock releases that include Sparkle update themselves from the signed
+Stable channel by default. Settings also offers an opt-in Alpha channel for
+signed prerelease builds; users can return to Stable at
+any time. Installations from before Sparkle support require this one
+final manual download; automatic updates begin after that version is installed.
+
+Release pages also provide a ZIP and SHA-256 checksums. See
+[Release operations](docs/operations.md) for verification and maintainer
+release procedures.
+
+## Quick Start
+
+1. Open AgentDock and choose **Add Profile**.
+2. Select the provider and give the profile a descriptive name.
+3. Select the profile and choose **Open**.
+4. Sign in inside that managed provider window.
+5. Optionally choose **Install Shortcut** for a Dock-pinnable launcher.
+6. Repeat for another account or provider.
+
+For Codex, the compact Provider row beneath Usage discovers native
+`CODEX_HOME/<name>.config.toml` profiles for that account. Choose **Use
+Default**, **Built-in Codex (OAuth)**, or a named profile such as Ollama.
+**Make Default** changes the provider default only for the selected managed or
+official account. Changing the selection while Codex is running closes and
+reopens only that account with the selected profile applied as desktop
+app-server configuration overrides.
+
+Drag managed profiles within their provider section to keep the sidebar in the
+order you prefer. The order persists across launches; official provider rows
+remain fixed.
+
+The action changes to **Focus** while a profile is running. **Close** targets
+only the selected profile. **Remove From List** preserves its local data;
+permanent deletion is a separate confirmed action.
+
+Home is the default startup screen. Last Opened Profile and Overview remain
+available in Settings; a legacy Chats startup choice migrates to Overview.
+**Command-1** returns to Home; selecting a source opens
+its Overview and supported Advanced sections. Codex rows show
+reported available resets for that account, with an amber icon for a known
+expiration within seven days. Select the count to view the reset inventory.
+
+Use **Command-F** to search profiles,
+**Command-Shift-F** to search profiles from anywhere, and **Command-R** to
+refresh. The selected profile remains visible above each detail section.
+
+## Local Data and Privacy
+
+AgentDock is local-first. It does not provide cloud synchronization or upload
+managed profile data. Optional pseudonymous product analytics remain off until
+you explicitly allow them and can be disabled immediately in Settings. They never
+include profile, account, path, command, prompt, chat, transcript, session,
+configuration, log, or crash content. AgentDock stores profile metadata under
+`~/Library/Application Support/AgentDock/` and creates shortcuts under
+`~/Applications/AgentDock/`.
+
+AgentDock has no chat browser or transcript-copying action. Local activity and
+usage summaries are source-dependent:
+
+- Codex activity uses supported local databases.
+  Native OpenAI profiles read account limits through the bundled Codex
+  app-server. When a profile selects a custom `model_provider`, AgentDock tries
+  that provider's configured `GET /usage` quota endpoint instead and shows its
+  percentage-based allowance windows and reset times. A custom provider is
+  never shown with an unrelated OpenAI quota.
+- Claude uses supported local Cowork/agent-session data. The Official Claude
+  view can also include the lightweight Claude Code history index and matching
+  local session files. Official and managed Claude sources expose the same
+  source-backed session, model, and token summaries. When a signed-in OAuth
+  credential grants profile access, AgentDock also reads Anthropic's live
+  session, weekly, model-scoped, reset, and extra-usage status. The cross-source
+  card keeps the official installation visible alongside every managed account.
+  Local rate-limit events remain a clearly separate last-observed fallback.
+- AgentDock does not index ordinary synced claude.ai web-chat content. Live
+  Claude usage reads the provider-owned OAuth cache and active-organization
+  cookie required to resolve the signed-in account.
+
+Claude activity scanning still reads supported local session files and keeps
+bounded summaries in memory. The app does not create chat-browser indexes.
+Older versions may have left metadata-only indexes; explicitly removing a
+profile cleans up its legacy indexes. See [Security and privacy](docs/security.md),
+[Data flows](docs/data-flows.md), and the exact optional
+[Product analytics event catalog](docs/analytics.md).
+
+## Documentation
+
+- [Documentation index](docs/index.md)
+- [Architecture](docs/architecture.md)
+- [Code map](docs/code-map.md)
+- [Data flows](docs/data-flows.md)
+- [Interfaces and contracts](docs/apis.md)
+- [Development and testing](docs/development.md)
+- [Release operations](docs/operations.md)
+- [Security and privacy](docs/security.md)
+
+## Contributing and Support
+
+Bug reports, focused fixes, tests, documentation improvements, and feature
+proposals are welcome. Start with:
+
+- [Contributing guide](CONTRIBUTING.md)
+- [Support guide](SUPPORT.md)
+- [Security policy](SECURITY.md)
+- [Issue tracker](https://github.com/euforic/AgentDock/issues)
+
+Please do not post credentials, account data, private transcript content,
+absolute home-directory paths, or unredacted logs in public issues or pull
+requests.
+
+## Project Status
+
+AgentDock is an early release. Provider integration is version-sensitive and
+fails closed when a signed installed app no longer exposes its expected local
+launch contract. Existing shortcuts may need to be reinstalled after launcher
+or profile-identity changes.
+
+AgentDock is an independent project. It is not an OpenAI or Anthropic product.
+
+## License
+
+AgentDock is licensed under the
+[Functional Source License 1.1 with an MIT future grant](LICENSE). The MIT grant
+becomes effective on July 29, 2028. Until then, the FSL permitted-purpose and
+competing-use restrictions apply.
+
+The separate TranscriptRenderer library and showcase use the vendored Streamdown
+subset, which retains its own FSL-1.1-MIT license and its
+separate March 16, 2028 MIT grant date in
+[`Vendor/streamdown-swift/LICENSE`](Vendor/streamdown-swift/LICENSE).
+Those renderer dependencies are not included in the AgentDock app bundle.
+See [Third-party notices](THIRD_PARTY_NOTICES.md) for app and renderer dependency licenses.

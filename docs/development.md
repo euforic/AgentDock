@@ -1,0 +1,216 @@
+# Development and Testing
+
+## Prerequisites
+
+- Apple silicon Mac
+- macOS 26 or newer
+- Swift 6.2 or newer
+- Xcode command-line tools
+
+The official provider apps are optional for normal tests. Installed-app and
+live-lifecycle checks are explicitly opt in.
+
+Package targets and dependency versions are defined in
+[Package.swift](../Package.swift) and [Package.resolved](../Package.resolved).
+
+## Build and Run
+
+```bash
+swift build
+swift test
+./script/build_and_run.sh
+```
+
+App packaging builds only the main app and shortcut launcher with two jobs by
+default. Override `AGENTDOCK_BUILD_JOBS` to change build concurrency. The separate
+transcript-renderer showcase remains available for development, and is not linked
+into the main app.
+
+Local ad-hoc builds leave `SUPublicEDKey` empty and disable update checks.
+They omit hardened runtime because ad-hoc signatures have no Team ID for
+embedded-framework library validation. Developer ID builds retain hardened
+runtime and timestamped signing. To
+exercise the configured updater with an existing public key, run:
+
+```bash
+AGENTDOCK_SPARKLE_PUBLIC_KEY='<base64-public-key>' ./script/build_app.sh
+./script/package_app.sh
+```
+
+The public key is not secret. Never place the private Sparkle key in a command
+argument, tracked file, build artifact, or ordinary development environment.
+
+Use `./script/build_and_run.sh --verify` to build, launch, and verify that the
+app process exists. Build products and packages are written under ignored
+`.build/` and `dist/` directories.
+
+## Marketing Site
+
+The dependency-free static site is stored under [`site/`](../site). Validate
+it locally with:
+
+```bash
+./script/validate_site.sh
+AGENTDOCK_SITE_NETWORK_VALIDATION=1 ./script/validate_site.sh
+python3 -m http.server 8080 --directory site
+```
+
+The first command validates local HTML, JavaScript, assets, release-link
+fallbacks, accessibility hooks, and repository hygiene. The opt-in network
+check resolves the current GitHub release and verifies that its DMG is
+reachable. The local server exposes the site at `http://localhost:8080` for
+responsive browser testing.
+
+Run the repository-wide privacy audit before a release or after changing build,
+packaging, or publication behavior:
+
+```bash
+brew install gitleaks # one-time prerequisite
+./script/audit_privacy.sh
+```
+
+The audit scans the complete Git history with redacted output, rejects tracked
+machine-specific home paths and sensitive file formats, and runs the website
+privacy checks. Release packaging separately rejects private build paths in the
+signed ZIP and DMG without echoing the matched path into logs.
+
+[`Assets/AppIcon.png`](../Assets/AppIcon.png) is the source of truth for both
+the macOS app icon and the website icon. After changing that artwork, regenerate
+the tracked `.icns` and website copy with:
+
+```bash
+./script/generate_app_icon.sh
+./script/validate_site.sh
+```
+
+GitHub Pages serves the contents of the `gh-pages` branch. Website publication
+is manual; do not add a push-to-main, pull-request, or dispatch workflow. The
+release workflow preserves the existing website and publishes only the signed
+Stable or Alpha appcast plus `.nojekyll` update metadata after immutable
+release assets are available.
+
+## Test Suites
+
+```bash
+swift test
+```
+
+The package includes
+[core tests](../Tests/CodexerCoreTests),
+[app-model tests](../Tests/CodexerAppTests/CodexerModelTests.swift),
+[transcript-renderer tests](../Tests/TranscriptRendererTests), and vendored
+parser tests. Tests must use real repository-native behavior; do not add mocks
+or stubs. App-model fixtures must supply a temporary `officialDataRootURL` so
+standard-provider reads stay inside the fixture as well as managed-profile
+reads.
+
+Synthetic UI acceptance images can be rendered without reading signed-in
+accounts or launching provider applications:
+
+```bash
+AGENTDOCK_VISUAL_AUDIT_DIR=/tmp/agentdock-visual-audit swift test \
+  --filter ProfileSelectionIsolationTests/testSyntheticVisualAudit
+```
+
+This opt-in harness uses real temporary profile files and isolated preferences
+to render the home and overview surfaces in light and dark appearances at
+regular and compact sizes, including long profile names and a synthetic reset
+inventory. Home fixtures keep notification preferences and inventory inside
+an isolated defaults suite. It briefly presents
+synthetic windows and requires Screen Recording access for native window
+capture. Inspect the resulting images for hierarchy, clipping, contrast, and source identity;
+render completion alone is not visual acceptance.
+
+The two-profile lifecycle check uses temporary profiles and verifies separate
+processes, persistence through restart, and preservation of the other profile
+and existing provider instances. Failed checks preserve temporary data for
+manual diagnosis and can leave test instances running; verify exact process
+ownership before cleanup. It opens installed provider applications:
+
+```bash
+AGENTDOCK_LIVE_ISOLATION_TEST=1 swift test --filter LiveProfileIsolationTests
+```
+
+The Claude check also inspects bounded open-file metadata for each verified
+process tree before and after restart. It requires files under that profile's
+UserData and none under the default or sibling root; output contains counts
+only. A vanished startup helper triggers a fresh inventory, while a changed
+main process identity fails the check.
+
+
+Installed-app checks:
+
+```bash
+AGENTDOCK_INSTALLED_APP_TEST=1 swift test --filter 'testOfficialInstalledCodexSignatureIsAccepted|testInstalledCodexAcceptsIsolatedMCPConfigurationWhenEnabled'
+
+AGENTDOCK_LIVE_LIFECYCLE=1 swift test \
+  --filter CodexLauncherTests/testLiveProfileCanOpenAndCloseWithoutTouchingStockInstance
+
+AGENTDOCK_LIVE_EXISTING_CODEX_PROFILE=/path/to/active/profile swift test \
+  --filter CodexLauncherTests/testLiveExistingCodexProfileClosesAllOwnedProcessesWithoutTouchingStock
+
+AGENTDOCK_INSTALLED_CLAUDE_TEST=1 swift test \
+  --filter ClaudeDesktopTests/testInstalledClaudeSignatureAndStartupContract
+
+AGENTDOCK_CLAUDE_LIVE_LIFECYCLE=1 swift test \
+  --filter ClaudeDesktopTests/testLiveClaudeProfileCanOpenAndCloseWithoutTouchingStock
+```
+
+The installed Codex configuration check validates the signed app and runs its
+bundled CLI against a temporary managed MCP configuration without account data.
+Repeat it after provider updates. Both installed-profile checks and runtime
+launches resolve the current nested CLI bundle with a legacy fallback.
+The separate renderer showcase omits Codex accounting-only `token_usage_record`
+events from presentation; unknown history events appear as unsupported records.
+The main app has no chat browser. Its Claude activity summaries retain shared
+bounded session scanning.
+
+These checks can open installed provider applications or terminate the exact
+active managed profile named in the environment. Run them only on a Mac where
+that interaction is expected.
+
+## Change Expectations
+
+- Keep provider-specific discovery and parsing in `CodexerCore`.
+- Keep transcript presentation provider-neutral and capability-gated.
+- Preserve stable event identities and exact source order.
+- Bound file inventories, subprocess output, transcript pages, and layout work.
+- Validate paths and signatures immediately before security-sensitive actions.
+- Update README or focused docs with user-visible behavior and contract changes.
+- Never commit profiles, chats, logs, databases, credentials, screenshots with
+  real data, or build artifacts.
+
+See [Contributing](../CONTRIBUTING.md) for the pull-request workflow.
+Release builds use [build_app.sh](../script/build_app.sh) and
+[package_app.sh](../script/package_app.sh).
+
+## Resource measurements
+
+Run sequential production-reader measurements on the same Mac, retaining JSON
+output outside the repository:
+
+```bash
+./script/benchmark_resources.sh 0acab4c /tmp/agentdock-resource-results
+AGENTDOCK_BENCHMARK_LIVE_QUOTA=1 ./script/benchmark_resources.sh 0acab4c /tmp/agentdock-resource-live-results
+```
+
+The opt-in command reads the official signed-in native account but prints only
+success counts and resource counters. It never records account identity, quota
+amounts, credentials, or provider content. Both runs use the same installed
+provider processes. Keep those processes and their workload stable. The runner
+compiles optimized baseline and current readers, adds identical count-only
+instrumentation to temporary copies, and runs baseline then candidate three
+times. It reports wall and CPU time, child CPU, physical footprint, interrupt
+and package-idle wakeups, disk I/O, actual child launches, and validation calls.
+Per-process disk counters can stay zero when filesystem data is cached; they
+do not count every file metadata lookup. Network byte counters are not available
+in this harness. These are reader measurements, not app idle or thermal proof.
+
+A self-contained native SwiftUI probe exercises activation, multiple windows,
+closing/reopening all windows, and rapid hide/return transitions. Compile
+`script/probe_application_lifecycle.swift` with
+`Sources/Codexer/ApplicationActivityMonitor.swift` and run it in a temporary
+application bundle. Its JSON trace contains only lifecycle booleans and window
+counts, comparing the original scene callback gate with the current app-level
+monitor. It does not access provider data. Native notification presentation,
+actual sleep/wake, and sustained app idle measurements remain separate gates.

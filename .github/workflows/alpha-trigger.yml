@@ -1,0 +1,53 @@
+name: Queue Alpha Release
+
+on:
+  workflow_run:
+    workflows:
+      - Quality
+    types:
+      - completed
+    branches:
+      - main
+
+permissions:
+  actions: write
+  contents: write
+
+concurrency:
+  group: agentdock-alpha-trigger
+  cancel-in-progress: true
+
+jobs:
+  tag:
+    name: Debounce successful main merges
+    if: >-
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.event == 'push'
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Coalesce nearby merges
+        run: sleep 600
+
+      - name: Check out successful revision
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event.workflow_run.head_sha }}
+
+      - name: Tag the latest tested main revision
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TESTED_SHA: ${{ github.event.workflow_run.head_sha }}
+        run: |
+          git fetch --force origin main
+          if [[ "$(git rev-parse origin/main)" != "$TESTED_SHA" ]]; then
+            echo "A newer main revision exists; its Quality run will publish the Alpha build."
+            exit 0
+          fi
+
+          short_sha="$(git rev-parse --short=12 "$TESTED_SHA")"
+          timestamp="$(date -u +%Y%m%d%H%M%S)"
+          tag="alpha-$timestamp-$short_sha"
+          git tag "$tag" "$TESTED_SHA"
+          git push origin "refs/tags/$tag"
+          gh workflow run release.yml --repo "$GITHUB_REPOSITORY" --ref "$tag"

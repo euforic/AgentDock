@@ -1,0 +1,489 @@
+name: Build and Release
+
+on:
+  push:
+    tags:
+      - "v*"
+      - "alpha-*"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: agentdock-release
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: Build signed and notarized macOS app
+    runs-on: macos-26
+    environment: release
+    outputs:
+      channel: ${{ steps.release_metadata.outputs.channel }}
+      version: ${{ steps.release_metadata.outputs.version }}
+      feed_filename: ${{ steps.release_metadata.outputs.feed_filename }}
+    env:
+      AGENTDOCK_BUILD_SCRATCH_DIR: /tmp/agentdock-release-build
+      AGENTDOCK_SPARKLE_PUBLIC_KEY: ${{ vars.SPARKLE_PUBLIC_ED_KEY }}
+      AGENTDOCK_POSTHOG_PROJECT_TOKEN: ${{ vars.POSTHOG_PROJECT_TOKEN }}
+      AGENTDOCK_POSTHOG_HOST: ${{ vars.POSTHOG_HOST }}
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+
+      - name: Validate release metadata
+        id: release_metadata
+        run: |
+          if [[ -z "$AGENTDOCK_SPARKLE_PUBLIC_KEY" ]]; then
+            echo "The release environment variable SPARKLE_PUBLIC_ED_KEY is required." >&2
+            exit 1
+          fi
+
+          git fetch --force --tags origin main
+          if [[ "$GITHUB_EVENT_NAME" == "workflow_dispatch" && "$GITHUB_REF_NAME" != alpha-* ]]; then
+            echo "Workflow dispatch is reserved for automated Alpha tags." >&2
+            exit 1
+          fi
+          highest_stable_tag="$(
+            git tag --list 'v*' --sort=-v:refname \
+              | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' \
+              | head -n 1
+          )"
+          if [[ -z "$highest_stable_tag" ]]; then
+            echo "At least one stable vMAJOR.MINOR.PATCH tag is required." >&2
+            exit 1
+          fi
+
+          if [[ "$GITHUB_REF_NAME" == v* ]]; then
+            channel="stable"
+            feed_filename="appcast.xml"
+            version="${GITHUB_REF_NAME#v}"
+            if [[ ! "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+              echo "Stable release tags must use vMAJOR.MINOR.PATCH format." >&2
+              exit 1
+            fi
+            if ! git merge-base --is-ancestor "$GITHUB_SHA" origin/main; then
+              echo "Stable release tags must point to a commit contained in origin/main." >&2
+              exit 1
+            fi
+            if [[ "$highest_stable_tag" != "$GITHUB_REF_NAME" ]]; then
+              echo "Release tag $GITHUB_REF_NAME is not the highest version tag ($highest_stable_tag)." >&2
+              exit 1
+            fi
+
+            version_greater_than() {
+              local candidate="$1"
+              local previous="$2"
+              local candidate_major candidate_minor candidate_patch
+              local previous_major previous_minor previous_patch
+              IFS=. read -r candidate_major candidate_minor candidate_patch <<<"$candidate"
+              IFS=. read -r previous_major previous_minor previous_patch <<<"$previous"
+              (( 10#$candidate_major > 10#$previous_major )) && return 0
+              (( 10#$candidate_major < 10#$previous_major )) && return 1
+              (( 10#$candidate_minor > 10#$previous_minor )) && return 0
+              (( 10#$candidate_minor < 10#$previous_minor )) && return 1
+              (( 10#$candidate_patch > 10#$previous_patch ))
+            }
+            public_appcast="$RUNNER_TEMP/current-appcast.xml"
+            feed_status="$(curl -sSL --retry 3 \
+              "https://gh.euforic.one/AgentDock/appcast.xml?release-check=$GITHUB_RUN_ID" \
+              -o "$public_appcast" -w '%{http_code}')"
+            case "$feed_status" in
+              200)
+                public_version="$(./script/latest_appcast_version.sh "$public_appcast")"
+                if ! version_greater_than "$version" "$public_version"; then
+                  echo "Release version $version must be newer than public appcast version $public_version." >&2
+                  exit 1
+                fi
+                ;;
+              404) rm -f "$public_appcast" ;;
+              *) echo "Cannot read public appcast: HTTP $feed_status." >&2; exit 1 ;;
+            esac
+          elif [[ "$GITHUB_REF_NAME" =~ ^alpha-[0-9]{14}-[0-9a-f]{7,40}$ ]]; then
+            channel="alpha"
+            feed_filename="appcast-alpha.xml"
+            if [[ "$(git rev-parse origin/main)" != "$GITHUB_SHA" ]]; then
+              echo "Alpha releases must point to the current origin/main commit." >&2
+              exit 1
+            fi
+            stable_version="${highest_stable_tag#v}"
+            IFS=. read -r stable_major stable_minor stable_patch <<<"$stable_version"
+            version="$stable_major.$stable_minor.$((10#$stable_patch + 1))-alpha.$GITHUB_RUN_NUMBER"
+          else
+            echo "Release tags must use vMAJOR.MINOR.PATCH or alpha-YYYYMMDDHHMMSS-SHA format." >&2
+            exit 1
+          fi
+
+          build_number="$((1000000 + GITHUB_RUN_NUMBER))"
+          {
+            echo "AGENTDOCK_VERSION=$version"
+            echo "AGENTDOCK_BUILD_NUMBER=$build_number"
+            echo "channel=$channel"
+            echo "version=$version"
+            echo "feed_filename=$feed_filename"
+          } >> "$GITHUB_ENV"
+          {
+            echo "channel=$channel"
+            echo "version=$version"
+            echo "feed_filename=$feed_filename"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Run full tests
+        if: steps.release_metadata.outputs.channel == 'stable'
+        run: swift test
+
+      - name: Run vendored renderer tests
+        if: steps.release_metadata.outputs.channel == 'stable'
+        run: swift test --package-path Vendor/streamdown-swift
+
+      - name: Prepare Developer ID signing and notarization
+        env:
+          DEVELOPER_ID_CERTIFICATE_PEM_BASE64: ${{ secrets.DEVELOPER_ID_CERTIFICATE_PEM_BASE64 }}
+          DEVELOPER_ID_PRIVATE_KEY_PEM_BASE64: ${{ secrets.DEVELOPER_ID_PRIVATE_KEY_PEM_BASE64 }}
+          APPLE_NOTARY_KEY_P8_BASE64: ${{ secrets.APPLE_NOTARY_KEY_P8_BASE64 }}
+          APPLE_NOTARY_KEY_ID: ${{ secrets.APPLE_NOTARY_KEY_ID }}
+          APPLE_NOTARY_ISSUER_ID: ${{ secrets.APPLE_NOTARY_ISSUER_ID }}
+        run: |
+          required=(
+            DEVELOPER_ID_CERTIFICATE_PEM_BASE64
+            DEVELOPER_ID_PRIVATE_KEY_PEM_BASE64
+            APPLE_NOTARY_KEY_P8_BASE64
+            APPLE_NOTARY_KEY_ID
+            APPLE_NOTARY_ISSUER_ID
+          )
+          for name in "${required[@]}"; do
+            if [[ -z "${!name}" ]]; then
+              echo "Missing required release secret: $name" >&2
+              exit 1
+            fi
+          done
+
+          signing_keychain="$RUNNER_TEMP/agentdock-signing.keychain-db"
+          signing_password="$(/usr/bin/uuidgen)$(/usr/bin/uuidgen)"
+          certificate_path="$RUNNER_TEMP/developer-id.pem"
+          private_key_path="$RUNNER_TEMP/developer-id.key"
+          notary_key_path="$RUNNER_TEMP/AuthKey_${APPLE_NOTARY_KEY_ID}.p8"
+
+          printf '%s' "$DEVELOPER_ID_CERTIFICATE_PEM_BASE64" | /usr/bin/base64 -D > "$certificate_path"
+          printf '%s' "$DEVELOPER_ID_PRIVATE_KEY_PEM_BASE64" | /usr/bin/base64 -D > "$private_key_path"
+          printf '%s' "$APPLE_NOTARY_KEY_P8_BASE64" | /usr/bin/base64 -D > "$notary_key_path"
+          chmod 600 "$certificate_path" "$private_key_path" "$notary_key_path"
+
+          /usr/bin/security create-keychain -p "$signing_password" "$signing_keychain"
+          /usr/bin/security unlock-keychain -p "$signing_password" "$signing_keychain"
+          /usr/bin/security set-keychain-settings -lut 3600 "$signing_keychain"
+          /usr/bin/security list-keychains -d user -s "$signing_keychain"
+          /usr/bin/security default-keychain -d user -s "$signing_keychain"
+          /usr/bin/security import "$certificate_path" -k "$signing_keychain" -T /usr/bin/codesign
+          /usr/bin/security import "$private_key_path" -k "$signing_keychain" -T /usr/bin/codesign
+          /usr/bin/security set-key-partition-list \
+            -S apple-tool:,apple:,codesign: \
+            -s \
+            -k "$signing_password" \
+            "$signing_keychain"
+
+          signing_identity="$(
+            /usr/bin/security find-identity -v -p codesigning "$signing_keychain" \
+              | /usr/bin/sed -n 's/.*"\(Developer ID Application:.*\)"/\1/p' \
+              | /usr/bin/head -n 1
+          )"
+          if [[ -z "$signing_identity" ]]; then
+            echo "The imported keychain does not contain a Developer ID Application identity." >&2
+            exit 1
+          fi
+
+          {
+            echo "AGENTDOCK_SIGNING_IDENTITY=$signing_identity"
+            echo "AGENTDOCK_SIGNING_KEYCHAIN=$signing_keychain"
+            echo "AGENTDOCK_NOTARY_KEY_PATH=$notary_key_path"
+            echo "AGENTDOCK_NOTARY_KEY_ID=$APPLE_NOTARY_KEY_ID"
+            echo "AGENTDOCK_NOTARY_ISSUER_ID=$APPLE_NOTARY_ISSUER_ID"
+          } >> "$GITHUB_ENV"
+
+      - name: Build app bundle
+        run: ./script/build_app.sh
+
+      - name: Package app
+        run: ./script/package_app.sh
+
+      - name: Verify notarized release artifacts
+        run: |
+          release_name="AgentDock-$AGENTDOCK_VERSION"
+          app="dist/$release_name/AgentDock.app"
+          zip="dist/$release_name.zip"
+          dmg="dist/$release_name.dmg"
+          sparkle="$app/Contents/Frameworks/Sparkle.framework"
+
+          test -d "$app"
+          test -f "$zip"
+          test -f "$dmg"
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$app/Contents/Info.plist")" = "$AGENTDOCK_VERSION"
+          test "$(/usr/libexec/PlistBuddy -c 'Print :SUFeedURL' "$app/Contents/Info.plist")" = "https://gh.euforic.one/AgentDock/appcast.xml"
+          test "$(/usr/libexec/PlistBuddy -c 'Print :SUPublicEDKey' "$app/Contents/Info.plist")" = "$AGENTDOCK_SPARKLE_PUBLIC_KEY"
+          test "$(/usr/libexec/PlistBuddy -c 'Print :SURequireSignedFeed' "$app/Contents/Info.plist")" = "true"
+          test "$(/usr/libexec/PlistBuddy -c 'Print :SUVerifyUpdateBeforeExtraction' "$app/Contents/Info.plist")" = "true"
+
+          for component in \
+            "$sparkle/Versions/B/XPCServices/Installer.xpc" \
+            "$sparkle/Versions/B/XPCServices/Downloader.xpc" \
+            "$sparkle/Versions/B/Updater.app" \
+            "$sparkle" \
+            "$app"; do
+            /usr/bin/codesign --verify --strict --verbose=2 "$component"
+            /usr/bin/codesign -dv --verbose=4 "$component" 2>&1 \
+              | /usr/bin/grep -q '^Authority=Developer ID Application:'
+          done
+          /usr/bin/codesign --verify --deep --strict --verbose=2 "$app"
+          /usr/bin/codesign -dv --verbose=4 "$app" 2>&1 | /usr/bin/grep -q 'flags=.*runtime'
+          /usr/bin/xcrun stapler validate "$app"
+          /usr/sbin/spctl --assess --type execute --verbose=4 "$app"
+
+          /usr/bin/codesign --verify --strict --verbose=2 "$dmg"
+          /usr/bin/xcrun stapler validate "$dmg"
+          /usr/sbin/spctl --assess --type open --context context:primary-signature --verbose=4 "$dmg"
+          /usr/bin/hdiutil verify "$dmg"
+
+          if /usr/bin/unzip -Z1 "$zip" | /usr/bin/grep -Eq '/\._|/\.__|/\.DS_Store|/\.fseventsd/'; then
+            echo "ZIP contains filesystem metadata sidecars." >&2
+            exit 1
+          fi
+
+          privacy_mount="$(/usr/bin/mktemp -d "$RUNNER_TEMP/agentdock-dmg.XXXXXX")"
+          cleanup_privacy_mount() {
+            /usr/bin/hdiutil detach "$privacy_mount" -quiet >/dev/null 2>&1 || true
+            /bin/rmdir "$privacy_mount" >/dev/null 2>&1 || true
+          }
+          trap cleanup_privacy_mount EXIT
+          /usr/bin/hdiutil attach "$dmg" -readonly -nobrowse -noautoopen -mountpoint "$privacy_mount" >/dev/null
+
+          leaked_path=""
+          while IFS= read -r -d '' candidate; do
+            if /usr/bin/strings -a "$candidate" \
+              | /usr/bin/grep -Eq '/Users/|/private/var/|/var/folders/|runner/work'; then
+              leaked_path="${candidate#"$privacy_mount"/}"
+              break
+            fi
+          done < <(/usr/bin/find "$privacy_mount" -type f -print0)
+          cleanup_privacy_mount
+          trap - EXIT
+          if [[ -n "$leaked_path" ]]; then
+            echo "DMG contains a build-machine path in $leaked_path." >&2
+            exit 1
+          fi
+
+          /usr/bin/shasum -a 256 "$zip" "$dmg" > "dist/$release_name.sha256"
+
+      - name: Clean release credentials
+        if: always()
+        run: |
+          if [[ -n "${AGENTDOCK_SIGNING_KEYCHAIN:-}" ]]; then
+            /usr/bin/security delete-keychain "$AGENTDOCK_SIGNING_KEYCHAIN" || true
+          fi
+          rm -f \
+            "$RUNNER_TEMP/developer-id.pem" \
+            "$RUNNER_TEMP/developer-id.key" \
+            "$RUNNER_TEMP"/AuthKey_*.p8
+
+      - name: Upload packaged artifacts
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: AgentDock-${{ github.run_id }}
+          path: |
+            dist/AgentDock-*.zip
+            dist/AgentDock-*.dmg
+            dist/AgentDock-*.sha256
+          if-no-files-found: error
+          retention-days: 1
+
+  release:
+    name: Publish immutable release assets
+    needs: build
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    env:
+      AGENTDOCK_VERSION: ${{ needs.build.outputs.version }}
+      RELEASE_CHANNEL: ${{ needs.build.outputs.channel }}
+
+    steps:
+      - name: Download packaged artifacts
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: AgentDock-${{ github.run_id }}
+          path: dist
+
+      - name: Verify release checksums
+        run: sha256sum --check dist/AgentDock-*.sha256
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@3d0d9888cb7fd7b750713d6e236d1fcb99157228 # v3.0.2
+        with:
+          tag_name: ${{ github.ref_name }}
+          files: |
+            dist/AgentDock-*.zip
+            dist/AgentDock-*.dmg
+            dist/AgentDock-*.sha256
+          generate_release_notes: true
+          prerelease: ${{ needs.build.outputs.channel == 'alpha' }}
+          make_latest: ${{ needs.build.outputs.channel == 'stable' }}
+          fail_on_unmatched_files: true
+          overwrite_files: false
+
+  appcast:
+    name: Sign and publish selected appcast last
+    needs: [build, release]
+    runs-on: macos-26
+    environment: release
+    permissions:
+      contents: write
+    env:
+      SPARKLE_PRIVATE_ED_KEY: ${{ secrets.SPARKLE_PRIVATE_ED_KEY }}
+      AGENTDOCK_VERSION: ${{ needs.build.outputs.version }}
+      RELEASE_CHANNEL: ${{ needs.build.outputs.channel }}
+      FEED_FILENAME: ${{ needs.build.outputs.feed_filename }}
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+
+      - name: Download published release inputs
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: AgentDock-${{ github.run_id }}
+          path: release-input
+
+      - name: Generate and validate signed appcast
+        run: |
+          if [[ -z "$SPARKLE_PRIVATE_ED_KEY" ]]; then
+            echo "The release environment secret SPARKLE_PRIVATE_ED_KEY is required." >&2
+            exit 1
+          fi
+          archive_name="AgentDock-$AGENTDOCK_VERSION.zip"
+          archive_dir="$RUNNER_TEMP/agentdock-appcast"
+          asset_url="https://github.com/euforic/AgentDock/releases/download/$GITHUB_REF_NAME/$archive_name"
+          mkdir -p "$archive_dir"
+          available=0
+          for _ in 1 2 3 4 5 6; do
+            if curl -fsSL \
+              "$asset_url?release-run=$GITHUB_RUN_ID" \
+              -o "$archive_dir/$archive_name"; then
+              available=1
+              break
+            fi
+            sleep 5
+          done
+          if [[ "$available" != "1" ]]; then
+            echo "Published release asset is not available at $asset_url." >&2
+            exit 1
+          fi
+          if ! cmp -s "release-input/$archive_name" "$archive_dir/$archive_name"; then
+            echo "Published release ZIP does not match the notarized workflow artifact." >&2
+            exit 1
+          fi
+          swift package resolve
+          generate_appcast=".build/artifacts/sparkle/Sparkle/bin/generate_appcast"
+          sign_update=".build/artifacts/sparkle/Sparkle/bin/sign_update"
+          test -x "$generate_appcast"
+          test -x "$sign_update"
+          feed_filenames=("$FEED_FILENAME")
+          if [[ "$RELEASE_CHANNEL" == "stable" ]]; then
+            # Alpha subscribers also accept newer default-channel builds.
+            feed_filenames+=(appcast-alpha.xml)
+          fi
+          echo "FEED_FILENAMES=${feed_filenames[*]}" >> "$GITHUB_ENV"
+          for output_filename in "${feed_filenames[@]}"; do
+            appcast="$archive_dir/$output_filename"
+            seed_filename="$output_filename"
+            channel_arguments=()
+            if [[ "$RELEASE_CHANNEL" == "alpha" ]]; then
+              seed_filename=appcast.xml
+              channel_arguments=(--channel alpha)
+            fi
+            seed_status="$(curl -sSL "https://gh.euforic.one/AgentDock/$seed_filename" \
+              -o "$appcast" -w '%{http_code}')"
+            case "$seed_status" in
+              200)
+                printf '%s' "$SPARKLE_PRIVATE_ED_KEY" \
+                  | "$sign_update" --verify --ed-key-file - "$appcast" >/dev/null
+                ;;
+              404) rm -f "$appcast" ;;
+              *) echo "Cannot read appcast seed: HTTP $seed_status." >&2; exit 1 ;;
+            esac
+            printf '%s' "$SPARKLE_PRIVATE_ED_KEY" \
+              | "$generate_appcast" \
+                --ed-key-file - \
+                --download-url-prefix "https://github.com/euforic/AgentDock/releases/download/$GITHUB_REF_NAME/" \
+                --link "https://github.com/euforic/AgentDock" \
+                --maximum-versions 3 \
+                --maximum-deltas 0 \
+                "${channel_arguments[@]}" \
+                -o "$appcast" \
+                "$archive_dir"
+
+            /usr/bin/xmllint --noout "$appcast"
+            /usr/bin/grep -Fq \
+              "url=\"https://github.com/euforic/AgentDock/releases/download/$GITHUB_REF_NAME/$archive_name\"" \
+              "$appcast"
+            /usr/bin/grep -Fq 'sparkle:edSignature=' "$appcast"
+            /usr/bin/grep -Fq '<!-- sparkle-signatures:' "$appcast"
+            if [[ "$RELEASE_CHANNEL" == "alpha" ]]; then
+              /usr/bin/grep -Fq '<sparkle:channel>alpha</sparkle:channel>' "$appcast"
+            fi
+            printf '%s' "$SPARKLE_PRIVATE_ED_KEY" \
+              | "$sign_update" --verify --ed-key-file - "$appcast" >/dev/null
+            cp "$appcast" "$RUNNER_TEMP/$output_filename"
+          done
+
+      - name: Publish GitHub Pages appcast
+        run: |
+          if git ls-remote --exit-code --heads origin gh-pages >/dev/null 2>&1; then
+            git fetch origin gh-pages
+            git checkout -B gh-pages origin/gh-pages
+          else
+            git checkout --orphan gh-pages
+            git rm -rf .
+          fi
+          for output_filename in $FEED_FILENAMES; do
+            cp "$RUNNER_TEMP/$output_filename" "$output_filename"
+            git add "$output_filename"
+          done
+          touch .nojekyll
+          git add .nojekyll
+          if git diff --cached --quiet; then
+            echo "Appcast is already current."
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -m "Publish AgentDock $GITHUB_REF_NAME $RELEASE_CHANNEL appcast"
+          git push origin HEAD:gh-pages
+
+      - name: Verify public appcast bytes and signature
+        run: |
+          sign_update=".build/artifacts/sparkle/Sparkle/bin/sign_update"
+          for output_filename in $FEED_FILENAMES; do
+            public_appcast="$RUNNER_TEMP/public-$output_filename"
+            published=0
+            for attempt in 1 2 3 4 5 6 7 8 9 10 11 12; do
+              if curl -fsSL \
+                "https://gh.euforic.one/AgentDock/$output_filename?release-run=$GITHUB_RUN_ID&attempt=$attempt" \
+                -o "$public_appcast" \
+                && cmp -s "$RUNNER_TEMP/$output_filename" "$public_appcast"; then
+                published=1
+                break
+              fi
+              sleep 10
+            done
+            if [[ "$published" != "1" ]]; then
+              echo "The public $output_filename did not converge to the generated signed bytes." >&2
+              exit 1
+            fi
+            printf '%s' "$SPARKLE_PRIVATE_ED_KEY" \
+              | "$sign_update" --verify --ed-key-file - "$public_appcast" >/dev/null
+          done
