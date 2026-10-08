@@ -30,7 +30,9 @@ The build script embeds the pinned Sparkle framework with its updater and XPC
 services, signs every nested component before the outer app, and verifies the
 result. The package script verifies the app structure, rejects filesystem
 metadata sidecars, mounts the DMG read-only, scans it for build-machine paths,
-and runs DMG integrity verification. The ZIP contains `AgentDock.app` at its
+and runs DMG integrity verification. If `diskutil` cannot create the DMG,
+packaging falls back to `hdiutil` and verifies the resulting image with the same
+privacy and integrity gates. The ZIP contains `AgentDock.app` at its
 root, as required by Sparkle's archive extractor. An ad-hoc local build has no
 Sparkle public key and keeps update checks disabled.
 

@@ -168,13 +168,13 @@ mkdir -p "$DMG_STAGING_DIR"
 /bin/ln -s /Applications "$DMG_STAGING_DIR/Applications"
 
 USE_DISKUTIL_IMAGE=0
-if /usr/sbin/diskutil image create from -help >/dev/null 2>&1; then
-  USE_DISKUTIL_IMAGE=1
-  COPYFILE_DISABLE=1 /usr/sbin/diskutil image create from \
+if /usr/sbin/diskutil image create from -help >/dev/null 2>&1 \
+  && COPYFILE_DISABLE=1 /usr/sbin/diskutil image create from \
     --format UDZO \
     --volumeName "$APP_NAME" \
     "$DMG_STAGING_DIR" \
-    "$DMG_PATH"
+    "$DMG_PATH"; then
+  USE_DISKUTIL_IMAGE=1
 else
   COPYFILE_DISABLE=1 /usr/bin/hdiutil create \
     -volname "$APP_NAME" \
