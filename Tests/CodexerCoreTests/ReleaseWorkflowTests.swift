@@ -2,6 +2,16 @@ import Foundation
 import XCTest
 
 final class ReleaseWorkflowTests: XCTestCase {
+    func testReleaseRetentionUsesRealFeedAndReleaseMetadata() throws {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
+        process.arguments = ["python3", "-m", "unittest", "discover", "-s", "Tests/ReleaseRetentionTests"]
+        process.currentDirectoryURL = repositoryRoot
+        try process.run()
+        process.waitUntilExit()
+        XCTAssertEqual(process.terminationStatus, 0)
+    }
+
     func testReleaseWorkflowRunsForStableTagsAndDispatchedAlphaTags() throws {
         let workflow = try String(contentsOf: repositoryRoot
             .appendingPathComponent(".github/workflows/release.yml"), encoding: .utf8)

@@ -2,11 +2,9 @@
 
 ## Publication Reset
 
-Previous releases, tags, and update feeds have been withdrawn during repository
-privacy cleanup. Downloads and automatic updates remain unavailable until a
-new signed release is published. The Alpha trigger is paused in GitHub Actions;
-explicitly enable it after reviewing publication readiness. Existing release
-signing and feed verification requirements still apply.
+Previous releases, tags, and update feeds were withdrawn during repository
+privacy cleanup. New releases use the cleaned public source and the existing
+release signing and feed verification requirements.
 
 The release workflow can create a new signed feed when its public URL returns
 HTTP 404. An existing feed must pass signature verification before it is used
@@ -77,12 +75,16 @@ The tag workflow:
    artifact before generating an Ed25519-signed appcast;
 8. pushes the signed feeds to `gh-pages` only after every earlier gate succeeds;
 9. polls each published Pages URL until its bytes exactly match the generated
-   feed, then verifies its Ed25519 signature again.
+   feed, then verifies its Ed25519 signature again;
+10. removes superseded GitHub Releases and their downloads only after public
+    feed verification succeeds. Git tags remain available for version checks.
 
 Stable clients use `https://gh.euforic.one/AgentDock/appcast.xml`. Alpha
 clients use `https://gh.euforic.one/AgentDock/appcast-alpha.xml`, which
-also retains Stable entries as a fallback. Every Stable release refreshes both
-feeds, preserving the latest Alpha entry in the Alpha feed. Alpha subscribers
+also retains the latest Stable entry as a fallback. Every Stable release refreshes
+both feeds. Each feed retains only the latest Stable and, for the Alpha feed,
+the latest Alpha when its numeric build number is newer than Stable. Feed pruning
+is followed by re-signing before publication. Alpha subscribers
 receive a Stable build when its numeric build number is newer than their
 installed build, without changing their selected channel. Older Stable builds
 do not replace newer Alpha builds. Stable is the app default and users
@@ -103,7 +105,10 @@ AgentDock is maintained in the personal `euforic/AgentDock` repository. CI and
 release jobs use GitHub-hosted `macos-26` (Apple silicon) and `ubuntu-24.04`
 runners, so they do not depend on organization runner access. Standard runner
 minutes are free while this repository is public. Temporary workflow artifacts
-expire after one day; GitHub Release assets remain available for downloads. Repository
+expire after one day. GitHub Releases retain the latest Stable and an Alpha only
+when it is newer than Stable; a newer Stable release removes the superseded Alpha
+downloads. Drafts and releases outside the Stable/Alpha tag formats are untouched.
+If publication or feed verification fails, cleanup does not run. Repository
 **Settings → Actions → General** must allow Actions; publication jobs explicitly
 request `contents: write`. Keep the `release` environment, its signing secret,
 and its `v*` / `alpha-*` tag deployment policies configured.
@@ -195,8 +200,9 @@ curl --fail --silent --show-error \
 
 ## Rollback
 
-GitHub Releases are immutable historical records once downloaded. If a release
-is defective, document the issue, fix `main`, and publish a new patch release.
+Retained GitHub Release assets are immutable. Superseded releases are removed by
+the retention policy after successful feed publication. If a release is
+defective, document the issue, fix `main`, and publish a new patch release.
 Do not silently replace trusted artifacts or move a published tag. Because the
 appcast is published last, a failed build, notarization, release upload, or
 appcast-signing job leaves clients on the previous valid feed.

@@ -415,16 +415,24 @@ jobs:
               404) rm -f "$appcast" ;;
               *) echo "Cannot read appcast seed: HTTP $seed_status." >&2; exit 1 ;;
             esac
+            if [[ "$RELEASE_CHANNEL" == "alpha" ]]; then
+              test -f "$appcast"
+              cp "$appcast" "$RUNNER_TEMP/retention-stable.xml"
+            fi
             printf '%s' "$SPARKLE_PRIVATE_ED_KEY" \
               | "$generate_appcast" \
                 --ed-key-file - \
                 --download-url-prefix "https://github.com/euforic/AgentDock/releases/download/$GITHUB_REF_NAME/" \
                 --link "https://github.com/euforic/AgentDock" \
-                --maximum-versions 3 \
+                --maximum-versions 1 \
                 --maximum-deltas 0 \
                 "${channel_arguments[@]}" \
                 -o "$appcast" \
                 "$archive_dir"
+
+            python3 script/release_retention.py prune "$appcast"
+            printf '%s' "$SPARKLE_PRIVATE_ED_KEY" \
+              | "$sign_update" --ed-key-file - "$appcast" >/dev/null
 
             /usr/bin/xmllint --noout "$appcast"
             /usr/bin/grep -Fq \
@@ -438,6 +446,9 @@ jobs:
             printf '%s' "$SPARKLE_PRIVATE_ED_KEY" \
               | "$sign_update" --verify --ed-key-file - "$appcast" >/dev/null
             cp "$appcast" "$RUNNER_TEMP/$output_filename"
+            if [[ "$output_filename" == "appcast.xml" ]]; then
+              cp "$appcast" "$RUNNER_TEMP/retention-stable.xml"
+            fi
           done
 
       - name: Publish GitHub Pages appcast
@@ -487,3 +498,20 @@ jobs:
             printf '%s' "$SPARKLE_PRIVATE_ED_KEY" \
               | "$sign_update" --verify --ed-key-file - "$public_appcast" >/dev/null
           done
+
+      - name: Remove superseded release downloads
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # Use the script from the release commit after switching to gh-pages.
+          git show "$GITHUB_SHA:script/release_retention.py" > "$RUNNER_TEMP/release_retention.py"
+          gh api --paginate --slurp "repos/$GITHUB_REPOSITORY/releases?per_page=100" \
+            > "$RUNNER_TEMP/releases.json"
+          python3 "$RUNNER_TEMP/release_retention.py" obsolete \
+            "$RUNNER_TEMP/releases.json" \
+            "$RUNNER_TEMP/retention-stable.xml" \
+            "$RUNNER_TEMP/appcast-alpha.xml" \
+            > "$RUNNER_TEMP/obsolete-releases.txt"
+          while IFS= read -r release_id; do
+            gh api --method DELETE "repos/$GITHUB_REPOSITORY/releases/$release_id"
+          done < "$RUNNER_TEMP/obsolete-releases.txt"

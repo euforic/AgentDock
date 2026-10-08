@@ -59,12 +59,6 @@ settings.
 
 ## Install
 
-Previous releases have been withdrawn during repository privacy cleanup.
-Downloads and automatic updates are temporarily unavailable. You can
-[build from source](docs/development.md) in the meantime.
-
-When a new release is available:
-
 1. Download the DMG from the
    [latest release](https://github.com/euforic/AgentDock/releases/latest).
 2. Open it and drag AgentDock onto the Applications shortcut.
