@@ -141,7 +141,7 @@ main process identity fails the check.
 Installed-app checks:
 
 ```bash
-AGENTDOCK_INSTALLED_APP_TEST=1 swift test --filter 'testOfficialInstalledCodexSignatureIsAccepted|testInstalledCodexAcceptsIsolatedMCPConfigurationWhenEnabled'
+AGENTDOCK_INSTALLED_APP_TEST=1 swift test --filter 'testOfficialInstalledCodexSignatureIsAccepted|testInstalledCodexAcceptsIsolatedMCPConfigurationWhenEnabled|testInstalledAppServerRespondsFromAnIsolatedHomeWhenEnabled'
 
 AGENTDOCK_LIVE_LIFECYCLE=1 swift test \
   --filter CodexLauncherTests/testLiveProfileCanOpenAndCloseWithoutTouchingStockInstance
@@ -158,6 +158,11 @@ AGENTDOCK_CLAUDE_LIVE_LIFECYCLE=1 swift test \
 
 The installed Codex configuration check validates the signed app and runs its
 bundled CLI against a temporary managed MCP configuration without account data.
+The app-server check initializes the real bundled executable and sends a usage
+request from a fresh temporary home, expecting the unauthenticated response.
+Set `AGENTDOCK_CODEX_APP_PATH` or `AGENTDOCK_CLAUDE_APP_PATH` to test an alternate
+signed bundle in the installed-app and live lifecycle/isolation checks. These
+overrides leave the normally installed app in place.
 Repeat it after provider updates. Both installed-profile checks and runtime
 launches resolve the current nested CLI bundle with a legacy fallback.
 The separate renderer showcase omits Codex accounting-only `token_usage_record`

@@ -939,7 +939,7 @@ final class CodexLauncherTests: XCTestCase {
             throw XCTSkip("Set AGENTDOCK_INSTALLED_APP_TEST=1 to validate the installed Codex app.")
         }
         try OfficialCodexAppValidator().validateCodexApp(
-            at: URL(fileURLWithPath: "/Applications/Codex.app")
+            at: installedProviderAppURL(.codex)
         )
     }
 
@@ -1011,7 +1011,7 @@ final class CodexLauncherTests: XCTestCase {
             mcpOAuthCallbackPort: CodexMCPConfiguration.managedCallbackPorts.lowerBound
         )
         try prepareIsolationLayout(for: profile)
-        let appURL = URL(fileURLWithPath: "/Applications/Codex.app")
+        let appURL = installedProviderAppURL(.codex)
         let controller = CodexInstanceController()
         let stockProcessIDs = Set(
             NSRunningApplication.runningApplications(
@@ -1090,7 +1090,7 @@ final class CodexLauncherTests: XCTestCase {
             profileDirectory: profileDirectory,
             shortcutDirectory: FileManager.default.temporaryDirectory
         )
-        let appURL = URL(fileURLWithPath: "/Applications/Codex.app")
+        let appURL = installedProviderAppURL(.codex)
         let controller = CodexInstanceController()
         let running = try await controller.status(for: profile, codexAppURL: appURL)
         guard running.isRunning else {

@@ -43,9 +43,15 @@ public enum ClaudeInstanceDiscovery {
     public static func profileMainProcessIDs(
         in snapshot: ClaudeProcessSnapshot,
         appURL: URL,
-        userDataURL: URL
+        userDataURL: URL,
+        trustedHelperProcessIDs: Set<Int32>
     ) -> [Int32] {
-        mainProcessIDs(in: snapshot, appURL: appURL, userDataURL: userDataURL)
+        mainProcessIDs(
+            in: snapshot,
+            appURL: appURL,
+            userDataURL: userDataURL,
+            trustedHelperProcessIDs: trustedHelperProcessIDs
+        )
     }
 
     public static func stockMainProcessIDs(
@@ -54,18 +60,29 @@ public enum ClaudeInstanceDiscovery {
         defaultUserDataURL: URL = FileManager.default.urls(
             for: .applicationSupportDirectory,
             in: .userDomainMask
-        )[0].appendingPathComponent("Claude", isDirectory: true)
+        )[0].appendingPathComponent("Claude", isDirectory: true),
+        trustedHelperProcessIDs: Set<Int32>
     ) -> [Int32] {
-        mainProcessIDs(in: snapshot, appURL: appURL, userDataURL: defaultUserDataURL)
+        mainProcessIDs(
+            in: snapshot,
+            appURL: appURL,
+            userDataURL: defaultUserDataURL,
+            trustedHelperProcessIDs: trustedHelperProcessIDs
+        )
     }
 
     private static func mainProcessIDs(
         in snapshot: ClaudeProcessSnapshot,
         appURL: URL,
-        userDataURL: URL
+        userDataURL: URL,
+        trustedHelperProcessIDs: Set<Int32>
     ) -> [Int32] {
         let canonicalUserDataPath = canonical(userDataURL)
-        return userDataPathsByMainProcess(in: snapshot, appURL: appURL)
+        return userDataPathsByMainProcess(
+            in: snapshot,
+            appURL: appURL,
+            trustedHelperProcessIDs: trustedHelperProcessIDs
+        )
             .compactMap { processID, paths in
                 paths == [canonicalUserDataPath] ? processID : nil
             }.sorted()
@@ -73,7 +90,8 @@ public enum ClaudeInstanceDiscovery {
 
     static func userDataPathsByMainProcess(
         in snapshot: ClaudeProcessSnapshot,
-        appURL: URL
+        appURL: URL,
+        trustedHelperProcessIDs: Set<Int32>
     ) -> [Int32: Set<String>] {
         let contentsPrefix = appURL.standardizedFileURL
             .appendingPathComponent("Contents", isDirectory: true)
@@ -86,6 +104,7 @@ public enum ClaudeInstanceDiscovery {
         var pathsByMainProcess: [Int32: Set<String>] = [:]
         for entry in snapshot.entries.values {
             guard entry.command.hasPrefix(contentsPrefix),
+                  trustedHelperProcessIDs.contains(entry.processID),
                   let mainProcessID = mainAncestor(
                       from: entry.processID,
                       snapshot: snapshot,
@@ -201,7 +220,13 @@ public actor ClaudeInstanceController {
         try Task.checkCancellation()
         let snapshot = try snapshotProvider.snapshot()
         try Task.checkCancellation()
-        return statuses(for: profiles, appURL: appURL, snapshot: snapshot)
+        let trustedHelpers = trustedHelperProcessIDs(in: snapshot, appURL: appURL)
+        return statuses(
+            for: profiles,
+            appURL: appURL,
+            snapshot: snapshot,
+            trustedHelperProcessIDs: trustedHelpers
+        )
     }
 
     func statusBatch(
@@ -213,25 +238,35 @@ public actor ClaudeInstanceController {
         try Task.checkCancellation()
         let snapshot = try snapshotProvider.snapshot()
         try Task.checkCancellation()
+        let trustedHelpers = trustedHelperProcessIDs(in: snapshot, appURL: appURL)
         return ProviderInstanceStatusBatch(
-            managedStatuses: statuses(for: profiles, appURL: appURL, snapshot: snapshot),
-            officialStatus: stockStatus(appURL: appURL, snapshot: snapshot)
+            managedStatuses: statuses(
+                for: profiles,
+                appURL: appURL,
+                snapshot: snapshot,
+                trustedHelperProcessIDs: trustedHelpers
+            ),
+            officialStatus: stockStatus(
+                appURL: appURL,
+                snapshot: snapshot,
+                trustedHelperProcessIDs: trustedHelpers
+            )
         )
     }
 
     private func statuses(
         for profiles: [CodexProfile],
         appURL: URL,
-        snapshot: ClaudeProcessSnapshot
+        snapshot: ClaudeProcessSnapshot,
+        trustedHelperProcessIDs: Set<Int32>
     ) -> [CodexProfile.ID: CodexInstanceStatus] {
         return Dictionary(uniqueKeysWithValues: profiles.map { profile in
             let trustedProcessIDs = ClaudeInstanceDiscovery.profileMainProcessIDs(
                 in: snapshot,
                 appURL: appURL,
-                userDataURL: profile.claudeUserDataPath
-            ).filter {
-                validator.isTrustedProcess(processID: $0, product: .claude)
-            }
+                userDataURL: profile.claudeUserDataPath,
+                trustedHelperProcessIDs: trustedHelperProcessIDs
+            ).filter { isTrustedMainProcess($0, appURL: appURL) }
             return (
                 profile.id,
                 CodexInstanceStatus(
@@ -258,17 +293,24 @@ public actor ClaudeInstanceController {
         try Task.checkCancellation()
         let snapshot = try snapshotProvider.snapshot()
         try Task.checkCancellation()
-        return stockStatus(appURL: appURL, snapshot: snapshot)
+        return stockStatus(
+            appURL: appURL,
+            snapshot: snapshot,
+            trustedHelperProcessIDs: trustedHelperProcessIDs(in: snapshot, appURL: appURL)
+        )
     }
 
-    private func stockStatus(appURL: URL, snapshot: ClaudeProcessSnapshot) -> CodexInstanceStatus {
+    private func stockStatus(
+        appURL: URL,
+        snapshot: ClaudeProcessSnapshot,
+        trustedHelperProcessIDs: Set<Int32>
+    ) -> CodexInstanceStatus {
         return CodexInstanceStatus(
             processIDs: ClaudeInstanceDiscovery.stockMainProcessIDs(
                 in: snapshot,
-                appURL: appURL
-            ).filter {
-                validator.isTrustedProcess(processID: $0, product: .claude)
-            }
+                appURL: appURL,
+                trustedHelperProcessIDs: trustedHelperProcessIDs
+            ).filter { isTrustedMainProcess($0, appURL: appURL) }
         )
     }
 
@@ -279,15 +321,16 @@ public actor ClaudeInstanceController {
         let operationLock = try await ProfileOperationLock.acquire(for: profile.profileDirectory)
         defer { withExtendedLifetime(operationLock) {} }
         try validateProfileLayout(profile)
+        try validateClaudeApp(at: appURL)
 
-        if let processID = try status(for: profile, appURL: appURL).primaryProcessID {
-            guard activate(processID: processID) else {
+        if let processID = try verifiedStatus(for: profile, appURL: appURL).primaryProcessID {
+            guard try activateVerified(processID: processID, profile: profile, appURL: appURL) else {
                 throw ClaudeLauncherError.couldNotFocus(processID)
             }
             return .focused(processID: processID)
         }
 
-        try validateClaudeApp(at: appURL)
+        try validator.validateApp(at: appURL, product: .claude)
         let configuration = NSWorkspace.OpenConfiguration()
         configuration.activates = true
         configuration.addsToRecentItems = false
@@ -314,20 +357,21 @@ public actor ClaudeInstanceController {
         // unverified process running instead of risking another active profile.
         try await waitForLaunch(
             expectedProcessID: processID,
-            status: { try self.status(for: profile, appURL: appURL) }
+            status: { try self.verifiedStatus(for: profile, appURL: appURL) }
         )
         return .launched(processID: processID)
     }
 
     public func openStock(appURL: URL) async throws -> CodexOpenOutcome {
-        if let processID = try stockStatus(appURL: appURL).primaryProcessID {
-            guard activate(processID: processID) else {
+        try validateClaudeApp(at: appURL)
+        if let processID = try verifiedStockStatus(appURL: appURL).primaryProcessID {
+            guard try activateVerifiedStock(processID: processID, appURL: appURL) else {
                 throw ClaudeLauncherError.couldNotFocus(processID)
             }
             return .focused(processID: processID)
         }
 
-        try validateClaudeApp(at: appURL)
+        try validator.validateApp(at: appURL, product: .claude)
         let configuration = NSWorkspace.OpenConfiguration()
         configuration.activates = true
         configuration.addsToRecentItems = false
@@ -349,7 +393,7 @@ public actor ClaudeInstanceController {
         try Self.validateLaunchedProcessID(processID, existingProcessIDs: existingProcessIDs)
         try await waitForLaunch(
             expectedProcessID: processID,
-            status: { try self.stockStatus(appURL: appURL) }
+            status: { try self.verifiedStockStatus(appURL: appURL) }
         )
         return .launched(processID: processID)
     }
@@ -361,7 +405,8 @@ public actor ClaudeInstanceController {
         let operationLock = try await ProfileOperationLock.acquire(for: profile.profileDirectory)
         defer { withExtendedLifetime(operationLock) {} }
         try validateProfileLayout(profile)
-        let processIDs = try status(for: profile, appURL: appURL).processIDs
+        try validateClaudeApp(at: appURL)
+        let processIDs = try verifiedStatus(for: profile, appURL: appURL).processIDs
         guard !processIDs.isEmpty else { return .alreadyStopped }
 
         let tree = try processTreeProvider.processTreeSnapshot()
@@ -379,6 +424,14 @@ public actor ClaudeInstanceController {
             return process
         }
 
+        for processID in processIDs {
+            guard let identity = capturedProcesses.first(where: { $0.processID == processID }),
+                  try isVerifiedProfileProcess(identity, profile: profile, appURL: appURL)
+            else {
+                throw ClaudeLauncherError.couldNotTerminate(processID)
+            }
+        }
+
         try processSignaler.signal(
             SIGTERM,
             identities: Array(capturedProcesses.reversed())
@@ -388,7 +441,7 @@ public actor ClaudeInstanceController {
         let deadline = clock.now.advanced(by: .seconds(5))
         while clock.now < deadline {
             try Task.checkCancellation()
-            if try status(for: profile, appURL: appURL).processIDs.isEmpty,
+            if try verifiedStatus(for: profile, appURL: appURL).processIDs.isEmpty,
                try remainingCapturedProcesses(capturedProcesses).isEmpty
             {
                 return .closed(processIDs: processIDs)
@@ -403,7 +456,7 @@ public actor ClaudeInstanceController {
         let killDeadline = clock.now.advanced(by: .seconds(2))
         while clock.now < killDeadline {
             try Task.checkCancellation()
-            if try status(for: profile, appURL: appURL).processIDs.isEmpty,
+            if try verifiedStatus(for: profile, appURL: appURL).processIDs.isEmpty,
                try remainingCapturedProcesses(capturedProcesses).isEmpty
             {
                 return .closed(processIDs: processIDs)
@@ -433,11 +486,132 @@ public actor ClaudeInstanceController {
         throw ClaudeLauncherError.launchedProcessFailedValidation(expectedProcessID)
     }
 
-    private func activate(processID: Int32) -> Bool {
-        guard let application = NSRunningApplication(processIdentifier: processID) else {
+    private func verifiedStatus(
+        for profile: CodexProfile,
+        appURL: URL
+    ) throws -> CodexInstanceStatus {
+        let snapshot = try snapshotProvider.snapshot()
+        let trustedHelpers = trustedHelperProcessIDs(in: snapshot, appURL: appURL)
+        return statuses(
+            for: [profile],
+            appURL: appURL,
+            snapshot: snapshot,
+            trustedHelperProcessIDs: trustedHelpers
+        )[profile.id] ?? CodexInstanceStatus()
+    }
+
+    private func verifiedStockStatus(appURL: URL) throws -> CodexInstanceStatus {
+        let snapshot = try snapshotProvider.snapshot()
+        return stockStatus(
+            appURL: appURL,
+            snapshot: snapshot,
+            trustedHelperProcessIDs: trustedHelperProcessIDs(in: snapshot, appURL: appURL)
+        )
+    }
+
+    private func trustedHelperProcessIDs(
+        in snapshot: ClaudeProcessSnapshot,
+        appURL: URL
+    ) -> Set<Int32> {
+        let contentsPrefix = appURL.standardizedFileURL
+            .appendingPathComponent("Contents", isDirectory: true).path + "/"
+        return Set<Int32>(snapshot.entries.values.compactMap { entry -> Int32? in
+            guard entry.command.hasPrefix(contentsPrefix),
+                  entry.command.contains("--user-data-dir="),
+                  let startKeyBefore = SystemProcessTreeSnapshotProvider.kernelStartKey(
+                      for: entry.processID
+                  ),
+                  let executableURL = SystemProcessTreeSnapshotProvider.executableURL(
+                      for: entry.processID
+                  ),
+                  CodexInstanceDiscovery.isExecutable(
+                      executableURL,
+                      containedBy: appURL.appendingPathComponent("Contents")
+                  ),
+                  validator.isTrustedPublisherProcess(
+                      processID: entry.processID,
+                      product: .claude
+                  ),
+                  SystemProcessTreeSnapshotProvider.kernelStartKey(for: entry.processID)
+                    == startKeyBefore
+            else {
+                return nil
+            }
+            return entry.processID
+        })
+    }
+
+    private func isTrustedMainProcess(_ processID: Int32, appURL: URL) -> Bool {
+        guard let startKeyBefore = SystemProcessTreeSnapshotProvider.kernelStartKey(for: processID),
+              validator.isTrustedProcess(processID: processID, product: .claude),
+              let executableURL = SystemProcessTreeSnapshotProvider.executableURL(for: processID)
+        else {
+            return false
+        }
+        let hasExpectedExecutable = executableURL.standardizedFileURL.resolvingSymlinksInPath()
+            == DesktopAppRegistry.claude.executableURL(for: appURL)
+                .standardizedFileURL.resolvingSymlinksInPath()
+        return hasExpectedExecutable
+            && SystemProcessTreeSnapshotProvider.kernelStartKey(for: processID) == startKeyBefore
+    }
+
+    private func activateVerified(
+        processID: Int32,
+        profile: CodexProfile,
+        appURL: URL
+    ) throws -> Bool {
+        guard let identity = try processTreeProvider.processTreeSnapshot().first(where: {
+            $0.processID == processID
+        }) else {
+            return false
+        }
+        var stableIdentity = identity
+        stableIdentity.kernelStartKey = SystemProcessTreeSnapshotProvider.kernelStartKey(for: processID)
+        guard try isVerifiedProfileProcess(stableIdentity, profile: profile, appURL: appURL),
+              let application = NSRunningApplication(processIdentifier: processID),
+              SystemProcessTreeSnapshotProvider.kernelStartKey(for: processID)
+                == stableIdentity.kernelStartKey
+        else {
             return false
         }
         return application.activate(options: [.activateAllWindows])
+    }
+
+    private func activateVerifiedStock(processID: Int32, appURL: URL) throws -> Bool {
+        guard let identity = try processTreeProvider.processTreeSnapshot().first(where: {
+            $0.processID == processID
+        }) else {
+            return false
+        }
+        let kernelStartKey = SystemProcessTreeSnapshotProvider.kernelStartKey(for: processID)
+        guard kernelStartKey != nil,
+              isTrustedMainProcess(processID, appURL: appURL),
+              try verifiedStockStatus(appURL: appURL).processIDs.contains(processID),
+              let application = NSRunningApplication(processIdentifier: processID),
+              SystemProcessTreeSnapshotProvider.kernelStartKey(for: identity.processID)
+                == kernelStartKey
+        else {
+            return false
+        }
+        return application.activate(options: [.activateAllWindows])
+    }
+
+    private func isVerifiedProfileProcess(
+        _ identity: ProcessIdentity,
+        profile: CodexProfile,
+        appURL: URL
+    ) throws -> Bool {
+        guard let kernelStartKey = identity.kernelStartKey,
+              SystemProcessTreeSnapshotProvider.kernelStartKey(for: identity.processID)
+                == kernelStartKey,
+              isTrustedMainProcess(identity.processID, appURL: appURL),
+              try verifiedStatus(for: profile, appURL: appURL).processIDs
+                .contains(identity.processID)
+        else {
+            return false
+        }
+        return SystemProcessTreeSnapshotProvider.kernelStartKey(for: identity.processID)
+            == kernelStartKey
     }
 
     private func remainingCapturedProcesses(

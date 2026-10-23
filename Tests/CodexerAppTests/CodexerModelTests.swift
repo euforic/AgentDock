@@ -106,6 +106,51 @@ final class CodexerModelTests: XCTestCase {
         XCTAssertFalse(model.officialStatsLoading)
     }
 
+    func testActivityRefreshScopeSeparatesFreshStatsFromStaleQuota() {
+        let now = Date(timeIntervalSince1970: 1_700_000_000)
+
+        XCTAssertEqual(
+            CodexerModel.activityRefreshScope(
+                now: now,
+                statsRefreshedAt: now.addingTimeInterval(-60),
+                quotaRefreshedAt: nil,
+                quotaAttemptedAt: now.addingTimeInterval(-61),
+                refreshInterval: 5 * 60
+            ),
+            .quota
+        )
+        XCTAssertEqual(
+            CodexerModel.activityRefreshScope(
+                now: now,
+                statsRefreshedAt: nil,
+                quotaRefreshedAt: now.addingTimeInterval(-60),
+                quotaAttemptedAt: now.addingTimeInterval(-60),
+                refreshInterval: 5 * 60
+            ),
+            .stats
+        )
+        XCTAssertEqual(
+            CodexerModel.activityRefreshScope(
+                now: now,
+                statsRefreshedAt: nil,
+                quotaRefreshedAt: nil,
+                quotaAttemptedAt: now.addingTimeInterval(-59),
+                refreshInterval: 5 * 60
+            ),
+            .stats
+        )
+        XCTAssertEqual(
+            CodexerModel.activityRefreshScope(
+                now: now,
+                statsRefreshedAt: now.addingTimeInterval(-60),
+                quotaRefreshedAt: nil,
+                quotaAttemptedAt: now.addingTimeInterval(-59),
+                refreshInterval: 5 * 60
+            ),
+            .none
+        )
+    }
+
     func testStoreMutationIsRejectedWhileLaunchIsInFlight() async throws {
         let store = try makeStore()
         let profile = try store.createProfile(name: "Existing")
@@ -456,7 +501,8 @@ final class CodexerModelTests: XCTestCase {
             officialDataRootURL: root.appendingPathComponent("Official"),
             codexAppURL: appURL,
             shortcutInstaller: installer,
-            startMonitoring: false
+            startMonitoring: false,
+            loadActivityOnInit: false
         )
         model.updateProfile(
             profile,
@@ -518,7 +564,9 @@ final class CodexerModelTests: XCTestCase {
             instanceController: DesktopInstanceController(),
             shortcutInstaller: ShortcutInstaller(),
             statsScanner: ProfileStatsScanner(),
-            rateLimitClient: AppServerRateLimitClient()
+            rateLimitClient: AppServerRateLimitClient(),
+            startMonitoring: false,
+            loadActivityOnInit: false
         )
     }
 

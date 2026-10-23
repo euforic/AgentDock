@@ -88,7 +88,9 @@ replayed as profile deletions. Persisted shortcuts must be distinct `.app`
 paths whose normalized name matches the owning profile slug. Recovery journals
 cannot claim another profile's directory or shortcut.
 Process discovery rejects ambiguous profile arguments and bundle-prefix
-lookalikes before lifecycle operations revalidate the process identity. Profile
+lookalikes. Claude helper evidence also requires a publisher signature and a
+kernel-resolved executable contained by the selected app bundle before
+lifecycle operations revalidate stable process identity. Profile
 locks resolve path aliases to one physical root and reject symlinked,
 nonregular, multiply linked, or foreign-owned lock files.
 

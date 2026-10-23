@@ -42,6 +42,25 @@ final class AppServerRateLimitClientTests: XCTestCase {
         try? FileManager.default.removeItem(at: root)
     }
 
+    func testInstalledAppServerRespondsFromAnIsolatedHomeWhenEnabled() throws {
+        guard ProcessInfo.processInfo.environment["AGENTDOCK_INSTALLED_APP_TEST"] == "1" else {
+            throw XCTSkip("Set AGENTDOCK_INSTALLED_APP_TEST=1 to exercise the installed Codex app-server.")
+        }
+        let appURL = installedProviderAppURL(.codex)
+        try OfficialCodexAppValidator().validateCodexApp(at: appURL)
+        try CodexMCPConfiguration.configure(codexHomeURL: root, callbackPort: 49_152)
+
+        let limits = AppServerRateLimitClient().fetchRateLimits(
+            codexHomeURL: root,
+            codexAppURL: appURL
+        )
+
+        // An unauthenticated RPC response proves initialization and request/response
+        // compatibility without reading an existing profile or making an API call.
+        XCTAssertEqual(limits.errorMessage, RateLimitParserError.missingResult.errorDescription)
+        XCTAssertTrue(limits.buckets.isEmpty)
+    }
+
     func testUsesProfileCodexHomeAndAcceptsWhitespaceInResponseID() throws {
         let profile = CodexProfile(name: "Work", slug: "work", rootDirectory: root)
         try FileManager.default.createDirectory(at: profile.codexHomePath, withIntermediateDirectories: true)

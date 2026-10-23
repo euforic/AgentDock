@@ -8,6 +8,13 @@ enum CodexerSidebarSelection: Hashable {
     case profile(CodexProfile.ID)
 }
 
+enum ActivityRefreshScope: Equatable {
+    case none
+    case stats
+    case quota
+    case all
+}
+
 enum AgentDockDetailTab: String, CaseIterable, Identifiable {
     case overview
     case advanced
@@ -1286,10 +1293,47 @@ final class CodexerModel: ObservableObject {
     func refreshActivityIfStale(now: Date = Date()) {
         guard isApplicationActive, preferences.refreshProfileActivity, statsRefreshTask == nil, rateLimitRefreshTask == nil else { return }
         let interval = Double(max(1, preferences.refreshIntervalMinutes) * 60)
-        let statsStale = lastStatsRefreshAt.map { now.timeIntervalSince($0) >= interval } ?? true
-        let quotaStale = lastQuotaRefreshAt.map { now.timeIntervalSince($0) >= interval } ?? true
-        let canRetry = lastQuotaAttemptAt.map { now.timeIntervalSince($0) >= 60 } ?? true
-        if statsStale || (quotaStale && canRetry) { refreshStats() }
+        switch Self.activityRefreshScope(
+            now: now,
+            statsRefreshedAt: lastStatsRefreshAt,
+            quotaRefreshedAt: lastQuotaRefreshAt,
+            quotaAttemptedAt: lastQuotaAttemptAt,
+            refreshInterval: interval
+        ) {
+        case .all:
+            refreshStats()
+        case .stats:
+            refreshConfigProfiles()
+            refreshStats(for: profiles, replaceAll: true)
+        case .quota:
+            refreshRateLimits()
+        case .none:
+            break
+        }
+    }
+
+    static func activityRefreshScope(
+        now: Date,
+        statsRefreshedAt: Date?,
+        quotaRefreshedAt: Date?,
+        quotaAttemptedAt: Date?,
+        refreshInterval: TimeInterval
+    ) -> ActivityRefreshScope {
+        let statsStale = statsRefreshedAt.map {
+            now.timeIntervalSince($0) >= refreshInterval
+        } ?? true
+        let quotaStale = quotaRefreshedAt.map {
+            now.timeIntervalSince($0) >= refreshInterval
+        } ?? true
+        let canRetryQuota = quotaAttemptedAt.map {
+            now.timeIntervalSince($0) >= 60
+        } ?? true
+        return switch (statsStale, quotaStale && canRetryQuota) {
+        case (true, true): .all
+        case (true, false): .stats
+        case (false, true): .quota
+        case (false, false): .none
+        }
     }
 
     func refreshConfigProfiles() {
@@ -1522,10 +1566,6 @@ final class CodexerModel: ObservableObject {
         busyProfileIDs.insert(profile.id)
         Task { [weak self] in
             guard let self else { return }
-            defer {
-                storeMutationInProgress = false
-                busyProfileIDs.remove(profile.id)
-            }
             do {
                 if wasRunning {
                     _ = try await instanceController.close(profile: profile, appURL: appURL)
@@ -1558,6 +1598,10 @@ final class CodexerModel: ObservableObject {
                 selectProfile(profile.id)
                 present(error, code: .persistenceFailed, provider: .codex, action: .configured)
             }
+            // The profile mutation and any required restart are complete. Do not
+            // reject a following profile edit while the independent status read runs.
+            storeMutationInProgress = false
+            busyProfileIDs.remove(profile.id)
             await refreshInstanceStatuses()
         }
     }

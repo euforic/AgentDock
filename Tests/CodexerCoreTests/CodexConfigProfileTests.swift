@@ -151,9 +151,9 @@ final class CodexConfigProfileTests: XCTestCase {
                 "Set AGENTDOCK_INSTALLED_CONFIG_PROFILE_HOME and AGENTDOCK_INSTALLED_CONFIG_PROFILE_NAME to validate an installed profile."
             )
         }
-        let executableURL = CodexBundledCLI.executableURL(
-            for: URL(fileURLWithPath: "/Applications/Codex.app")
-        )
+        let appURL = installedProviderAppURL(.codex)
+        try OfficialCodexAppValidator().validateCodexApp(at: appURL)
+        let executableURL = CodexBundledCLI.executableURL(for: appURL)
         let profile = try CodexConfigProfile(validating: profileName)
         let overrides = try profile.appServerConfigOverrides(
             in: URL(fileURLWithPath: homePath, isDirectory: true)
