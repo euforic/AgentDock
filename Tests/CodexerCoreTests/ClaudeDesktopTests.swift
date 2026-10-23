@@ -156,7 +156,8 @@ final class ClaudeDesktopTests: XCTestCase {
             ClaudeInstanceDiscovery.profileMainProcessIDs(
                 in: snapshot,
                 appURL: appURL,
-                userDataURL: profileA
+                userDataURL: profileA,
+                trustedHelperProcessIDs: [101, 201, 301, 401, 500]
             ),
             [100]
         )
@@ -164,7 +165,8 @@ final class ClaudeDesktopTests: XCTestCase {
             ClaudeInstanceDiscovery.profileMainProcessIDs(
                 in: snapshot,
                 appURL: appURL,
-                userDataURL: profileB
+                userDataURL: profileB,
+                trustedHelperProcessIDs: [101, 201, 301, 401, 500]
             ),
             [200]
         )
@@ -172,7 +174,8 @@ final class ClaudeDesktopTests: XCTestCase {
             ClaudeInstanceDiscovery.stockMainProcessIDs(
                 in: snapshot,
                 appURL: appURL,
-                defaultUserDataURL: stock
+                defaultUserDataURL: stock,
+                trustedHelperProcessIDs: [101, 201, 301, 401, 500]
             ),
             [300]
         )
@@ -200,9 +203,46 @@ final class ClaudeDesktopTests: XCTestCase {
             XCTAssertTrue(ClaudeInstanceDiscovery.profileMainProcessIDs(
                 in: snapshot,
                 appURL: appURL,
-                userDataURL: profile
+                userDataURL: profile,
+                trustedHelperProcessIDs: [101, 201, 301, 401, 402]
             ).isEmpty)
         }
+    }
+
+    func testDiscoveryRejectsHelperCommandWithoutKernelTrust() {
+        let appURL = URL(fileURLWithPath: "/Applications/Claude.app", isDirectory: true)
+        let profile = URL(fileURLWithPath: "/tmp/Profile B/UserData", isDirectory: true)
+        let executable = "/Applications/Claude.app/Contents/MacOS/Claude"
+        let forgedHelper = "/Applications/Claude.app/Contents/Frameworks/Claude Helper.app/Contents/MacOS/Claude Helper"
+        let snapshot = ClaudeProcessSnapshot(text: """
+        200 1 \(executable)
+        201 200 \(forgedHelper) --type=renderer --user-data-dir=\(profile.path)
+        """)
+
+        XCTAssertEqual(
+            ClaudeInstanceDiscovery.profileMainProcessIDs(
+                in: snapshot,
+                appURL: appURL,
+                userDataURL: profile,
+                trustedHelperProcessIDs: []
+            ),
+            []
+        )
+    }
+
+    func testUnrelatedLocalProcessCannotClaimClaudePublisherIdentity() throws {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/bin/sleep")
+        process.arguments = ["2"]
+        try process.run()
+        defer { SubprocessTerminator.terminateAndWait(process) }
+
+        XCTAssertFalse(
+            OfficialDesktopAppValidator().isTrustedPublisherProcess(
+                processID: process.processIdentifier,
+                product: .claude
+            )
+        )
     }
 
     func testClaudeProfilesUseProductScopedStateAndPreserveCodexLayout() throws {
@@ -275,7 +315,7 @@ final class ClaudeDesktopTests: XCTestCase {
                 "Set AGENTDOCK_INSTALLED_CLAUDE_TEST=1 to validate the installed Claude Desktop app."
             )
         }
-        let appURL = DesktopAppRegistry.claude.defaultAppURL
+        let appURL = installedProviderAppURL(.claude)
         try OfficialDesktopAppValidator().validateApp(at: appURL, product: .claude)
         try ClaudeDesktopContractProbe().validate(appURL: appURL)
     }
@@ -286,7 +326,7 @@ final class ClaudeDesktopTests: XCTestCase {
                 "Set AGENTDOCK_CLAUDE_LIVE_LIFECYCLE=1 to exercise a temporary Claude profile."
             )
         }
-        let appURL = DesktopAppRegistry.claude.defaultAppURL
+        let appURL = installedProviderAppURL(.claude)
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("Codexer-ClaudeLive-\(UUID().uuidString)")
         defer { try? FileManager.default.removeItem(at: root) }

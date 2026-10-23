@@ -16,7 +16,7 @@ final class LiveProfileIsolationTests: XCTestCase {
             throw XCTSkip("Set AGENTDOCK_LIVE_ISOLATION_TEST=1 to open two temporary provider profiles.")
         }
         let descriptor = DesktopAppRegistry.descriptor(for: product)
-        let appURL = descriptor.defaultAppURL
+        let appURL = installedProviderAppURL(product)
         let controller = DesktopInstanceController()
         try await controller.validateApp(product: product, at: appURL)
         let root = FileManager.default.temporaryDirectory
@@ -214,7 +214,8 @@ final class LiveProfileIsolationTests: XCTestCase {
             .standardizedFileURL.resolvingSymlinksInPath()
         let paths = ClaudeInstanceDiscovery.userDataPathsByMainProcess(
             in: snapshot,
-            appURL: appURL
+            appURL: appURL,
+            trustedHelperProcessIDs: Set(snapshot.entries.keys)
         )[processID] ?? []
         let selectedPath = profile.claudeUserDataPath.standardizedFileURL.resolvingSymlinksInPath().path
         let command = snapshot.entries[processID]?.command

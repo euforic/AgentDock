@@ -3,7 +3,7 @@ import XCTest
 
 final class CodexMCPConfigurationTests: XCTestCase {
     func testInstalledCodexCLIUsesSupportedBundleLayout() throws {
-        let appURL = URL(fileURLWithPath: "/Applications/Codex.app")
+        let appURL = installedProviderAppURL(.codex)
         guard FileManager.default.fileExists(atPath: appURL.path) else {
             throw XCTSkip("Codex.app is not installed")
         }
@@ -55,7 +55,7 @@ final class CodexMCPConfigurationTests: XCTestCase {
         guard ProcessInfo.processInfo.environment["AGENTDOCK_INSTALLED_APP_TEST"] == "1" else {
             throw XCTSkip("Set AGENTDOCK_INSTALLED_APP_TEST=1 to validate the installed Codex CLI.")
         }
-        let appURL = URL(fileURLWithPath: "/Applications/Codex.app")
+        let appURL = installedProviderAppURL(.codex)
         try OfficialCodexAppValidator().validateCodexApp(at: appURL)
         let home = FileManager.default.temporaryDirectory
             .appendingPathComponent("CodexMCPInstalled-\(UUID().uuidString)", isDirectory: true)

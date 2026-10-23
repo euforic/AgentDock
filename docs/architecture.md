@@ -119,7 +119,13 @@ separates them.
 
 AgentDock maps a managed profile path to an exact signed main-app process.
 Focus and close operations revalidate the bundle, executable, PID, ancestry,
-and profile argument immediately before acting. Codex close also recognizes
+and profile argument immediately before acting. Claude discovery admits only
+publisher-signed helpers whose kernel-resolved executable is contained by the
+selected app bundle, and binds lifecycle actions to stable process start
+identity. Claude checks its startup contract at the start of each operation;
+launch and close polling refresh process trust without repeatedly scanning the
+ASAR archive. The app signature is checked again immediately before launch.
+Codex close also recognizes
 signed provider helpers whose executable is contained by that profile's
 `CODEX_HOME`, including helpers that no longer carry an Electron profile
 argument. Stock app discovery is separate, so a managed action does not target

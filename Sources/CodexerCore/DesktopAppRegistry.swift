@@ -98,6 +98,29 @@ public struct OfficialDesktopAppValidator: @unchecked Sendable {
         processID: Int32,
         product: DesktopProduct
     ) -> Bool {
+        isTrustedProcess(
+            processID: processID,
+            requirementText: Self.requirementText(
+                for: DesktopAppRegistry.descriptor(for: product)
+            )
+        )
+    }
+
+    public func isTrustedPublisherProcess(
+        processID: Int32,
+        product: DesktopProduct
+    ) -> Bool {
+        let descriptor = DesktopAppRegistry.descriptor(for: product)
+        return isTrustedProcess(
+            processID: processID,
+            requirementText: "anchor apple generic and certificate leaf[subject.OU] = \"\(descriptor.teamIdentifier)\""
+        )
+    }
+
+    private func isTrustedProcess(
+        processID: Int32,
+        requirementText: String
+    ) -> Bool {
         let attributes = [
             kSecGuestAttributePid as String: NSNumber(value: processID)
         ] as CFDictionary
@@ -108,10 +131,9 @@ public struct OfficialDesktopAppValidator: @unchecked Sendable {
             return false
         }
 
-        let descriptor = DesktopAppRegistry.descriptor(for: product)
         var requirement: SecRequirement?
         guard SecRequirementCreateWithString(
-            Self.requirementText(for: descriptor) as CFString,
+            requirementText as CFString,
             [],
             &requirement
         ) == errSecSuccess,

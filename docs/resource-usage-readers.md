@@ -36,6 +36,10 @@ therefore reuse an explicitly dated measurement. The storage cache retains at
 most 64 roots. Entry, depth, time, and cancellation limits preserve lower-bound
 semantics through `dataSizeIsTruncated`.
 
+Staleness checks schedule local stats and provider quotas independently. A quota
+retry does not rescan fresh local stats, and stale local stats do not bypass the
+one-minute quota retry backoff.
+
 Regression tests use synthetic data in real temporary files. They cover large
 histories, unchanged reuse, append/rewrite/replacement invalidation, symlink
 rejection, cache eviction across separate accounts, partial coverage, separate
