@@ -13,7 +13,7 @@ These instructions apply to the entire repository.
 ## Change Boundaries
 
 - Keep provider discovery, parsing, persistence, launch, process, and filesystem
-  safety in `Sources/CodexerCore`.
+  safety in `Sources/AgentDockCore`.
 - Keep transcript presentation provider-neutral in
   `Sources/TranscriptRenderer`.
 - Do not weaken signature, ownership, path-containment, symlink, process

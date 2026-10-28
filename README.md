@@ -121,6 +121,12 @@ configuration, log, or crash content. AgentDock stores profile metadata under
 `~/Library/Application Support/AgentDock/` and creates shortcuts under
 `~/Applications/AgentDock/`.
 
+Upgrades automatically back up and migrate legacy profile folders, settings, and
+shortcuts into the AgentDock locations. Verified recovery copies remain after the
+migration completes. Close managed provider apps before the first
+upgrade launch. Interrupted migrations resume on relaunch; conflicting folders
+are preserved for resolution. See [Upgrade migration](docs/upgrade-migration.md).
+
 AgentDock has no chat browser or transcript-copying action. Local activity and
 usage summaries are source-dependent:
 

@@ -96,8 +96,8 @@ swift test
 ```
 
 The package includes
-[core tests](../Tests/CodexerCoreTests),
-[app-model tests](../Tests/CodexerAppTests/CodexerModelTests.swift),
+[core tests](../Tests/AgentDockCoreTests),
+[app-model tests](../Tests/AgentDockAppTests/AgentDockModelTests.swift),
 [transcript-renderer tests](../Tests/TranscriptRendererTests), and vendored
 parser tests. Tests must use real repository-native behavior; do not add mocks
 or stubs. App-model fixtures must supply a temporary `officialDataRootURL` so
@@ -176,7 +176,7 @@ that interaction is expected.
 
 ## Change Expectations
 
-- Keep provider-specific discovery and parsing in `CodexerCore`.
+- Keep provider-specific discovery and parsing in `AgentDockCore`.
 - Keep transcript presentation provider-neutral and capability-gated.
 - Preserve stable event identities and exact source order.
 - Bound file inventories, subprocess output, transcript pages, and layout work.
@@ -214,7 +214,7 @@ in this harness. These are reader measurements, not app idle or thermal proof.
 A self-contained native SwiftUI probe exercises activation, multiple windows,
 closing/reopening all windows, and rapid hide/return transitions. Compile
 `script/probe_application_lifecycle.swift` with
-`Sources/Codexer/ApplicationActivityMonitor.swift` and run it in a temporary
+`Sources/AgentDock/ApplicationActivityMonitor.swift` and run it in a temporary
 application bundle. Its JSON trace contains only lifecycle booleans and window
 counts, comparing the original scene callback gate with the current app-level
 monitor. It does not access provider data. Native notification presentation,

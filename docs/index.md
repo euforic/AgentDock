@@ -20,6 +20,7 @@ implementation, contribution, and operations details needed for focused work.
 - [Resource usage readers](resource-usage-readers.md): bounded histories, partial coverage, and storage freshness.
 - [Resource usage QA](resource-usage-qa.md): finding dispositions, validation,
   sequential measurements, and remaining runtime acceptance gates.
+- [Upgrade migration](upgrade-migration.md): automatic legacy-folder migration, credential preservation, and recovery.
 - [Development and testing](development.md): local setup, commands, validation,
   and opt-in installed-app checks.
 - [Release operations](operations.md): packaging, signing, notarization,
@@ -51,9 +52,9 @@ against these repository sources:
 - App packaging: [`script/build_app.sh`](../script/build_app.sh) and
   [`script/package_app.sh`](../script/package_app.sh)
 - Profile lifecycle and launch safety:
-  [`Sources/CodexerCore`](../Sources/CodexerCore)
-- Local activity: [`Sources/CodexerCore/ProfileStats.swift`](../Sources/CodexerCore/ProfileStats.swift)
-  and shared [`Sources/CodexerCore/LocalChatSession.swift`](../Sources/CodexerCore/LocalChatSession.swift) readers
+  [`Sources/AgentDockCore`](../Sources/AgentDockCore)
+- Local activity: [`Sources/AgentDockCore/ProfileStats.swift`](../Sources/AgentDockCore/ProfileStats.swift)
+  and shared [`Sources/AgentDockCore/LocalChatSession.swift`](../Sources/AgentDockCore/LocalChatSession.swift) readers
 - Separate renderer showcase: [`Sources/TranscriptRenderer`](../Sources/TranscriptRenderer)
 - Validation: [`Tests`](../Tests)
 

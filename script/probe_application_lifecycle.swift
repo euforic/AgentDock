@@ -3,7 +3,7 @@ import Foundation
 import SwiftUI
 
 // Native self-contained acceptance probe. Compile together with
-// Sources/Codexer/ApplicationActivityMonitor.swift; no provider data is accessed.
+// Sources/AgentDock/ApplicationActivityMonitor.swift; no provider data is accessed.
 @MainActor enum LifecycleProbe {
     static var started = false
     static var sceneGate = false

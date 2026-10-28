@@ -3,8 +3,8 @@
 ## Create and Launch a Profile
 
 1. The UI requests profile creation through
-   [`CodexerModel`](../Sources/Codexer/CodexerModel.swift).
-2. [`ProfileStore`](../Sources/CodexerCore/ProfileStore.swift) allocates a provider-scoped slug, directory, ownership marker,
+   [`AgentDockModel`](../Sources/AgentDock/AgentDockModel.swift).
+2. [`ProfileStore`](../Sources/AgentDockCore/ProfileStore.swift) allocates a provider-scoped slug, directory, ownership marker,
    and persisted profile record under a cross-process lock.
 3. The selected launcher validates the official provider bundle and its signing
    identity.
@@ -34,7 +34,7 @@ profile shortcut remains bound to the same profile.
 
 ## Focus and Close
 
-1. [`DesktopInstanceController`](../Sources/CodexerCore/DesktopInstanceController.swift)
+1. [`DesktopInstanceController`](../Sources/AgentDockCore/DesktopInstanceController.swift)
    finds candidates carrying the exact managed profile root.
 2. AgentDock resolves and validates the signed main process and any
    provider-signed helper executable contained by the selected profile root.
@@ -76,10 +76,10 @@ or five-second chat change monitor. Automatic activity and process-status
 polling skip inactive periods. Native reset reminders continue to operate in
 the background independently of activity settings.
 
-1. [`ProfileStatsScanner`](../Sources/CodexerCore/ProfileStats.swift) reads
+1. [`ProfileStatsScanner`](../Sources/AgentDockCore/ProfileStats.swift) reads
    supported Codex databases for local activity and token statistics.
 2. Claude summaries use shared
-   [`LocalChatSession`](../Sources/CodexerCore/LocalChatSession.swift) readers
+   [`LocalChatSession`](../Sources/AgentDockCore/LocalChatSession.swift) readers
    for supported local Cowork/agent-session sources and, for the official
    installation, supported Claude Code history/session sources.
 3. These readers validate source roots, reject symlinks, bound file counts and
@@ -140,7 +140,7 @@ configuration, raw error, log, or crash content enters this flow.
 ## Shortcut Installation
 
 1. AgentDock validates the selected profile and official provider app.
-2. [`ShortcutInstaller`](../Sources/CodexerCore/ShortcutInstaller.swift) creates a native helper bundle in a temporary sibling.
+2. [`ShortcutInstaller`](../Sources/AgentDockCore/ShortcutInstaller.swift) creates a native helper bundle in a temporary sibling.
 3. The shortcut configuration is bound to the profile ownership marker.
 4. The completed shortcut atomically replaces the prior bundle under
    `~/Applications/AgentDock/`.
