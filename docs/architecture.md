@@ -7,13 +7,13 @@ surface and no application server of its own.
 
 ### App UI
 
-[Sources/Codexer](../Sources/Codexer) contains the SwiftUI application, navigation, profile
-management, activity views, usage, and reset inventory. `CodexerModel` owns
+[Sources/AgentDock](../Sources/AgentDock) contains the SwiftUI application, navigation, profile
+management, activity views, usage, and reset inventory. `AgentDockModel` owns
 UI-facing asynchronous state and suppresses stale refresh results. An invalid
 selection never resolves to a different profile. The app does not browse chats
-or copy transcripts. See [CodexerModel.swift](../Sources/Codexer/CodexerModel.swift).
+or copy transcripts. See [AgentDockModel.swift](../Sources/AgentDock/AgentDockModel.swift).
 
-[`AppUpdater`](../Sources/Codexer/AppUpdater.swift) owns the single Sparkle 2
+[`AppUpdater`](../Sources/AgentDock/AppUpdater.swift) owns the single Sparkle 2
 `SPUUpdater` and a user driver that preserves Sparkle's standard interface for
 manual checks. Sparkle persists the user's automatic-check and
 automatic-download preferences; AgentDock does not create a parallel updater
@@ -29,7 +29,7 @@ update session directly: AgentDock shows download and installation progress in
 the sidebar while Sparkle performs verification, installation, and relaunch
 without first opening its update-choice window.
 
-[`ProductAnalytics`](../Sources/CodexerCore/ProductAnalytics.swift) is the only
+[`ProductAnalytics`](../Sources/AgentDockCore/ProductAnalytics.swift) is the only
 telemetry egress boundary. It owns opt-out gating, identifier lifecycle, typed
 schema validation, bounded in-memory batching, and regional HTTPS delivery.
 Call sites cannot add arbitrary event names, keys, or string values.
@@ -45,11 +45,11 @@ Codex usage refresh is provider-aware. The built-in OpenAI provider uses the
 bundled Codex app-server, while a selected custom provider uses its configured
 `/usage` quota endpoint. Provider configuration parsing, safe URL construction,
 request authentication, bounded response reading, and meter translation remain
-in `CodexerCore`; the UI consumes only `ProfileRateLimits`.
+in `AgentDockCore`; the UI consumes only `ProfileRateLimits`.
 
 ### Core
 
-[Sources/CodexerCore](../Sources/CodexerCore) owns the security-sensitive boundaries:
+[Sources/AgentDockCore](../Sources/AgentDockCore) owns the security-sensitive boundaries:
 
 - profile persistence and ownership markers;
 - official app discovery and signature validation;
@@ -64,10 +64,10 @@ Core operations fail closed when a path, process, bundle, signature, ownership
 marker, or provider launch contract cannot be verified.
 
 The primary boundaries are implemented by
-[ProfileStore.swift](../Sources/CodexerCore/ProfileStore.swift),
-[DesktopAppRegistry.swift](../Sources/CodexerCore/DesktopAppRegistry.swift),
-[DesktopInstanceController.swift](../Sources/CodexerCore/DesktopInstanceController.swift),
-and [LocalChatSession.swift](../Sources/CodexerCore/LocalChatSession.swift).
+[ProfileStore.swift](../Sources/AgentDockCore/ProfileStore.swift),
+[DesktopAppRegistry.swift](../Sources/AgentDockCore/DesktopAppRegistry.swift),
+[DesktopInstanceController.swift](../Sources/AgentDockCore/DesktopInstanceController.swift),
+and [LocalChatSession.swift](../Sources/AgentDockCore/LocalChatSession.swift).
 
 ### Transcript Renderer
 
@@ -81,10 +81,10 @@ discovery, indexing, or storage. Its public model is in
 
 ### Shortcut Launcher
 
-[Sources/CodexerShortcutLauncher](../Sources/CodexerShortcutLauncher) builds the native helper embedded in generated
+[Sources/AgentDockShortcutLauncher](../Sources/AgentDockShortcutLauncher) builds the native helper embedded in generated
 profile shortcuts. The helper reads a validated profile configuration and
 delegates to the same core launch rules used by the main app through
-[ShortcutLauncherRunner.swift](../Sources/CodexerCore/ShortcutLauncherRunner.swift).
+[ShortcutLauncherRunner.swift](../Sources/AgentDockCore/ShortcutLauncherRunner.swift).
 For a selected named Codex config profile, the same signed helper becomes a
 bounded CLI proxy: it validates the official app and the profile-local
 `<name>.config.toml`, translates its assignments into bounded `--config`
@@ -134,8 +134,11 @@ the normal provider instance or another managed profile.
 ## Persistence
 
 Profile metadata lives under `~/Library/Application Support/AgentDock/`.
-Existing installations can continue using a validated legacy `Codexer` root.
-AgentDock does not silently migrate profile data.
+On the first upgrade launch, `LegacyBrandMigration` moves the previous brand's
+support and shortcut directories into the AgentDock locations, preserving profile
+identities and rebasing only AgentDock-owned metadata. A fixed-location journal
+allows a subsequent launch to finish interrupted moves. See
+[Upgrade migration](upgrade-migration.md) for safety and recovery behavior.
 
 See [Data flows](data-flows.md) for lifecycle sequences and
 [Security and privacy](security.md) for trust boundaries.

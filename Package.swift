@@ -7,10 +7,10 @@ let package = Package(
         .macOS(.v26)
     ],
     products: [
-        .executable(name: "AgentDock", targets: ["Codexer"]),
-        .executable(name: "AgentDockShortcutLauncher", targets: ["CodexerShortcutLauncher"]),
+        .executable(name: "AgentDock", targets: ["AgentDock"]),
+        .executable(name: "AgentDockShortcutLauncher", targets: ["AgentDockShortcutLauncher"]),
         .executable(name: "TranscriptRendererShowcase", targets: ["TranscriptRendererShowcase"]),
-        .library(name: "CodexerCore", targets: ["CodexerCore"]),
+        .library(name: "AgentDockCore", targets: ["AgentDockCore"]),
         .library(name: "TranscriptRenderer", targets: ["TranscriptRenderer"])
     ],
     dependencies: [
@@ -22,9 +22,9 @@ let package = Package(
     ],
     targets: [
         .executableTarget(
-            name: "Codexer",
+            name: "AgentDock",
             dependencies: [
-                "CodexerCore",
+                "AgentDockCore",
                 .product(name: "Sparkle", package: "Sparkle")
             ],
             linkerSettings: [
@@ -38,15 +38,15 @@ let package = Package(
             ]
         ),
         .executableTarget(
-            name: "CodexerShortcutLauncher",
-            dependencies: ["CodexerCore"]
+            name: "AgentDockShortcutLauncher",
+            dependencies: ["AgentDockCore"]
         ),
         .executableTarget(
             name: "TranscriptRendererShowcase",
             dependencies: ["TranscriptRenderer"]
         ),
         .target(
-            name: "CodexerCore"
+            name: "AgentDockCore"
         ),
         .target(
             name: "TranscriptRenderer",
@@ -55,12 +55,12 @@ let package = Package(
             ]
         ),
         .testTarget(
-            name: "CodexerCoreTests",
-            dependencies: ["CodexerCore"]
+            name: "AgentDockCoreTests",
+            dependencies: ["AgentDockCore"]
         ),
         .testTarget(
-            name: "CodexerAppTests",
-            dependencies: ["Codexer", "CodexerCore"]
+            name: "AgentDockAppTests",
+            dependencies: ["AgentDock", "AgentDockCore"]
         ),
         .testTarget(
             name: "TranscriptRendererTests",

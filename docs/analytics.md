@@ -80,7 +80,7 @@ never leave the app.
 | `usage_snapshot` | `action`, `outcome`, `provider`, `profileScope`, `planTier`, `usageBucket`, `limitWindow`, `countBucket` | Aggregate quota pressure by safe plan and usage bands. |
 
 Allowed dimensions live in
-[`ProductAnalytics.swift`](../Sources/CodexerCore/ProductAnalytics.swift).
+[`ProductAnalytics.swift`](../Sources/AgentDockCore/ProductAnalytics.swift).
 Count buckets are `zero`, `one`, `twoToFive`, `sixToTwenty`, and
 `twentyOnePlus`. Duration buckets are `under100ms`, `ms100To499`,
 `ms500To1999`, `seconds2To9`, and `seconds10Plus`.

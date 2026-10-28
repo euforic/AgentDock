@@ -11,7 +11,7 @@ formats, and release scripts.
 - `AgentDock`: the macOS app executable.
 - `AgentDockShortcutLauncher`: the generated shortcut helper.
 - `TranscriptRendererShowcase`: the synthetic renderer showcase.
-- `CodexerCore`: profile, process, scanner, and shortcut logic.
+- `AgentDockCore`: profile, process, scanner, and shortcut logic.
 - `TranscriptRenderer`: provider-neutral transcript models and views.
 
 The two library products are integration surfaces inside this repository. They
@@ -69,7 +69,11 @@ is not evidence of a supported isolation contract.
 
 - `profiles.json`: AgentDock-owned profile metadata. Array order preserves the
   user-defined managed-profile order within each provider section.
-- Profile ownership markers: bind managed directories to persisted profiles.
+- `.agentdock-profile.json`: binds a managed directory to its persisted profile.
+  Legacy ownership markers are validated before conversion.
+- `.agentdock-locks`: per-profile advisory locks; existing legacy lock inodes are
+  also acquired while older shortcuts may still exist.
+- Upgrade journal and completion marker: see [Upgrade migration](upgrade-migration.md).
 - Shortcut configuration plist: binds a generated shortcut to one provider,
   profile root, and ownership identity.
 - Startup preference: Home, Last Opened Profile, or Overview. A stored legacy

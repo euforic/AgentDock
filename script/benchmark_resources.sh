@@ -7,7 +7,11 @@ mkdir -p "$output_dir"
 benchmark_tmp="$(mktemp -d /tmp/agentdock-resource-benchmark.XXXXXX)"
 trap 'rm -rf "$benchmark_tmp"' EXIT
 mkdir -p "$benchmark_tmp/baseline" "$benchmark_tmp/candidate"
-git archive "$baseline_ref" Sources/CodexerCore | tar -x -C "$benchmark_tmp/baseline"
+baseline_core="$(git ls-tree --name-only "$baseline_ref:Sources" | /usr/bin/grep 'Core$')"
+git archive "$baseline_ref" "Sources/$baseline_core" | tar -x -C "$benchmark_tmp/baseline"
+if [[ "$baseline_core" != AgentDockCore ]]; then
+    mv "$benchmark_tmp/baseline/Sources/$baseline_core" "$benchmark_tmp/baseline/Sources/AgentDockCore"
+fi
 cp -R Sources "$benchmark_tmp/candidate/"
 # Identical count-only instrumentation in temporary copies. No commands,
 # paths, credentials, accounts, or provider output are recorded.
@@ -15,7 +19,7 @@ python3 - "$benchmark_tmp" <<'PY'
 from pathlib import Path
 import sys
 for variant in ['baseline', 'candidate']:
-    root = Path(sys.argv[1]) / variant / 'Sources/CodexerCore'
+    root = Path(sys.argv[1]) / variant / 'Sources/AgentDockCore'
     for name, marker in [('GroupedSubprocess.swift', '        processID = spawnedProcessID'),
                          ('BoundedSubprocess.swift', '        let capture = BoundedDataCapture')]:
         path = root / name
@@ -34,10 +38,10 @@ for variant in ['baseline', 'candidate']:
         path.write_text(text.replace(marker, marker + '\n        ResourceBenchmarkCounters.validated()', 1))
 PY
 for variant in baseline candidate; do
-    sources=("$benchmark_tmp/$variant/Sources/CodexerCore/"*.swift)
+    sources=("$benchmark_tmp/$variant/Sources/AgentDockCore/"*.swift)
     flags=(-D BASELINE)
     if [[ "$variant" == candidate ]]; then flags=(-D CANDIDATE); fi
-    swiftc -O -whole-module-optimization -parse-as-library -module-name CodexerCore "${flags[@]}" "${sources[@]}" script/benchmark_resources.swift -o "$benchmark_tmp/$variant/benchmark"
+    swiftc -O -whole-module-optimization -parse-as-library -module-name AgentDockCore "${flags[@]}" "${sources[@]}" script/benchmark_resources.swift -o "$benchmark_tmp/$variant/benchmark"
 done
 # Sequential processes: same installed providers, fresh identical synthetic
 # fixtures each run. Do not launch/close provider applications during these runs.

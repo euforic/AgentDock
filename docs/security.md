@@ -18,10 +18,10 @@ If those checks fail, managed launch, focus, close, restore, delete, or
 local activity reads fail closed.
 
 These boundaries are implemented in
-[DesktopAppRegistry.swift](../Sources/CodexerCore/DesktopAppRegistry.swift),
-[DesktopInstanceController.swift](../Sources/CodexerCore/DesktopInstanceController.swift),
-[ProfileStore.swift](../Sources/CodexerCore/ProfileStore.swift), and
-[LocalChatSession.swift](../Sources/CodexerCore/LocalChatSession.swift).
+[DesktopAppRegistry.swift](../Sources/AgentDockCore/DesktopAppRegistry.swift),
+[DesktopInstanceController.swift](../Sources/AgentDockCore/DesktopInstanceController.swift),
+[ProfileStore.swift](../Sources/AgentDockCore/ProfileStore.swift), and
+[LocalChatSession.swift](../Sources/AgentDockCore/LocalChatSession.swift).
 
 ## Shared Host Resources
 
@@ -110,7 +110,7 @@ providers should reference credentials through environment-backed settings.
 ## Product Analytics
 
 Analytics are a separate explicit-opt-in, immediately revocable boundary implemented in
-[`ProductAnalytics.swift`](../Sources/CodexerCore/ProductAnalytics.swift).
+[`ProductAnalytics.swift`](../Sources/AgentDockCore/ProductAnalytics.swift).
 Only closed typed events can be batched to the configured regional PostHog
 endpoint. Events never carry source content or local identifiers; GeoIP and
 person-profile processing are disabled, and queues exist only in bounded
@@ -181,3 +181,17 @@ checks new commit identities and the measurement receipt schema. Run
 throughout reachable history. Historical violations need coordinated cleanup;
 a clean current tree does not remove earlier commits or PR revisions. Review PR
 descriptions and edit history separately from the source scan.
+
+## Upgrade migration
+
+The [legacy-folder migration](upgrade-migration.md) takes the store and profile
+locks, checks for open files and running managers, validates ownership and
+containment, and never merges conflicting stores. It copies only the exact
+path-derived Codex Keychain entries needed by the moved profile, preserving
+the original entries and their access controls. Keychain credential bytes stay in
+memory and the Keychain; they never enter journals or logs. Existing on-disk
+profile files are preserved in verified recovery copies inside owner-only backup
+directories before mutation. Backups remain after completion and contain private
+profile data; they must never be attached to public bug reports. Missing encryption keys, denied
+Keychain access, or different destination credentials stop the move. Tests use
+synthetic credentials in a temporary isolated Keychain.
