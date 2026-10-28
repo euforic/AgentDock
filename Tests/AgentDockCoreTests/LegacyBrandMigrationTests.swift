@@ -15,8 +15,11 @@ final class LegacyBrandMigrationTests: XCTestCase {
     private var journalURL: URL { support.appendingPathComponent(".agentdock-brand-migration-v1.json") }
 
     override func setUpWithError() throws {
-        fixture = FileManager.default.temporaryDirectory.resolvingSymlinksInPath()
-            .appendingPathComponent("AgentDockMigration-\(UUID().uuidString)")
+        // Unix-domain socket paths have a 104-byte limit on macOS.
+        fixture = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent("ADMigration-\(UUID().uuidString.prefix(12))")
+        try FileManager.default.createDirectory(at: fixture, withIntermediateDirectories: false,
+            attributes: [.posixPermissions: 0o700])
         try FileManager.default.createDirectory(at: support, withIntermediateDirectories: true)
         let password = "synthetic-migration-password"
         var created: SecKeychain?
@@ -123,6 +126,183 @@ final class LegacyBrandMigrationTests: XCTestCase {
         XCTAssertEqual(try Data(contentsOf: oldRoot.appendingPathComponent("profiles.json")), oldData)
         XCTAssertEqual(try Data(contentsOf: root.appendingPathComponent("profiles.json")), newData)
         XCTAssertFalse(FileManager.default.fileExists(atPath: journalURL.path))
+    }
+
+    func testIndexOnlyDestinationIsArchivedBeforeStoreMigration() throws {
+        let profiles = try legacyProfiles()
+        let indexes = root.appendingPathComponent("ChatIndexes", isDirectory: true)
+        try FileManager.default.createDirectory(at: indexes, withIntermediateDirectories: true)
+        let original = Data("synthetic old index".utf8)
+        try original.write(to: indexes.appendingPathComponent("managed-v2.json"))
+        try Data("finder metadata".utf8).write(to: root.appendingPathComponent(".DS_Store"))
+
+        try migrate()
+
+        let archiveParent = support.appendingPathComponent(LegacyBrandMigration.indexArchiveDirectoryName)
+        let archives = try FileManager.default.contentsOfDirectory(at: archiveParent, includingPropertiesForKeys: nil)
+        XCTAssertEqual(archives.count, 1)
+        let archive = try XCTUnwrap(archives.first)
+        XCTAssertEqual(try Data(contentsOf: archive.appendingPathComponent("ChatIndexes/managed-v2.json")), original)
+        XCTAssertEqual(try Data(contentsOf: archive.appendingPathComponent(".DS_Store")), Data("finder metadata".utf8))
+        let store = try ProfileStore(rootDirectory: root, shortcutDirectory: shortcuts)
+        XCTAssertEqual(store.profiles.map(\.id), profiles.map(\.id))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: root.appendingPathComponent(".brand-migration-v1-complete").path))
+    }
+
+    func testArchivedIndexesSurviveFailedBackupAndRetry() throws {
+        _ = try legacyProfiles()
+        let indexes = root.appendingPathComponent("ChatIndexes", isDirectory: true)
+        try FileManager.default.createDirectory(at: indexes, withIntermediateDirectories: true)
+        let original = Data("synthetic old index".utf8)
+        try original.write(to: indexes.appendingPathComponent("official-v2.json"))
+        let blockedBackup = support.appendingPathComponent(MigrationBackup.directoryName)
+        try Data("conflict".utf8).write(to: blockedBackup)
+
+        XCTAssertThrowsError(try migrate())
+        XCTAssertTrue(FileManager.default.fileExists(atPath: oldRoot.appendingPathComponent("profiles.json").path))
+        let archiveParent = support.appendingPathComponent(LegacyBrandMigration.indexArchiveDirectoryName)
+        XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: archiveParent.path).count, 1)
+
+        try FileManager.default.removeItem(at: blockedBackup)
+        try migrate()
+        let archives = try FileManager.default.contentsOfDirectory(at: archiveParent, includingPropertiesForKeys: nil)
+        XCTAssertEqual(archives.count, 1)
+        XCTAssertEqual(try Data(contentsOf: try XCTUnwrap(archives.first)
+            .appendingPathComponent("ChatIndexes/official-v2.json")), original)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: root.appendingPathComponent(".brand-migration-v1-complete").path))
+    }
+
+    func testIndexCacheWithOtherDataStillBlocksMigration() throws {
+        _ = try legacyProfiles()
+        try FileManager.default.createDirectory(at: root.appendingPathComponent("ChatIndexes"),
+            withIntermediateDirectories: true)
+        let unrelated = root.appendingPathComponent("unrelated-data")
+        try Data("keep".utf8).write(to: unrelated)
+
+        XCTAssertThrowsError(try migrate())
+        XCTAssertEqual(try Data(contentsOf: unrelated), Data("keep".utf8))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: oldRoot.appendingPathComponent("profiles.json").path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: support
+            .appendingPathComponent(LegacyBrandMigration.indexArchiveDirectoryName).path))
+    }
+
+    func testLinkedIndexCacheStillBlocksMigration() throws {
+        _ = try legacyProfiles()
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        let target = fixture.appendingPathComponent("external-indexes")
+        try FileManager.default.createDirectory(at: target, withIntermediateDirectories: true)
+        let link = root.appendingPathComponent("ChatIndexes")
+        try FileManager.default.createSymbolicLink(at: link, withDestinationURL: target)
+
+        XCTAssertThrowsError(try migrate())
+        XCTAssertTrue(FileManager.default.fileExists(atPath: oldRoot.appendingPathComponent("profiles.json").path))
+        XCTAssertTrue(LegacyBrand.exists(link))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: support
+            .appendingPathComponent(LegacyBrandMigration.indexArchiveDirectoryName).path))
+    }
+
+    func testStaleCodexIPCSocketIsRemovedBeforeVerifiedBackup() throws {
+        let profile = try legacyProfiles()[0]
+        let ipc = profile.codexHomePath.appendingPathComponent("ipc", isDirectory: true)
+        try FileManager.default.createDirectory(at: ipc, withIntermediateDirectories: true)
+        let socketURL = ipc.appendingPathComponent("ipc.sock")
+        let descriptor = try boundUnixSocket(at: socketURL)
+        close(descriptor)
+
+        try migrate()
+
+        let migrated = try ProfileStore(rootDirectory: root, shortcutDirectory: shortcuts)
+        XCTAssertEqual(migrated.profiles.count, 2)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: migrated.profiles[0].codexHomePath
+            .appendingPathComponent("ipc/ipc.sock").path))
+        let backupParent = support.appendingPathComponent(MigrationBackup.directoryName)
+        let backups = try FileManager.default.contentsOfDirectory(at: backupParent, includingPropertiesForKeys: nil)
+        let backup = try XCTUnwrap(backups.first)
+        try MigrationBackup.verify(applicationSupport: support, id: try XCTUnwrap(UUID(uuidString: backup.lastPathComponent)))
+    }
+
+    func testActiveCodexIPCSocketBlocksMigration() throws {
+        let profile = try legacyProfiles()[0]
+        let ipc = profile.codexHomePath.appendingPathComponent("ipc", isDirectory: true)
+        try FileManager.default.createDirectory(at: ipc, withIntermediateDirectories: true)
+        let socketURL = ipc.appendingPathComponent("ipc.sock")
+        let descriptor = try boundUnixSocket(at: socketURL)
+        defer { close(descriptor) }
+        XCTAssertEqual(listen(descriptor, 1), 0)
+
+        XCTAssertThrowsError(try migrate()) { error in
+            guard case LegacyBrandMigration.MigrationError.inUse = error else {
+                return XCTFail("An active socket must report the store as in use")
+            }
+        }
+        XCTAssertTrue(FileManager.default.fileExists(atPath: socketURL.path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: oldRoot.appendingPathComponent("profiles.json").path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: root.path))
+    }
+
+    func testSocketReferenceCheckRejectsBackloggedListenerPromptly() throws {
+        let socketURL = fixture.appendingPathComponent("backlogged.sock")
+        let listener = try boundUnixSocket(at: socketURL)
+        defer { close(listener) }
+        XCTAssertEqual(listen(listener, 1), 0)
+        let address = try unixSocketAddress(at: socketURL)
+        var clients: [Int32] = []
+        defer { clients.forEach { close($0) } }
+        for _ in 0..<16 {
+            let client = Darwin.socket(AF_UNIX, SOCK_STREAM, 0)
+            guard client >= 0 else { throw POSIXError(.init(rawValue: errno) ?? .EINVAL) }
+            let flags = fcntl(client, F_GETFL)
+            guard flags >= 0, fcntl(client, F_SETFL, flags | O_NONBLOCK) == 0 else {
+                close(client)
+                throw POSIXError(.init(rawValue: errno) ?? .EINVAL)
+            }
+            var candidate = address
+            let result = withUnsafePointer(to: &candidate) {
+                $0.withMemoryRebound(to: sockaddr.self, capacity: 1) {
+                    Darwin.connect(client, $0, socklen_t(MemoryLayout<sockaddr_un>.size))
+                }
+            }
+            if result == 0 || errno == EINPROGRESS { clients.append(client) }
+            else { close(client); break }
+        }
+        let clock = ContinuousClock()
+        let start = clock.now
+        XCTAssertThrowsError(try LegacyBrandMigration.requireSocketUnreferenced(at: socketURL)) { error in
+            guard case LegacyBrandMigration.MigrationError.inUse = error else {
+                return XCTFail("A referenced socket must report the store as in use")
+            }
+        }
+        XCTAssertLessThan(start.duration(to: clock.now), .seconds(4))
+    }
+
+    private func boundUnixSocket(at url: URL) throws -> Int32 {
+        var address = try unixSocketAddress(at: url)
+        let descriptor = Darwin.socket(AF_UNIX, SOCK_STREAM, 0)
+        guard descriptor >= 0 else { throw POSIXError(.init(rawValue: errno) ?? .EINVAL) }
+        let result = withUnsafePointer(to: &address) {
+            $0.withMemoryRebound(to: sockaddr.self, capacity: 1) {
+                Darwin.bind(descriptor, $0, socklen_t(MemoryLayout<sockaddr_un>.size))
+            }
+        }
+        if result != 0 {
+            close(descriptor)
+            throw POSIXError(.init(rawValue: errno) ?? .EINVAL)
+        }
+        return descriptor
+    }
+
+    private func unixSocketAddress(at url: URL) throws -> sockaddr_un {
+        var address = sockaddr_un()
+        let path = Array(url.path.utf8CString)
+        guard path.count <= MemoryLayout.size(ofValue: address.sun_path) else { throw POSIXError(.ENAMETOOLONG) }
+        address.sun_len = UInt8(MemoryLayout<sockaddr_un>.size)
+        address.sun_family = sa_family_t(AF_UNIX)
+        withUnsafeMutablePointer(to: &address.sun_path) { destination in
+            path.withUnsafeBufferPointer { source in
+                _ = memcpy(UnsafeMutableRawPointer(destination), source.baseAddress!, source.count)
+            }
+        }
+        return address
     }
 
     func testRejectsLinkedRootAndInvalidOwnership() throws {

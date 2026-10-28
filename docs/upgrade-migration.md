@@ -61,6 +61,9 @@ permissions, file contents, and link targets. Verification streams large files i
 bounded buffers. Copied files, receipts, and migration checkpoints are flushed to
 disk before the migration advances. A backup error, insufficient space, changing
 source, or unsupported file prevents the migration from modifying profile data.
+Abandoned Codex `CODEX_HOME/ipc/ipc.sock` endpoints are removed only after the
+store is confirmed idle and profile locks are held. Active sockets, other
+special files, and linked or unsafe IPC directories still stop migration.
 
 **Recovery copies are retained even after successful migration.** No automatic
 backup cleanup runs. Failed copies without a verified `receipt.json` remain for
@@ -79,8 +82,12 @@ need the recovery copy.
 - A global migration lock, the store lock, and per-profile locks serialize the
   move with other operations. Existing restore/deletion journals recover only
   after the original data is backed up, and before folder relocation.
-- Nonempty destination folders are never replaced or merged. If both names
-  contain data, preserve both and resolve that conflict before relaunching.
+- A destination `AgentDock` folder containing only the old `ChatIndexes` cache
+  and optional Finder `.DS_Store` metadata
+  is moved intact to `~/Library/Application Support/AgentDock Legacy Index
+  Archives/<UUID>/` before the legacy store is moved. These private archives
+  are retained. Other nonempty destination folders are never replaced or
+  merged; preserve both and resolve those conflicts before relaunching.
 - Directory moves are journaled at
   `~/Library/Application Support/.agentdock-brand-migration-v1.json`. If the app
   exits between a directory move and metadata commit, relaunch completes the
