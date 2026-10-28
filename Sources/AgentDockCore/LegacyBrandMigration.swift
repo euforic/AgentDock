@@ -50,6 +50,8 @@ enum LegacyBrand {
 /// creates verified recovery copies before changing data, never follows profile
 /// symlinks, and never merges stores.
 enum LegacyBrandMigration {
+    static let indexArchiveDirectoryName = "AgentDock Legacy Index Archives"
+
     struct Journal: Codable {
         var version = 1
         let moveRoot: Bool
@@ -103,11 +105,16 @@ enum LegacyBrandMigration {
                 try validateDirectory(source)
                 if LegacyBrand.exists(destination) {
                     try validateDirectory(destination)
-                    // Only genuinely empty placeholders can be removed. Never merge stores.
-                    guard try fm.contentsOfDirectory(atPath: destination.path).isEmpty else {
-                        throw MigrationError.conflictingFolders
+                    if try fm.contentsOfDirectory(atPath: destination.path).isEmpty {
+                        try fm.removeItem(at: destination)
+                    } else {
+                        // Older builds wrote derived chat indexes under the new
+                        // brand name before moving the actual Codexer store.
+                        guard source == oldRoot, destination == root,
+                              try archiveIndexOnlyDestination(root, applicationSupport: applicationSupport) else {
+                            throw MigrationError.conflictingFolders
+                        }
                     }
-                    try fm.removeItem(at: destination)
                 }
             } else {
                 guard resuming, LegacyBrand.exists(destination) else { throw MigrationError.invalidJournal }
@@ -162,6 +169,7 @@ enum LegacyBrandMigration {
         }
         defer { withExtendedLifetime(profileLocks) {} }
         try requireIdle(activeRoot)
+        try removeStaleCodexSockets(in: profilesRoot)
         if let backupID = journal.backupID {
             try MigrationBackup.verify(applicationSupport: applicationSupport, id: backupID)
         } else {
@@ -269,6 +277,86 @@ enum LegacyBrandMigration {
               status.st_uid == geteuid(),
               url.standardizedFileURL.resolvingSymlinksInPath().path == url.standardizedFileURL.path
         else { throw MigrationError.unsafeFolder }
+    }
+
+    /// The old chat index is a cache, but preserve its entire directory tree.
+    /// An atomic rename also makes an interrupted attempt safe to retry.
+    private static func archiveIndexOnlyDestination(_ root: URL, applicationSupport: URL) throws -> Bool {
+        let fm = FileManager.default
+        let entries = try fm.contentsOfDirectory(at: root, includingPropertiesForKeys: nil)
+        guard let indexes = entries.first(where: { $0.lastPathComponent == "ChatIndexes" }),
+              entries.allSatisfy({ $0 == indexes || $0.lastPathComponent == ".DS_Store" }) else { return false }
+        try validateDirectory(indexes)
+        try requireIdle(root)
+        let parent = applicationSupport.appendingPathComponent(indexArchiveDirectoryName, isDirectory: true)
+        if !LegacyBrand.exists(parent) {
+            try fm.createDirectory(at: parent, withIntermediateDirectories: false, attributes: [.posixPermissions: 0o700])
+        }
+        try validateDirectory(parent)
+        var status = stat()
+        guard lstat(parent.path, &status) == 0, status.st_mode & 0o077 == 0 else {
+            throw MigrationError.unsafeFolder
+        }
+        try fm.moveItem(at: root, to: parent.appendingPathComponent(UUID().uuidString, isDirectory: true))
+        try MigrationBackup.syncDirectory(parent)
+        try MigrationBackup.syncDirectory(applicationSupport)
+        return true
+    }
+
+    /// Codex leaves Unix socket nodes behind after some exits. They contain no
+    /// persistent state and cannot be copied by the verified recovery backup.
+    /// Touch only the known IPC path after all profile locks and idle checks.
+    private static func removeStaleCodexSockets(in profilesRoot: URL) throws {
+        guard LegacyBrand.exists(profilesRoot) else { return }
+        try validateDirectory(profilesRoot)
+        let fm = FileManager.default
+        for profile in try fm.contentsOfDirectory(at: profilesRoot, includingPropertiesForKeys: nil) {
+            if profile.lastPathComponent == "claude" { continue }
+            var profileStatus = stat()
+            guard lstat(profile.path, &profileStatus) == 0, profileStatus.st_mode & S_IFMT == S_IFDIR else { continue }
+            try validateDirectory(profile)
+            let home = profile.appendingPathComponent("CODEX_HOME", isDirectory: true)
+            guard LegacyBrand.exists(home) else { continue }
+            try validateDirectory(home)
+            let ipc = home.appendingPathComponent("ipc", isDirectory: true)
+            guard LegacyBrand.exists(ipc) else { continue }
+            try validateDirectory(ipc)
+            let path = ipc.appendingPathComponent("ipc.sock")
+            var before = stat()
+            guard lstat(path.path, &before) == 0, before.st_mode & S_IFMT == S_IFSOCK else { continue }
+            guard before.st_uid == geteuid() else { throw MigrationError.inUse }
+            try requireSocketUnreferenced(at: path)
+            var after = stat()
+            guard lstat(path.path, &after) == 0, before.st_dev == after.st_dev,
+                  before.st_ino == after.st_ino, after.st_mode & S_IFMT == S_IFSOCK else {
+                throw MigrationError.inUse
+            }
+            let quarantine = ipc.appendingPathComponent(".agentdock-stale-ipc-\(UUID().uuidString)")
+            guard rename(path.path, quarantine.path) == 0 else { throw MigrationError.inUse }
+            var moved = stat()
+            guard lstat(quarantine.path, &moved) == 0, moved.st_dev == before.st_dev,
+                  moved.st_ino == before.st_ino, moved.st_mode & S_IFMT == S_IFSOCK else {
+                // A replacement is never deleted. Restore it when the original
+                // path is free; otherwise leave the quarantine for inspection.
+                if !LegacyBrand.exists(path) { _ = rename(quarantine.path, path.path) }
+                throw MigrationError.inUse
+            }
+            guard unlink(quarantine.path) == 0 else {
+                if !LegacyBrand.exists(path) { _ = rename(quarantine.path, path.path) }
+                throw MigrationError.inUse
+            }
+            try MigrationBackup.syncDirectory(ipc)
+        }
+    }
+
+    static func requireSocketUnreferenced(at url: URL) throws {
+        let result = try BoundedSubprocess.run(
+            executableURL: URL(fileURLWithPath: "/usr/sbin/lsof"), arguments: ["-t", url.path],
+            timeout: 3, maximumOutputBytes: 1_024 * 1_024, captureStandardError: true
+        )
+        guard result.terminationStatus == 1, result.output.isEmpty, !result.exceededOutputLimit else {
+            throw MigrationError.inUse
+        }
     }
 
     private static func requireOtherManagersClosed() throws {
