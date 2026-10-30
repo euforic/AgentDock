@@ -25,6 +25,17 @@ run once per batch, and each candidate main process still requires its dynamic
 publisher identity check. Validation is repeated on the next batch; no bundle
 modification-time cache replaces signature or contract validation.
 
+Status reads (`statusBatch`, `statuses`, `stockStatus`, and Claude's
+`status(for:appURL:)`, which wraps `statuses`) await their `ps` snapshot. The
+wait suspends instead of holding a cooperative thread, and reads on one provider
+controller can overlap. They change no controller state. Claude's helper and
+main-process identity checks, with their kernel start-key comparisons, run
+after the snapshot returns and before the next suspension point. Open, close,
+and focus flows keep synchronous snapshots, so no other work on that controller
+runs between a lifecycle snapshot and the identity checks and signals that act
+on it. A status result never authorizes a lifecycle action; each action takes
+its own snapshot.
+
 An unselected or failed provider contributes no entries. Callers retain the
 last successful status for that provider and remove entries for deleted
 profiles. A cancelled batch returns no entries, and callers must check task

@@ -148,15 +148,35 @@ public enum ClaudeInstanceDiscovery {
 }
 
 public struct SystemClaudeProcessSnapshotProvider: Sendable {
+    private static let executableURL = URL(fileURLWithPath: "/bin/ps")
+    private static let arguments = ["-ax", "-o", "pid=,ppid=,command="]
+    private static let timeout: TimeInterval = 3
+    private static let maximumOutputBytes = 8 * 1_024 * 1_024
+
     public init() {}
 
+    /// Launch, close, and focus flows read without suspending, so no other
+    /// actor work runs between the snapshot and the checks that act on it.
     public func snapshot() throws -> ClaudeProcessSnapshot {
-        let result = try BoundedSubprocess.run(
-            executableURL: URL(fileURLWithPath: "/bin/ps"),
-            arguments: ["-ax", "-o", "pid=,ppid=,command="],
-            timeout: 3,
-            maximumOutputBytes: 8 * 1_024 * 1_024
-        )
+        try Self.snapshot(from: BoundedSubprocess.run(
+            executableURL: Self.executableURL,
+            arguments: Self.arguments,
+            timeout: Self.timeout,
+            maximumOutputBytes: Self.maximumOutputBytes
+        ))
+    }
+
+    /// Read-only status refreshes await this so the `ps` wait suspends.
+    public func suspendingSnapshot() async throws -> ClaudeProcessSnapshot {
+        try await Self.snapshot(from: BoundedSubprocess.run(
+            executableURL: Self.executableURL,
+            arguments: Self.arguments,
+            timeout: Self.timeout,
+            maximumOutputBytes: Self.maximumOutputBytes
+        ))
+    }
+
+    private static func snapshot(from result: BoundedSubprocessResult) throws -> ClaudeProcessSnapshot {
         guard result.terminationStatus == 0, !result.exceededOutputLimit else {
             throw ClaudeLauncherError.processInspectionUnavailable
         }
@@ -210,15 +230,21 @@ public actor ClaudeInstanceController {
         try contractProbe.validate(appURL: appURL)
     }
 
+    // The read-only status reads below suspend on their snapshot, so other work
+    // on this actor may run meanwhile. They change no actor state, and after
+    // resuming run every helper and main-process identity check, with its
+    // kernel start-key comparison, before the next suspension point. Launch and
+    // close flows never take these paths; they read without suspending.
+
     public func statuses(
         for profiles: [CodexProfile],
         appURL: URL
-    ) throws -> [CodexProfile.ID: CodexInstanceStatus] {
+    ) async throws -> [CodexProfile.ID: CodexInstanceStatus] {
         try Task.checkCancellation()
         guard !profiles.isEmpty else { return [:] }
         try validateClaudeApp(at: appURL)
         try Task.checkCancellation()
-        let snapshot = try snapshotProvider.snapshot()
+        let snapshot = try await snapshotProvider.suspendingSnapshot()
         try Task.checkCancellation()
         let trustedHelpers = trustedHelperProcessIDs(in: snapshot, appURL: appURL)
         return statuses(
@@ -232,11 +258,11 @@ public actor ClaudeInstanceController {
     func statusBatch(
         for profiles: [CodexProfile],
         appURL: URL
-    ) throws -> ProviderInstanceStatusBatch {
+    ) async throws -> ProviderInstanceStatusBatch {
         try Task.checkCancellation()
         try validateClaudeApp(at: appURL)
         try Task.checkCancellation()
-        let snapshot = try snapshotProvider.snapshot()
+        let snapshot = try await snapshotProvider.suspendingSnapshot()
         try Task.checkCancellation()
         let trustedHelpers = trustedHelperProcessIDs(in: snapshot, appURL: appURL)
         return ProviderInstanceStatusBatch(
@@ -279,19 +305,19 @@ public actor ClaudeInstanceController {
     public func status(
         for profile: CodexProfile,
         appURL: URL
-    ) throws -> CodexInstanceStatus {
+    ) async throws -> CodexInstanceStatus {
         guard profile.product == .claude else {
             throw ClaudeLauncherError.wrongProduct
         }
-        return try statuses(for: [profile], appURL: appURL)[profile.id]
+        return try await statuses(for: [profile], appURL: appURL)[profile.id]
             ?? CodexInstanceStatus()
     }
 
-    public func stockStatus(appURL: URL) throws -> CodexInstanceStatus {
+    public func stockStatus(appURL: URL) async throws -> CodexInstanceStatus {
         try Task.checkCancellation()
         try validateClaudeApp(at: appURL)
         try Task.checkCancellation()
-        let snapshot = try snapshotProvider.snapshot()
+        let snapshot = try await snapshotProvider.suspendingSnapshot()
         try Task.checkCancellation()
         return stockStatus(
             appURL: appURL,

@@ -62,6 +62,69 @@ final class DesktopInstanceControllerTests: XCTestCase {
         XCTAssertEqual(nonExecutable.officialStatus, CodexInstanceStatus())
     }
 
+    func testConcurrentStatusBatchesDoNotHoldCooperativeThreads() async throws {
+        let appURL = try executableCodexApp()
+        defer { try? FileManager.default.removeItem(at: appURL) }
+        let managedProfile = profile(product: .codex)
+        let provider = DelayedProcessSnapshotProvider(appURL: appURL, managedProfile: managedProfile)
+        // More reads than cooperative threads: reads that blocked on their
+        // snapshot would serialize into at least three rounds of one second each.
+        let count = ProcessInfo.processInfo.activeProcessorCount * 3
+        let start = Date()
+
+        let batches = try await withThrowingTaskGroup(of: ProviderInstanceStatusBatch.self) { group in
+            for _ in 0..<count {
+                group.addTask {
+                    try await CodexInstanceController(processSnapshotProvider: provider)
+                        .statusBatch(for: [managedProfile], codexAppURL: appURL)
+                }
+            }
+            return try await group.reduce(into: []) { $0.append($1) }
+        }
+
+        XCTAssertLessThan(Date().timeIntervalSince(start), 2.5)
+        XCTAssertEqual(batches.count, count)
+        for batch in batches {
+            XCTAssertEqual(batch.managedStatuses, [managedProfile.id: CodexInstanceStatus(processIDs: [222])])
+            XCTAssertEqual(batch.officialStatus, CodexInstanceStatus(processIDs: [111]))
+        }
+    }
+
+    func testStatusReadsOnOneControllerOverlapWhileWaitingForSnapshots() async throws {
+        let appURL = try executableCodexApp()
+        defer { try? FileManager.default.removeItem(at: appURL) }
+        let managedProfile = profile(product: .codex)
+        let controller = CodexInstanceController(
+            processSnapshotProvider: DelayedProcessSnapshotProvider(
+                appURL: appURL,
+                managedProfile: managedProfile
+            )
+        )
+        let start = Date()
+
+        // An actor that blocked on each snapshot would run these one at a time.
+        async let batch = controller.statusBatch(for: [managedProfile], codexAppURL: appURL)
+        async let managed = controller.statuses(for: [managedProfile], codexAppURL: appURL)
+        async let official = controller.stockStatus(codexAppURL: appURL)
+        let (batchResult, managedResult, officialResult) = try await (batch, managed, official)
+
+        XCTAssertLessThan(Date().timeIntervalSince(start), 2.5)
+        XCTAssertEqual(managedResult, [managedProfile.id: CodexInstanceStatus(processIDs: [222])])
+        XCTAssertEqual(officialResult, CodexInstanceStatus(processIDs: [111]))
+        XCTAssertEqual(batchResult.managedStatuses, managedResult)
+        XCTAssertEqual(batchResult.officialStatus, officialResult)
+    }
+
+    func testSuspendingSystemSnapshotsListCurrentProcess() async throws {
+        let codexSnapshot = try await SystemCodexProcessSnapshotProvider().suspendingProcessSnapshot()
+        XCTAssertTrue(codexSnapshot.split(whereSeparator: \.isNewline).contains { line in
+            line.split(separator: " ", maxSplits: 1).first.flatMap { Int32($0) } == getpid()
+        })
+
+        let claudeSnapshot = try await SystemClaudeProcessSnapshotProvider().suspendingSnapshot()
+        XCTAssertEqual(claudeSnapshot.entries[getpid()]?.parentProcessID, getppid())
+    }
+
     func testCancelledClaudeInspectionStopsBeforeInvalidAppValidation() async {
         let controller = ClaudeInstanceController()
         let missingApp = FileManager.default.temporaryDirectory
@@ -122,5 +185,60 @@ final class DesktopInstanceControllerTests: XCTestCase {
             profileDirectory: root.appendingPathComponent("Profile"),
             shortcutDirectory: root.appendingPathComponent("Shortcut")
         )
+    }
+
+    private func executableCodexApp() throws -> URL {
+        let appURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("StatusTest-\(UUID().uuidString).app")
+        let executableURL = IsolatedCodexLaunchConfiguration.appExecutableURL(for: appURL)
+        try FileManager.default.createDirectory(
+            at: executableURL.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        try Data("#!/bin/sh\n".utf8).write(to: executableURL)
+        try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: executableURL.path)
+        return appURL
+    }
+}
+
+/// A child process prints a synthetic official (111) and managed (222) snapshot
+/// after one second, so a status read that blocks instead of suspending holds
+/// its thread that long.
+private struct DelayedProcessSnapshotProvider: CodexProcessSnapshotProviding {
+    private let arguments: [String]
+
+    init(appURL: URL, managedProfile: CodexProfile) {
+        let executable = IsolatedCodexLaunchConfiguration.appExecutableURL(for: appURL)
+            .standardizedFileURL.path
+        let snapshot = """
+          111 \(executable)
+          222 \(executable) --user-data-dir=\(managedProfile.electronUserDataPath.path)
+        """
+        arguments = ["-c", "sleep 1; printf '%s' \"$1\"", "sh", snapshot]
+    }
+
+    func processSnapshot() throws -> String {
+        try Self.snapshot(from: BoundedSubprocess.run(
+            executableURL: URL(fileURLWithPath: "/bin/sh"),
+            arguments: arguments,
+            timeout: 10,
+            maximumOutputBytes: 64 * 1_024
+        ))
+    }
+
+    func suspendingProcessSnapshot() async throws -> String {
+        try await Self.snapshot(from: BoundedSubprocess.run(
+            executableURL: URL(fileURLWithPath: "/bin/sh"),
+            arguments: arguments,
+            timeout: 10,
+            maximumOutputBytes: 64 * 1_024
+        ))
+    }
+
+    private static func snapshot(from result: BoundedSubprocessResult) throws -> String {
+        guard result.terminationStatus == 0, !result.exceededOutputLimit else {
+            throw CodexLauncherError.processInspectionFailed(result.terminationStatus)
+        }
+        return String(decoding: result.output, as: UTF8.self)
     }
 }
