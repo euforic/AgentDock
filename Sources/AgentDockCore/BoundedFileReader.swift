@@ -90,5 +90,4 @@ enum LocalControlFileLimit {
     static let providerCredentialState = 4 * 1_024 * 1_024
     static let propertyList = 1 * 1_024 * 1_024
     static let customIcon = 10 * 1_024 * 1_024
-    static let chatIndex = 8 * 1_024 * 1_024
 }
