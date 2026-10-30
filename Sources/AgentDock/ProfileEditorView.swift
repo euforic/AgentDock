@@ -24,101 +24,58 @@ struct EditProfileSheet: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            Text("Edit Profile")
-                .font(.system(size: 19, weight: .semibold))
-                .padding(.bottom, 18)
+        Form {
+            Section {
+                TextField("Name", text: $name)
+                    .focused($nameFocused)
+                    .onSubmit(save)
+                LabeledContent("Provider", value: profile.product.displayName)
+            } header: {
+                Text("Edit Profile")
+                    .font(.title3.weight(.semibold))
+                    .foregroundStyle(.primary)
+                    .textCase(nil)
+            }
 
-            ScrollView {
-                HStack(alignment: .top, spacing: 24) {
-                    VStack(alignment: .leading, spacing: 8) {
-                    Text("Profile Icon")
-                        .font(.system(size: 12))
-                        .foregroundStyle(.secondary)
-                    ProfileIconPreview(
-                        name: name,
-                        kind: iconKind,
-                        value: iconValue,
-                        color: iconColor,
-                        customIconData: customIconData,
-                        existingImageURL: profile.customIconPath,
-                        size: 96
-                    )
-                    }
+            ProfileAppearanceEditor(
+                name: name,
+                iconKind: $iconKind,
+                iconValue: $iconValue,
+                iconColor: $iconColor,
+                customIconData: $customIconData,
+                existingImageURL: profile.customIconPath
+            )
 
-                    VStack(alignment: .leading, spacing: 6) {
-                        Text("Name")
-                            .font(.system(size: 12))
-                            .foregroundStyle(.secondary)
-                        TextField("Profile name", text: $name)
-                            .textFieldStyle(.roundedBorder)
-                            .controlSize(.regular)
-                            .focused($nameFocused)
-                            .onSubmit(save)
-                            .padding(.bottom, 8)
-                        ProfileAppearanceEditor(
-                            name: name,
-                            iconKind: $iconKind,
-                            iconValue: $iconValue,
-                            iconColor: $iconColor,
-                            customIconData: $customIconData,
-                            existingImageURL: profile.customIconPath,
-                            compact: false
-                        )
-                    }
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                }
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(.bottom, 12)
-
-                HStack(spacing: 4) {
-                    Text("Provider:")
-                    Text(profile.product.displayName)
-                }
-                .font(.system(size: 12))
-                .foregroundStyle(.secondary)
-
-                if let errorMessage = model.errorMessage {
+            if let errorMessage = model.errorMessage {
+                Section {
                     Label(errorMessage, systemImage: "exclamationmark.triangle.fill")
-                        .font(.system(size: 12))
                         .foregroundStyle(.red)
-                        .fixedSize(horizontal: false, vertical: true)
-                        .padding(.top, 12)
                 }
             }
-            .scrollIndicators(.visible)
-            .disabled(model.storeMutationInProgress)
-
-            Divider()
-                .overlay(AgentDockPalette.divider)
-
-            HStack(spacing: 12) {
-                Label("Shortcut and sidebar icons update together.", systemImage: "info.circle")
-                    .font(.system(size: 12))
-                    .foregroundStyle(.secondary)
-                Spacer()
-                Button("Cancel", role: .cancel) {
+        }
+        .formStyle(.grouped)
+        .disabled(model.storeMutationInProgress)
+        .frame(width: 500)
+        .frame(minHeight: 520)
+        .toolbar {
+            ToolbarItem(placement: .cancellationAction) {
+                Button("Cancel") {
                     model.errorMessage = nil
                     dismiss()
                 }
-                .controlSize(.regular)
-                .keyboardShortcut(.cancelAction)
-                Button("Save", action: save)
-                    .agentDockPrimaryAction()
-                    .controlSize(.regular)
-                    .keyboardShortcut(.defaultAction)
-                    .disabled(trimmedName.isEmpty || model.storeMutationInProgress)
-                if model.storeMutationInProgress {
-                    ProgressView()
-                        .controlSize(.small)
-                        .accessibilityLabel("Saving profile")
+            }
+            ToolbarItem(placement: .confirmationAction) {
+                HStack {
+                    if model.storeMutationInProgress {
+                        ProgressView()
+                            .controlSize(.small)
+                            .accessibilityLabel("Saving profile")
+                    }
+                    Button("Save", action: save)
+                        .disabled(trimmedName.isEmpty || model.storeMutationInProgress)
                 }
             }
-            .padding(.top, 10)
         }
-        .padding(24)
-        .frame(width: 620, height: 400, alignment: .topLeading)
-        .background(AgentDockPalette.graphite)
         .onAppear {
             nameFocused = true
         }
@@ -141,6 +98,26 @@ struct EditProfileSheet: View {
     }
 }
 
+/// A named swatch, so color choices are announced by name rather than hex value.
+struct ProfileColorChoice: Identifiable {
+    let name: String
+    let hex: String
+    var id: String { hex }
+
+    static let choices = [
+        ProfileColorChoice(name: "Blue", hex: "#2563EB"),
+        ProfileColorChoice(name: "Indigo", hex: "#4F46E5"),
+        ProfileColorChoice(name: "Purple", hex: "#9333EA"),
+        ProfileColorChoice(name: "Pink", hex: "#DB2777"),
+        ProfileColorChoice(name: "Red", hex: "#E5484D"),
+        ProfileColorChoice(name: "Orange", hex: "#F97316"),
+        ProfileColorChoice(name: "Yellow", hex: "#EAB308"),
+        ProfileColorChoice(name: "Green", hex: "#16A34A"),
+        ProfileColorChoice(name: "Teal", hex: "#0D9488"),
+        ProfileColorChoice(name: "Graphite", hex: "#6B7280")
+    ]
+}
+
 struct ProfileAppearanceEditor: View {
     let name: String
     @Binding var iconKind: ProfileIconKind
@@ -148,164 +125,149 @@ struct ProfileAppearanceEditor: View {
     @Binding var iconColor: String
     @Binding var customIconData: Data?
     let existingImageURL: URL?
-    let compact: Bool
+    @State private var previewImage: NSImage?
+    @State private var choosingImage = false
     @State private var imageSelectionError: String?
 
-    private let monograms = ["P", "W", "Y", "C", "D"]
     private let symbols = [
-        "briefcase", "person", "star", "flag",
-        "paperplane.fill", "chevron.left.forwardslash.chevron.right",
-        "terminal", "cylinder", "cloud", "lock"
-    ]
-    private let colors = [
-        "#2563EB", "#4F46E5", "#C026D3", "#E5484D", "#F97316",
-        "#F5B82E", "#45BF65", "#2BBFB7", "#8B95A5"
+        "person.fill", "briefcase.fill", "house.fill", "building.2.fill", "star.fill", "flag.fill",
+        "bolt.fill", "flask.fill", "hammer.fill", "terminal.fill",
+        "chevron.left.forwardslash.chevron.right", "globe", "graduationcap.fill", "heart.fill"
     ]
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            Picker("Icon Type", selection: $iconKind) {
-                Text("Monogram").tag(ProfileIconKind.monogram)
-                Text("Symbol").tag(ProfileIconKind.symbol)
-                Text("Image").tag(ProfileIconKind.image)
+        Section {
+            HStack(alignment: .center, spacing: 16) {
+                ProfileIconArtwork(
+                    name: name,
+                    kind: iconKind,
+                    value: iconValue,
+                    color: iconColor,
+                    image: previewImage,
+                    size: 64
+                )
+                Picker("Style", selection: $iconKind) {
+                    Text("Letter").tag(ProfileIconKind.monogram)
+                    Text("Symbol").tag(ProfileIconKind.symbol)
+                    Text("Image").tag(ProfileIconKind.image)
+                }
+                .pickerStyle(.segmented)
+                .labelsHidden()
             }
-            .pickerStyle(.segmented)
-            .labelsHidden()
+            .padding(.vertical, 4)
 
             switch iconKind {
             case .monogram:
-                optionGrid(monograms, kind: .monogram, columns: 5) { value in
-                    Text(value)
-                        .font(.system(size: 14, weight: .medium))
-                }
+                TextField("Letter", text: monogramBinding, prompt: Text(defaultMonogram))
             case .symbol:
-                optionGrid(symbols, kind: .symbol, columns: 5) { value in
-                    Image(systemName: value)
-                        .font(.system(size: 14))
-                }
+                symbolGrid
             case .image:
-                imagePicker
+                LabeledContent("Image") {
+                    Button(previewImage == nil ? "Choose Image…" : "Replace Image…") { choosingImage = true }
+                }
                 if let imageSelectionError {
-                    Label(imageSelectionError, systemImage: "exclamationmark.triangle")
-                        .font(.caption)
+                    Label(imageSelectionError, systemImage: "exclamationmark.triangle.fill")
                         .foregroundStyle(.red)
-                        .fixedSize(horizontal: false, vertical: true)
                 }
             }
 
-            VStack(alignment: .leading, spacing: 7) {
-                Text("Accent Color")
-                    .font(.system(size: 12))
-                    .foregroundStyle(.secondary)
-                HStack(spacing: compact ? 10 : 13) {
-                    ForEach(colors, id: \.self) { hex in
-                        Button {
-                            iconColor = hex
-                        } label: {
-                            Circle()
-                                .fill(Color(hex: hex))
-                                .frame(
-                                    width: compact ? 20 : 24,
-                                    height: compact ? 20 : 24
-                                )
-                                .overlay {
-                                    if iconColor == hex {
-                                        Circle()
-                                            .stroke(Color.accentColor, lineWidth: 2)
-                                            .padding(-3)
-                                    }
-                                }
+            if iconKind != .image {
+                LabeledContent("Color") {
+                    HStack(spacing: 8) {
+                        ForEach(ProfileColorChoice.choices) { choice in
+                            swatch(choice)
                         }
-                        .buttonStyle(.plain)
-                        .accessibilityLabel("Accent color \(hex)")
-                        .accessibilityAddTraits(iconColor == hex ? .isSelected : [])
+                        ColorPicker("Custom Color", selection: colorBinding, supportsOpacity: false)
+                            .labelsHidden()
+                            .help("Custom Color")
                     }
                 }
             }
+        } header: {
+            Text("Icon")
+        } footer: {
+            Text("The sidebar and the profile's Dock shortcut use the same icon.")
+        }
+        .fileImporter(isPresented: $choosingImage, allowedContentTypes: [.png, .jpeg, .heic]) { result in
+            if case let .success(url) = result { loadImage(at: url) }
+        }
+        .task(id: existingImageURL) {
+            if customIconData == nil, let existingImageURL {
+                previewImage = IconImageCache.profileImage(at: existingImageURL)
+            }
         }
     }
 
-    private func optionGrid<Label: View>(
-        _ values: [String],
-        kind: ProfileIconKind,
-        columns: Int,
-        @ViewBuilder label: @escaping (String) -> Label
-    ) -> some View {
-        LazyVGrid(
-            columns: Array(
-                repeating: GridItem(.flexible(minimum: 42), spacing: 8),
-                count: columns
-            ),
-            spacing: 8
-        ) {
-            ForEach(values, id: \.self) { value in
+    private var symbolGrid: some View {
+        LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 6), count: 7), spacing: 6) {
+            ForEach(symbols, id: \.self) { symbol in
+                let selected = (iconValue.isEmpty ? "person.fill" : iconValue) == symbol
                 Button {
-                    iconKind = kind
-                    iconValue = value
+                    iconValue = symbol
                 } label: {
-                    label(value)
-                        .frame(maxWidth: .infinity)
-                        .frame(height: compact ? 34 : 38)
-                        .background(
-                            AgentDockPalette.panel,
-                            in: .rect(cornerRadius: 7)
-                        )
+                    Image(systemName: symbol)
+                        .font(.title3)
+                        .frame(maxWidth: .infinity, minHeight: 32)
+                        .background(selected ? AnyShapeStyle(.tint.opacity(0.18)) : AnyShapeStyle(.quaternary.opacity(0.5)),
+                                    in: .rect(cornerRadius: 7))
                         .overlay {
-                            RoundedRectangle(cornerRadius: 7)
-                                .stroke(
-                                    isSelected(value, kind: kind)
-                                        ? Color.accentColor
-                                        : AgentDockPalette.panelBorder,
-                                    lineWidth: isSelected(value, kind: kind) ? 2 : 1
-                                )
+                            if selected {
+                                RoundedRectangle(cornerRadius: 7).strokeBorder(.tint, lineWidth: 1.5)
+                            }
                         }
+                        .contentShape(.rect)
                 }
                 .buttonStyle(.plain)
-                .accessibilityLabel(accessibilityLabel(for: value, kind: kind))
-                .accessibilityAddTraits(isSelected(value, kind: kind) ? .isSelected : [])
+                .accessibilityLabel(symbol.replacingOccurrences(of: ".fill", with: "").replacingOccurrences(of: ".", with: " "))
+                .accessibilityAddTraits(selected ? .isSelected : [])
             }
         }
+        .padding(.vertical, 2)
     }
 
-    private func isSelected(_ value: String, kind: ProfileIconKind) -> Bool {
-        guard iconKind == kind else { return false }
-        if !iconValue.isEmpty {
-            return iconValue == value
+    private func swatch(_ choice: ProfileColorChoice) -> some View {
+        let selected = iconColor.caseInsensitiveCompare(choice.hex) == .orderedSame
+        return Button {
+            iconColor = choice.hex
+        } label: {
+            Circle()
+                .fill(Color(hex: choice.hex))
+                .frame(width: 18, height: 18)
+                .overlay {
+                    if selected {
+                        Circle().strokeBorder(.white, lineWidth: 2)
+                            .padding(-0.5)
+                    }
+                }
+                .padding(2)
+                .overlay {
+                    if selected { Circle().strokeBorder(Color(hex: choice.hex), lineWidth: 1.5) }
+                }
         }
-        switch kind {
-        case .monogram:
-            return value == String(name.trimmingCharacters(in: .whitespaces).prefix(1)).uppercased()
-        case .symbol:
-            return value == "person"
-        case .image:
-            return false
-        }
+        .buttonStyle(.plain)
+        .help(choice.name)
+        .accessibilityLabel(choice.name)
+        .accessibilityAddTraits(selected ? .isSelected : [])
     }
 
-    private var imagePicker: some View {
-        HStack {
-            Button("Choose Image…", action: chooseImage)
-                .buttonStyle(.bordered)
-                .controlSize(.regular)
-            if customIconData != nil
-                || existingImageURL.map({ FileManager.default.fileExists(atPath: $0.path) }) == true
-            {
-                Label("Image selected", systemImage: "checkmark.circle.fill")
-                    .foregroundStyle(.green)
-                    .font(.system(size: 12))
-            }
-        }
+    private var defaultMonogram: String {
+        String(name.trimmingCharacters(in: .whitespaces).prefix(1)).uppercased()
     }
 
-    private func chooseImage() {
-        let panel = NSOpenPanel()
-        panel.title = "Choose Profile Icon"
-        panel.prompt = "Choose"
-        panel.canChooseFiles = true
-        panel.canChooseDirectories = false
-        panel.allowsMultipleSelection = false
-        panel.allowedContentTypes = [.png, .jpeg, .heic]
-        guard panel.runModal() == .OK, let url = panel.url else { return }
+    private var monogramBinding: Binding<String> {
+        Binding(
+            get: { iconValue },
+            set: { iconValue = String($0.trimmingCharacters(in: .whitespacesAndNewlines).prefix(1)).uppercased() }
+        )
+    }
+
+    private var colorBinding: Binding<Color> {
+        Binding(get: { Color(hex: iconColor) }, set: { iconColor = $0.hexString })
+    }
+
+    private func loadImage(at url: URL) {
+        let accessing = url.startAccessingSecurityScopedResource()
+        defer { if accessing { url.stopAccessingSecurityScopedResource() } }
         guard
             let resourceValues = try? url.resourceValues(forKeys: [.fileSizeKey]),
             let fileSize = resourceValues.fileSize,
@@ -314,80 +276,12 @@ struct ProfileAppearanceEditor: View {
             let image = NSImage(data: data),
             image.isValid
         else {
-            imageSelectionError = "Choose a valid PNG, JPEG, or HEIC image no larger than 10 MB."
+            imageSelectionError = "Choose a PNG, JPEG, or HEIC image no larger than 10 MB."
             return
         }
         imageSelectionError = nil
         customIconData = data
+        previewImage = image
         iconKind = .image
-    }
-
-    private func accessibilityLabel(for value: String, kind: ProfileIconKind) -> String {
-        switch kind {
-        case .monogram:
-            return "Monogram \(value)"
-        case .symbol:
-            return "Symbol \(value)"
-        case .image:
-            return "Image"
-        }
-    }
-}
-
-struct ProfileIconPreview: View {
-    let name: String
-    let kind: ProfileIconKind
-    let value: String
-    let color: String
-    let customIconData: Data?
-    let existingImageURL: URL?
-    let size: CGFloat
-
-    var body: some View {
-        Group {
-            if kind == .image, let image {
-                Image(nsImage: image)
-                    .resizable()
-                    .scaledToFill()
-            } else {
-                ZStack {
-                    RoundedRectangle(cornerRadius: size * 0.2)
-                        .fill(
-                            LinearGradient(
-                                colors: [Color(hex: color), Color(hex: color).opacity(0.65)],
-                                startPoint: .topLeading,
-                                endPoint: .bottomTrailing
-                            )
-                        )
-                    if kind == .symbol {
-                        Image(systemName: value.isEmpty ? "person.fill" : value)
-                            .font(.system(size: size * 0.4, weight: .medium))
-                    } else {
-                        Text(value.isEmpty
-                            ? String(name.trimmingCharacters(in: .whitespaces).prefix(1)).uppercased()
-                            : String(value.prefix(1)).uppercased())
-                            .font(.system(size: size * 0.48, weight: .medium, design: .rounded))
-                    }
-                }
-                .foregroundStyle(.white)
-            }
-        }
-        .frame(width: size, height: size)
-        .clipShape(.rect(cornerRadius: size * 0.2))
-        .overlay {
-            RoundedRectangle(cornerRadius: size * 0.2)
-                .stroke(.white.opacity(0.14))
-        }
-        .accessibilityHidden(true)
-    }
-
-    private var image: NSImage? {
-        if let customIconData, let image = NSImage(data: customIconData), image.isValid {
-            return image
-        }
-        if let existingImageURL, let image = NSImage(contentsOf: existingImageURL), image.isValid {
-            return image
-        }
-        return nil
     }
 }

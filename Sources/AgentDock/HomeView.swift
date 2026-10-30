@@ -7,73 +7,65 @@ struct HomeView: View {
     @ObservedObject var resetReminders: ResetReminderController
 
     var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 18) {
+        Form {
+            Section {
                 HomeResetSummary(controller: resetReminders)
-                ForEach(DesktopProduct.allCases, id: \.self) { product in
-                    providerSection(product)
-                }
-                if model.profiles.isEmpty {
-                    Label("Add a profile for another account, then sign in inside its provider app.",
-                          systemImage: "person.crop.circle.badge.plus")
-                        .foregroundStyle(.secondary)
-                        .font(.callout)
-                }
-                Text("Usage is shown per source; profiles can share an account. Open Overview for all limits and local activity.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
             }
-            .padding(22)
-            .frame(maxWidth: 1120, alignment: .leading)
-            .frame(maxWidth: .infinity)
+            ForEach(DesktopProduct.allCases) { product in
+                providerSection(product)
+            }
         }
+        .formStyle(.grouped)
     }
 
     private func providerSection(_ product: DesktopProduct) -> some View {
         let profiles = model.profiles.filter { $0.product == product }
-        return VStack(alignment: .leading, spacing: 8) {
-            Text(product.displayName).font(.system(size: 17, weight: .semibold))
-            LazyVStack(spacing: 0) {
+        return Section {
+            HomeSourceRow(
+                name: "Official \(product.displayName)",
+                subtitle: "Default installation",
+                limits: product == .codex ? model.officialCodexRateLimits : model.officialClaudeRateLimits,
+                running: model.stockInstanceStatuses[product]?.isRunning,
+                busy: model.busyStockProducts.contains(product),
+                accent: product.usageTint,
+                resetController: resetReminders,
+                resetSourceID: product == .codex ? "official" : nil,
+                open: { model.openStock(product) },
+                overview: {
+                    model.selectOfficial(product)
+                    model.detailTab = .overview
+                }
+            ) {
+                ProviderIconView(product: product, appURL: model.appURL(for: product), size: 36)
+            }
+            ForEach(profiles) { profile in
                 HomeSourceRow(
-                    name: "Official \(product.displayName)",
-                    subtitle: "Official installation",
-                    limits: product == .codex ? model.officialCodexRateLimits : model.officialClaudeRateLimits,
-                    running: model.stockInstanceStatuses[product]?.isRunning,
-                    busy: model.busyStockProducts.contains(product),
-                    accent: product == .codex ? AgentDockPalette.blue : .orange,
+                    name: profile.name,
+                    subtitle: "Managed profile",
+                    limits: model.rateLimits(for: profile),
+                    running: model.profileInstanceStatuses[profile.id]?.isRunning,
+                    busy: model.isBusy(profile) || model.storeMutationInProgress,
+                    accent: product.usageTint,
                     resetController: resetReminders,
-                    resetSourceID: product == .codex ? "official" : nil,
-                    open: { model.openStock(product) },
+                    resetSourceID: product == .codex ? profile.id.uuidString : nil,
+                    open: { model.launch(profile) },
                     overview: {
-                        model.selectOfficial(product)
+                        model.selectProfile(profile.id)
                         model.detailTab = .overview
                     }
                 ) {
-                    ProviderIconView(product: product, appURL: model.appURL(for: product), size: 32)
-                }
-                ForEach(profiles) { profile in
-                    Divider().overlay(AgentDockPalette.divider)
-                    HomeSourceRow(
-                        name: profile.name,
-                        subtitle: "Managed profile",
-                        limits: model.rateLimits(for: profile),
-                        running: model.profileInstanceStatuses[profile.id]?.isRunning,
-                        busy: model.isBusy(profile) || model.storeMutationInProgress,
-                        accent: product == .codex ? AgentDockPalette.blue : .orange,
-                        resetController: resetReminders,
-                        resetSourceID: product == .codex ? profile.id.uuidString : nil,
-                        open: { model.launch(profile) },
-                        overview: {
-                            model.selectProfile(profile.id)
-                            model.detailTab = .overview
-                        }
-                    ) {
-                        ProfileIconView(profile: profile, size: 32)
-                    }
+                    ProfileIconView(profile: profile, size: 36)
                 }
             }
-            .background(AgentDockPalette.panel.opacity(0.42), in: .rect(cornerRadius: 8))
-            .overlay(RoundedRectangle(cornerRadius: 8).stroke(AgentDockPalette.divider))
+        } header: {
+            Text(product.displayName)
+        } footer: {
+            if product == DesktopProduct.allCases.last {
+                Text(model.profiles.isEmpty
+                    ? "Add a profile for another account, then sign in inside its provider app. Usage is shown per source; profiles can share an account."
+                    : "Usage is shown per source; profiles can share an account. Open a source for all limits and local activity.")
+                    .foregroundStyle(.secondary)
+            }
         }
     }
 }
@@ -125,17 +117,17 @@ private struct HomeResetSummary: View {
             let digest = HomeResetDigest(accounts: controller.accounts,
                                          sourceErrors: controller.sourceErrors, now: context.date)
             let accent: Color = digest.hasExpirationWithin24Hours ? .red : .orange
-            HStack(spacing: 10) {
-                Image(systemName: "clock.arrow.circlepath")
-                    .font(.system(size: 20))
+            HStack(spacing: 12) {
+                Image(systemName: digest.expirations.isEmpty ? "clock.arrow.circlepath" : "clock.badge.exclamationmark.fill")
+                    .font(.title2)
+                    .symbolRenderingMode(.hierarchical)
                     .foregroundStyle(digest.expirations.isEmpty ? Color.secondary : accent)
-                    .frame(width: 26)
-                VStack(alignment: .leading, spacing: 3) {
-                    Text(digest.reportedCount.map { "Banked resets · \($0) reported available" } ?? "Banked resets")
-                        .fontWeight(.semibold)
+                    .frame(width: 32)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(digest.reportedCount.map { "\($0) Banked \($0 == 1 ? "Reset" : "Resets") Available" } ?? "Banked Resets")
+                        .font(.headline)
                         .lineLimit(1)
                     Text(detail(digest))
-                        .font(.caption)
                         .foregroundStyle(digest.hasExpirationWithin24Hours ? accent : .secondary)
                         .lineLimit(1)
                         .help(detail(digest))
@@ -148,16 +140,11 @@ private struct HomeResetSummary: View {
                     }
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
-                Button("View All Resets") { controller.showsAvailableResets = true }
-                    .buttonStyle(.bordered)
+                Button("View All") { controller.showsAvailableResets = true }
                     .fixedSize()
             }
-            .padding(.horizontal, 12)
-            .padding(.vertical, 10)
-            .background(digest.expirations.isEmpty ? AgentDockPalette.panel.opacity(0.42) : accent.opacity(0.08),
-                        in: .rect(cornerRadius: 8))
-            .overlay(RoundedRectangle(cornerRadius: 8).stroke(
-                digest.expirations.isEmpty ? AgentDockPalette.divider : accent.opacity(0.3)))
+            .padding(.vertical, 2)
+            .accessibilityElement(children: .combine)
         }
     }
 
@@ -196,33 +183,39 @@ private struct HomeSourceRow<Icon: View>: View {
     @ViewBuilder let icon: Icon
 
     var body: some View {
-        HStack(spacing: 16) {
-            identity.frame(minWidth: 140, maxWidth: .infinity, alignment: .leading)
-            VStack(alignment: .leading, spacing: 5) {
+        HStack(alignment: .center, spacing: 16) {
+            identity.frame(minWidth: 150, maxWidth: .infinity, alignment: .leading)
+            VStack(alignment: .leading, spacing: 6) {
                 if let resetSourceID {
                     HomeProfileResets(controller: resetController, sourceID: resetSourceID)
                 }
                 HomeUsageSummary(limits: limits, accent: accent)
             }
-            .frame(width: 220)
-            actions
+            .frame(width: 230)
+            Button(busy ? "Working…" : running == true ? "Focus" : "Open", action: open)
+                .frame(minWidth: 60)
+                .disabled(busy)
+                .accessibilityLabel("\(running == true ? "Focus" : "Open") \(name)")
         }
-        .padding(14)
+        .padding(.vertical, 4)
+        .contextMenu {
+            Button(running == true ? "Focus" : "Open", action: open).disabled(busy)
+            Button("Show Details", action: overview)
+        }
     }
 
     private var identity: some View {
         Button(action: overview) {
             HStack(spacing: 10) {
-                icon
-                VStack(alignment: .leading, spacing: 3) {
-                    Text(name).fontWeight(.semibold).lineLimit(1).help(name)
+                icon.runningBadge(running == true)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(name).font(.headline).lineLimit(1).help(name)
                     Text([subtitle, limits?.planType?.replacingOccurrences(of: "_", with: " ").capitalized]
                         .compactMap { $0 }.joined(separator: " · "))
-                        .font(.caption).foregroundStyle(.secondary).lineLimit(1)
-                    HStack(spacing: 5) {
-                        StatusDot(isRunning: running == true, size: 6)
-                        Text(running.map { $0 ? "Running" : "Stopped" } ?? "Status unavailable").font(.caption).foregroundStyle(.secondary)
-                    }
+                        .foregroundStyle(.secondary).lineLimit(1)
+                    RunningStatusLabel(isRunning: running)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
                 }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -230,25 +223,7 @@ private struct HomeSourceRow<Icon: View>: View {
         }
         .buttonStyle(.plain)
         .accessibilityElement(children: .combine)
-        .accessibilityHint("Shows \(name) overview")
-    }
-
-    private var actions: some View {
-        HStack(spacing: 10) {
-            Button(busy ? "Working…" : running == true ? "Focus" : "Open", action: open)
-                .buttonStyle(.bordered)
-                .frame(minWidth: 64)
-                .disabled(busy)
-                .accessibilityLabel("\(running == true ? "Focus" : "Open") \(name)")
-            Button(action: overview) {
-                Image(systemName: "chevron.right").foregroundStyle(.secondary)
-                    .frame(width: 20, height: 28)
-            }
-            .buttonStyle(.plain)
-            .help("Show \(name) overview")
-            .accessibilityLabel("Show \(name) overview")
-        }
-        .fixedSize()
+        .accessibilityHint("Shows \(name) details")
     }
 }
 
@@ -267,7 +242,7 @@ private struct HomeProfileResets: View {
                 controller.showsAvailableResets = true
             } label: {
                 HStack(spacing: 5) {
-                    Text(digest.reportedCount.map { "\($0) available resets" } ?? "Resets unavailable")
+                    Text(digest.reportedCount.map { "\($0) available \($0 == 1 ? "reset" : "resets")" } ?? "Resets unavailable")
                     if !digest.expirations.isEmpty {
                         Image(systemName: "exclamationmark.triangle.fill")
                             .foregroundStyle(digest.hasExpirationWithin24Hours ? Color.red : .orange)
@@ -276,7 +251,7 @@ private struct HomeProfileResets: View {
                         Text("· Last known").foregroundStyle(.secondary)
                     }
                 }
-                .font(.system(size: 11, weight: .medium))
+                .font(.subheadline.weight(.medium))
                 .foregroundStyle(.secondary)
             }
             .buttonStyle(.plain)
@@ -311,18 +286,22 @@ struct HomeUsageWindow: Identifiable {
         return "\(minutes / 1440)d \(minutes % 1440 / 60)h left"
     }
 
+    /// The display name of a reported allowance window, such as "5-hour" or "Weekly".
+    static func durationTitle(minutes: Int?) -> String {
+        switch minutes {
+        case 10080: "Weekly"
+        case let minutes? where minutes > 0 && minutes % 1440 == 0: "\(minutes / 1440)-day"
+        case let minutes? where minutes > 0 && minutes % 60 == 0: "\(minutes / 60)-hour"
+        case let minutes? where minutes > 0: "\(minutes)-minute"
+        default: "Usage"
+        }
+    }
+
     static func windows(in limits: ProfileRateLimits) -> [Self] {
         limits.buckets.flatMap { bucket in
             [("primary", bucket.primary), ("secondary", bucket.secondary)].compactMap { key, usage in
                 guard let usage else { return nil }
-                let duration: String
-                switch usage.windowDurationMins {
-                case 10080: duration = "Weekly"
-                case let minutes? where minutes > 0 && minutes % 1440 == 0: duration = "\(minutes / 1440)-day"
-                case let minutes? where minutes > 0 && minutes % 60 == 0: duration = "\(minutes / 60)-hour"
-                case let minutes? where minutes > 0: duration = "\(minutes)-minute"
-                default: duration = "Usage"
-                }
+                let duration = durationTitle(minutes: usage.windowDurationMins)
                 let title = ["codex", "claude"].contains(bucket.id) ? duration : "\(bucket.name) · \(duration)"
                 return Self(id: "\(bucket.id).\(key)", title: title, usage: usage)
             }
@@ -366,7 +345,7 @@ struct HomeUsageSummary: View {
                                         Text("Reset time unavailable")
                                     }
                                 }
-                                .font(.system(size: 10))
+                                .font(.footnote)
                                 .foregroundStyle(.secondary)
                                 .fixedSize(horizontal: false, vertical: true)
                                 .accessibilityElement(children: .combine)
@@ -386,7 +365,7 @@ struct HomeUsageSummary: View {
                     Text("Refresh to check this source.").foregroundStyle(.secondary)
                 }
             }
-            .font(.system(size: 11))
+            .font(.subheadline)
             .frame(maxWidth: .infinity, alignment: .leading)
         }
     }

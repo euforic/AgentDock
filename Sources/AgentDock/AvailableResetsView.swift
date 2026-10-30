@@ -1,43 +1,6 @@
 import AgentDockCore
 import SwiftUI
 
-struct ResetSidebarButton: View {
-    @ObservedObject var controller: ResetReminderController
-    let action: () -> Void
-
-    var body: some View {
-        Button(action: action) {
-            HStack {
-                Label("Available Resets", systemImage: "arrow.counterclockwise.circle")
-                Spacer(minLength: 0)
-                if !controller.accounts.isEmpty {
-                    Text(controller.accounts.reduce(0) { $0 + $1.summary.availableCount }.formatted())
-                        .font(.caption.monospacedDigit())
-                }
-            }
-            .padding(10)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .background(controller.showsAvailableResets ? AgentDockPalette.selection : .clear,
-                        in: .rect(cornerRadius: 7))
-        }
-        .buttonStyle(.plain)
-        .help("Banked Codex resets across accounts, sorted by expiration")
-    }
-}
-
-struct ResetDetailContainer<Content: View>: View {
-    @ObservedObject var controller: ResetReminderController
-    let model: AgentDockModel
-    @ViewBuilder let content: Content
-
-    var body: some View {
-        if controller.showsAvailableResets {
-            AvailableResetsView(controller: controller, openAccount: model.openResetAccount,
-                profileNames: Dictionary(uniqueKeysWithValues: model.resetSources.map { ($0.id, $0.name) }))
-        } else { content }
-    }
-}
-
 struct AvailableResetsView: View {
     @ObservedObject var controller: ResetReminderController
     let openAccount: (ResetAccount) -> Void
@@ -53,31 +16,13 @@ struct AvailableResetsView: View {
             let sections = ResetInventory.sections(accounts: controller.accounts, profileNames: profileNames,
                 grouping: grouping, sort: sort, query: query, onlyExpiringSoon: onlyExpiringSoon, now: context.date)
             VStack(spacing: 0) {
-                header
                 urgencyStrip(now: context.date)
                 controls
                 inventory(sections: sections, now: context.date)
                 accountStatus(now: context.date)
             }
-            .background(AgentDockPalette.graphite)
+            .padding(.top, 12)
         }
-    }
-
-    private var header: some View {
-        HStack(alignment: .center, spacing: 12) {
-            VStack(alignment: .leading, spacing: 3) {
-                Text("Available Resets").font(.system(size: 20, weight: .semibold))
-                Text("\(controller.accounts.reduce(0) { $0 + $1.summary.availableCount }) reported available · Shared accounts counted once")
-                    .font(.system(size: 11)).foregroundStyle(.secondary)
-            }
-            Spacer(minLength: 8)
-            if controller.isRefreshing { ProgressView().controlSize(.small) }
-            Button("Refresh", systemImage: "arrow.clockwise", action: controller.refresh)
-                .agentDockToolbarAction()
-                .disabled(controller.isRefreshing)
-                .keyboardShortcut("r", modifiers: .command)
-        }
-        .padding(.horizontal, 16).padding(.top, 14).padding(.bottom, 10)
     }
 
     @ViewBuilder
@@ -87,7 +32,7 @@ struct AvailableResetsView: View {
         if soon > 0 {
             HStack(spacing: 7) {
                 Image(systemName: "clock.badge.exclamationmark")
-                Text("\(soon) expire within 7 days").fontWeight(.medium)
+                Text("\(soon) \(soon == 1 ? "expires" : "expire") within 7 days").fontWeight(.medium)
                 if today > 0 { Text("· \(today) within 24 hours") }
                 Spacer(minLength: 8)
                 Button(onlyExpiringSoon ? "Show all" : "Show expiring soon") {
@@ -97,7 +42,7 @@ struct AvailableResetsView: View {
                 .fontWeight(.medium)
                 .accessibilityValue(onlyExpiringSoon ? "Filtering to resets expiring within 7 days" : "Showing all resets")
             }
-            .font(.system(size: 11))
+            .font(.subheadline)
             .foregroundStyle(.orange)
             .padding(.horizontal, 10).frame(height: 30)
             .background(.orange.opacity(0.08), in: .rect(cornerRadius: 7))
@@ -108,10 +53,10 @@ struct AvailableResetsView: View {
 
     private var controls: some View {
         ViewThatFits(in: .horizontal) {
-            HStack(spacing: 12) { searchField; groupPicker; sortPicker }
+            HStack(spacing: 12) { searchField; groupPicker; sortPicker; refreshIndicator }
             VStack(spacing: 7) {
                 searchField
-                HStack(spacing: 10) { groupPicker; Spacer(minLength: 0); sortPicker }
+                HStack(spacing: 10) { groupPicker; Spacer(minLength: 0); sortPicker; refreshIndicator }
             }
         }
         .controlSize(.small)
@@ -119,24 +64,25 @@ struct AvailableResetsView: View {
     }
 
     private var searchField: some View {
-        HStack(spacing: 6) {
-            Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
-            TextField("Search accounts or profiles", text: $query)
-                .textFieldStyle(.plain)
-                .accessibilityLabel("Search resets, accounts or profiles")
-            if !query.isEmpty {
-                Button { query = "" } label: { Image(systemName: "xmark.circle.fill") }
-                    .buttonStyle(.plain).foregroundStyle(.secondary).accessibilityLabel("Clear search")
-            }
+        TextField("Search", text: $query, prompt: Text("Search Accounts or Profiles"))
+            .textFieldStyle(.roundedBorder)
+            .frame(minWidth: 160, idealWidth: 260, maxWidth: .infinity)
+            .accessibilityLabel("Search resets, accounts, or profiles")
+            .onExitCommand { query = "" }
+    }
+
+    @ViewBuilder
+    private var refreshIndicator: some View {
+        if controller.isRefreshing {
+            ProgressView()
+                .controlSize(.small)
+                .accessibilityLabel("Checking accounts")
         }
-        .font(.system(size: 12))
-        .padding(.horizontal, 8).frame(minWidth: 160, idealWidth: 260, maxWidth: .infinity, minHeight: 28)
-        .agentDockGlassControl(radius: 7)
     }
 
     private var groupPicker: some View {
         HStack(spacing: 6) {
-            Text("Group by").font(.system(size: 11)).foregroundStyle(.secondary)
+            Text("Group by").font(.subheadline).foregroundStyle(.secondary)
             Picker("Group resets by", selection: $grouping) {
                 ForEach(ResetInventoryGrouping.allCases) { Text($0.rawValue).tag($0) }
             }
@@ -174,9 +120,9 @@ struct AvailableResetsView: View {
                                             Text(section.rows.count.formatted()).foregroundStyle(.secondary)
                                             Spacer()
                                         }
-                                        .font(.system(size: 11))
+                                        .font(.subheadline)
                                         .padding(.horizontal, 12).frame(height: 24)
-                                        .background(AgentDockPalette.panel)
+                                        .background(.bar)
                                         .overlay(alignment: .bottom) { Divider() }
                                     }
                                 }
@@ -253,7 +199,7 @@ struct AvailableResetsView: View {
             } label: {
                 HStack(spacing: 6) {
                     Text("Account status")
-                    Text("· \(controller.accounts.count) accounts").foregroundStyle(.secondary)
+                    Text("· \(controller.accounts.count) \(controller.accounts.count == 1 ? "account" : "accounts")").foregroundStyle(.secondary)
                     let issues = controller.accounts.filter {
                         $0.detailsAreStale || $0.missingDetailCount > 0 || $0.summary.credits == nil
                             || !$0.identityVerified || now.timeIntervalSince($0.checkedAt) > 600
@@ -268,9 +214,9 @@ struct AvailableResetsView: View {
                 }
             }
         }
-        .font(.system(size: 11))
+        .font(.callout)
         .padding(.horizontal, 16).padding(.vertical, 10)
-        .background(AgentDockPalette.graphite)
+        .background(.bar)
         .overlay(alignment: .top) { Divider().padding(.horizontal, 16) }
     }
 }
@@ -305,9 +251,9 @@ private struct ResetColumnHeadings: View {
             Text("Reminder").frame(width: columns.reminder, alignment: .leading)
             Color.clear.frame(width: 24).accessibilityHidden(true)
         }
-        .font(.system(size: 10, weight: .medium)).foregroundStyle(.secondary)
+        .font(.footnote.weight(.medium)).foregroundStyle(.secondary)
         .padding(.horizontal, 12).frame(height: 27)
-        .background(AgentDockPalette.panel)
+        .background(.bar)
         .overlay(alignment: .bottom) { Divider() }
     }
 }
@@ -391,9 +337,9 @@ private struct ResetCreditRow: View {
                 .frame(width: columns.reminder, alignment: .leading).help(reminderHelp)
             actions.frame(width: 24)
         }
-        .font(.system(size: 12))
+        .font(.callout)
         .padding(.horizontal, 12).frame(height: 32)
-        .background(controller.selectedResetKey == row.key ? AgentDockPalette.selection
+        .background(controller.selectedResetKey == row.key ? Color.accentColor.opacity(0.16)
             : hovering ? Color.primary.opacity(0.035)
             : expiresWithinDay ? Color.orange.opacity(0.065) : .clear)
         .overlay(alignment: .leading) {
@@ -413,10 +359,10 @@ private struct ResetCreditRow: View {
                 Text(expiry.formatted(.dateTime.month(.abbreviated).day().hour().minute()))
                     .monospacedDigit().lineLimit(1)
                 if row.credit.isAvailable(at: now), row.expiresSoon(at: now) {
-                    Image(systemName: "clock").font(.system(size: 10)).foregroundStyle(.orange)
-                    Text(timeLeft(until: expiry)).font(.system(size: 10, weight: .medium)).monospacedDigit()
+                    Image(systemName: "clock").font(.footnote).foregroundStyle(.orange)
+                    Text(timeLeft(until: expiry)).font(.footnote.weight(.medium)).monospacedDigit()
                 } else if expiry <= now {
-                    Text("Expired").font(.system(size: 10)).foregroundStyle(.secondary)
+                    Text("Expired").font(.footnote).foregroundStyle(.secondary)
                 }
             } else {
                 Text("Not reported").foregroundStyle(.secondary)

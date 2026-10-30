@@ -402,6 +402,43 @@ final class AgentDockModel: ObservableObject {
         return true
     }
 
+    /// Applies a sidebar list move within one provider section.
+    func moveProfiles(of product: DesktopProduct, from source: IndexSet, to destination: Int) {
+        let section = profiles.filter { $0.product == product }
+        guard let sourceIndex = source.first, source.count == 1, section.indices.contains(sourceIndex) else {
+            return
+        }
+        let moved = section[sourceIndex]
+        if destination >= section.count {
+            guard let last = section.last, last.id != moved.id else { return }
+            reorderProfile(moved.id, relativeTo: last.id, placeAfter: true)
+        } else {
+            let target = section[destination]
+            guard target.id != moved.id else { return }
+            reorderProfile(moved.id, relativeTo: target.id, placeAfter: false)
+        }
+    }
+
+    /// The user-initiated refresh behind the toolbar button and View › Refresh.
+    func refreshVisibleContent() {
+        let surface: AnalyticsSurface = switch detailTab {
+        case .overview: .overview
+        case .advanced: .advanced
+        }
+        ProductAnalytics.shared.capture(AnalyticsEvent(
+            .refresh,
+            [
+                .action(.manualRefresh),
+                .surface(surface),
+                .trigger(.user),
+                .countBucket(.init(profiles.count))
+            ]
+        ))
+        refreshStats(allowCredentialInteraction: true)
+        if showsHome || resetReminders.showsAvailableResets { resetReminders.refresh() }
+        Task { await refreshInstanceStatuses() }
+    }
+
     private static func merging(_ pending: [CodexProfile], with requested: [CodexProfile]) -> [CodexProfile] {
         pending.filter { old in !requested.contains { $0.id == old.id } } + requested
     }

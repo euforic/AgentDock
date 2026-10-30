@@ -4,41 +4,40 @@ import SwiftUI
 
 struct ContentView: View {
     @EnvironmentObject private var model: AgentDockModel
-    @EnvironmentObject private var updater: AppUpdater
     @State private var profileSearch = ""
-    @State private var showsSettings = false
-    @State private var showsResets = false
     @FocusState private var searchFocused: Bool
 
     var body: some View {
         NavigationSplitView {
-            sidebar
-                .navigationSplitViewColumnWidth(min: 220, ideal: 240, max: 270)
+            AgentDockSidebar(resetReminders: model.resetReminders, query: profileQuery)
+                .navigationSplitViewColumnWidth(min: 220, ideal: 250, max: 340)
         } detail: {
-            detail
+            AgentDockDetail(resetReminders: model.resetReminders)
         }
-        .font(.system(size: 13))
-        .preferredColorScheme(preferredColorScheme)
+        .searchable(text: $profileSearch, placement: .sidebar, prompt: "Search Profiles")
+        .searchFocused($searchFocused)
+        .onSubmit(of: .search, selectFirstSearchResult)
         .sheet(isPresented: $model.showAddProfile) {
             AddProfileSheet()
         }
         .sheet(isPresented: analyticsConsentBinding) {
             AnalyticsConsentView()
         }
-        .sheet(isPresented: $model.showEditProfile) {
-            if let profile = model.selectedProfile {
-                EditProfileSheet(profile: profile)
-            }
+        .sheet(item: editingProfileBinding) { profile in
+            EditProfileSheet(profile: profile)
         }
-        .alert("AgentDock Error", isPresented: errorBinding) {
+        .alert("Unable to Complete the Action", isPresented: errorBinding) {
             Button("OK", role: .cancel) {
                 model.errorMessage = nil
             }
         } message: {
             Text(model.errorMessage ?? "")
         }
-        .alert("Remove Profile?", isPresented: removeBinding) {
-            Button("Remove Profile", role: .destructive) {
+        .alert(
+            "Remove “\(model.pendingRemoveProfile?.name ?? "Profile")” from AgentDock?",
+            isPresented: removeBinding
+        ) {
+            Button("Remove") {
                 if let profile = model.pendingRemoveProfile {
                     model.removeProfileFromList(profile)
                     model.pendingRemoveProfile = nil
@@ -48,10 +47,13 @@ struct ContentView: View {
                 model.pendingRemoveProfile = nil
             }
         } message: {
-            Text("AgentDock will remove \(model.pendingRemoveProfile?.name ?? "this profile") from the list. Its local data will remain on disk and can be restored later.")
+            Text("Its data stays on disk, and you can restore it later with File › Restore Profile.")
         }
-        .alert("Permanently Delete Profile Data?", isPresented: deleteBinding) {
-            Button("Delete Data", role: .destructive) {
+        .alert(
+            "Delete All Data for “\(model.pendingDeleteProfile?.name ?? "Profile")”?",
+            isPresented: deleteBinding
+        ) {
+            Button("Delete", role: .destructive) {
                 if let profile = model.pendingDeleteProfile {
                     model.deleteProfileData(profile)
                 }
@@ -60,20 +62,10 @@ struct ContentView: View {
                 model.pendingDeleteProfile = nil
             }
         } message: {
-            Text("This permanently removes the managed local sessions, settings, and shortcut for \(model.pendingDeleteProfile?.name ?? "this profile"). Credentials in shared macOS Keychain or external provider stores are not deleted. This cannot be undone.")
+            Text("This permanently deletes the profile's local sessions, settings, and shortcut. Credentials in the shared macOS Keychain or provider accounts aren't affected. You can't undo this action.")
         }
         .onReceive(NotificationCenter.default.publisher(for: .agentDockFocusSearch)) { _ in
             searchFocused = true
-        }
-        .onReceive(NotificationCenter.default.publisher(for: .agentDockFocusProfileSearch)) { _ in
-            searchFocused = true
-        }
-        .onReceive(model.resetReminders.$showsAvailableResets) { visible in
-            showsResets = visible
-            if visible { showsSettings = false }
-        }
-        .onChange(of: model.sidebarSelection) {
-            model.resetReminders.showsAvailableResets = false
         }
         .onChange(of: model.detailTab) { _, tab in
             let surface: AnalyticsSurface = switch tab {
@@ -87,316 +79,6 @@ struct ContentView: View {
         }
     }
 
-    private var sidebar: some View {
-        VStack(spacing: 0) {
-            Text("AgentDock")
-                .font(.system(size: 14, weight: .semibold))
-                .frame(maxWidth: .infinity)
-                .padding(.top, 10)
-                .padding(.bottom, 8)
-
-            searchField
-                .padding(.horizontal, 10)
-                .padding(.bottom, 8)
-
-            ScrollView {
-                LazyVStack(alignment: .leading, spacing: 4) {
-                    Button {
-                        showsSettings = false
-                        model.selectHome()
-                    } label: {
-                        Label("Home", systemImage: "house")
-                            .font(.system(size: 13, weight: .medium))
-                            .padding(10)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .background(!showsSettings && model.showsHome && !showsResets
-                                ? AgentDockPalette.selection : .clear, in: .rect(cornerRadius: 7))
-                    }
-                    .buttonStyle(.plain)
-                    .keyboardShortcut("1", modifiers: .command)
-                    ResetSidebarButton(controller: model.resetReminders) {
-                        showsSettings = false
-                        model.resetReminders.showsAvailableResets = true
-                    }
-                    providerSection(.codex)
-                    providerSection(.claude)
-                }
-                .padding(.horizontal, 8)
-                .padding(.bottom, 10)
-            }
-
-            Divider()
-                .overlay(AgentDockPalette.divider)
-
-            HStack {
-                Button(action: openSettings) {
-                    Image(systemName: "gearshape")
-                        .frame(width: 28, height: 28)
-                        .background(
-                            showsSettings ? AgentDockPalette.selection : .clear,
-                            in: .rect(cornerRadius: 7)
-                        )
-                }
-                .buttonStyle(.plain)
-                .keyboardShortcut(",", modifiers: .command)
-                .help("Settings")
-                .accessibilityLabel("Settings")
-                .accessibilityHint("Shows AgentDock settings")
-
-                Spacer(minLength: 0)
-
-                if updater.presentation.isVisible {
-                    SidebarUpdateButton(presentation: updater.presentation) {
-                        updater.installAvailableUpdate()
-                    }
-                }
-            }
-            .foregroundStyle(.secondary)
-            .font(.system(size: 13))
-            .padding(.horizontal, 12)
-            .frame(height: 48)
-        }
-    }
-
-    private var searchField: some View {
-        HStack(spacing: 7) {
-            Image(systemName: "magnifyingglass")
-                .foregroundStyle(.secondary)
-            TextField("Search profiles", text: $profileSearch)
-                .textFieldStyle(.plain)
-                .focused($searchFocused)
-                .onSubmit(selectFirstSearchResult)
-                .onExitCommand { profileSearch = "" }
-                .accessibilityLabel("Search profiles")
-            if !profileSearch.isEmpty {
-                Button {
-                    profileSearch = ""
-                    searchFocused = true
-                } label: {
-                    Image(systemName: "xmark.circle.fill")
-                        .foregroundStyle(.secondary)
-                }
-                .buttonStyle(.plain)
-                .help("Clear profile search")
-                .accessibilityLabel("Clear profile search")
-            }
-        }
-        .font(.system(size: 13))
-        .padding(.horizontal, 10)
-        .frame(height: 32)
-        .agentDockGlassControl()
-        .accessibilityElement(children: .contain)
-    }
-
-    @ViewBuilder
-    private func providerSection(_ product: DesktopProduct) -> some View {
-        let profiles = filteredProfiles(for: product)
-        VStack(alignment: .leading, spacing: 3) {
-            SectionLabel(title: product == .codex ? "Codex" : "Claude Desktop")
-                .padding(.horizontal, 10)
-                .padding(.top, 6)
-
-            Button {
-                showsSettings = false
-                model.selectOfficial(product)
-            } label: {
-                OfficialSidebarRow(
-                    product: product,
-                    isSelected: !showsSettings && !showsResets && model.sidebarSelection == .official(product)
-                )
-            }
-            .buttonStyle(.plain)
-
-            ForEach(Array(profiles.enumerated()), id: \.element.id) { index, profile in
-                ProfileSidebarRow(
-                    profile: profile,
-                    isSelected: !showsSettings && !showsResets && model.selectedProfileID == profile.id,
-                    onSelect: {
-                        showsSettings = false
-                        model.selectProfile(profile.id)
-                    },
-                    onOpen: {
-                        showsSettings = false
-                        model.selectProfile(profile.id)
-                        model.launch(profile)
-                    },
-                    onMove: { draggedID, placeAfter in
-                        model.reorderProfile(
-                            draggedID,
-                            relativeTo: profile.id,
-                            placeAfter: placeAfter
-                        )
-                    },
-                    onMoveUp: {
-                        guard index > profiles.startIndex else { return }
-                        _ = model.reorderProfile(
-                            profile.id,
-                            relativeTo: profiles[index - 1].id,
-                            placeAfter: false
-                        )
-                    },
-                    onMoveDown: {
-                        guard index < profiles.index(before: profiles.endIndex) else { return }
-                        _ = model.reorderProfile(
-                            profile.id,
-                            relativeTo: profiles[index + 1].id,
-                            placeAfter: true
-                        )
-                    }
-                )
-            }
-
-            if profiles.isEmpty, !profileQuery.isEmpty {
-                Text("No matching profiles")
-                    .font(.caption)
-                    .foregroundStyle(.tertiary)
-                    .padding(.horizontal, 12)
-                    .padding(.vertical, 6)
-            }
-        }
-    }
-
-    private var detail: some View {
-        Group {
-            if showsSettings {
-                SettingsView(presentation: .embedded)
-            } else {
-                ResetDetailContainer(controller: model.resetReminders, model: model) {
-                    VStack(spacing: 0) {
-                        detailToolbar
-                        Divider()
-                            .overlay(AgentDockPalette.divider)
-                        Group {
-                            if model.showsHome {
-                                HomeView(resetReminders: model.resetReminders)
-                            } else {
-                                switch model.detailTab {
-                                case .overview:
-                                    OverviewView()
-                                case .advanced:
-                                    AdvancedView()
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-        .background(AgentDockBackground())
-    }
-
-    private var detailToolbar: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            HStack(spacing: 8) {
-                selectedSourceIdentity
-                Spacer(minLength: 12)
-                detailActions
-            }
-
-            if model.selectedProfile != nil || model.selectedOfficialProduct != nil {
-                Picker("Profile Section", selection: $model.detailTab) {
-                    ForEach(visibleDetailTabs) { tab in
-                        Text(tab.title).tag(tab)
-                    }
-                }
-                .pickerStyle(.segmented)
-                .labelsHidden()
-                .fixedSize(horizontal: true, vertical: true)
-            }
-        }
-        .padding(.horizontal, 18)
-        .padding(.vertical, 10)
-    }
-
-    private var detailActions: some View {
-        HStack(spacing: 8) {
-            Button {
-                model.showAddProfile = true
-            } label: {
-                Label("Add Profile", systemImage: "plus")
-                    .font(.system(size: 13))
-            }
-            .agentDockToolbarAction()
-            .keyboardShortcut("n", modifiers: .command)
-
-            Button(action: refreshContent) {
-                Image(systemName: "arrow.clockwise")
-                    .frame(width: 14, height: 14)
-            }
-            .agentDockToolbarAction()
-            .help(model.showsHome ? "Refresh accounts, usage and banked resets" : "Refresh profile activity")
-            .accessibilityLabel("Refresh")
-            .keyboardShortcut("r", modifiers: .command)
-
-            Menu {
-                Button("Restore Profile…") {
-                    model.restoreProfile()
-                }
-            } label: {
-                Image(systemName: "ellipsis")
-                    .frame(width: 24, height: 24)
-            }
-            .menuStyle(.borderlessButton)
-            .menuIndicator(.hidden)
-            .fixedSize()
-            .accessibilityLabel("More actions")
-        }
-        .fixedSize()
-    }
-
-    @ViewBuilder
-    private var selectedSourceIdentity: some View {
-        if model.showsHome {
-            Label("Home", systemImage: "house")
-                .font(.system(size: 13, weight: .semibold))
-        } else if let profile = model.selectedProfile {
-            HStack(spacing: 8) {
-                ProfileIconView(profile: profile, size: 26)
-                VStack(alignment: .leading, spacing: 1) {
-                    Text(profile.name)
-                        .font(.system(size: 13, weight: .semibold))
-                        .lineLimit(1)
-                    Text("Managed \(profile.product.displayName) profile")
-                        .font(.system(size: 11))
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                }
-            }
-            .help("\(profile.name) · Managed \(profile.product.displayName) profile")
-            .accessibilityElement(children: .combine)
-            .accessibilityLabel("Selected profile: \(profile.name), managed \(profile.product.displayName)")
-        } else if let product = model.selectedOfficialProduct {
-            HStack(spacing: 8) {
-                ProviderIconView(product: product, appURL: model.appURL(for: product), size: 26)
-                VStack(alignment: .leading, spacing: 1) {
-                    Text("Official \(product.displayName)")
-                        .font(.system(size: 13, weight: .semibold))
-                        .lineLimit(1)
-                    Text("Default installation")
-                        .font(.system(size: 11))
-                        .foregroundStyle(.secondary)
-                }
-            }
-            .accessibilityElement(children: .combine)
-        } else {
-            Text("Profiles")
-                .font(.system(size: 13, weight: .semibold))
-        }
-    }
-
-    private var visibleDetailTabs: [AgentDockDetailTab] {
-        AgentDockDetailTab.availableTabs(hasManagedProfile: model.selectedProfile != nil)
-    }
-
-    private func filteredProfiles(for product: DesktopProduct) -> [CodexProfile] {
-        let productProfiles = model.profiles.filter { $0.product == product }
-        guard !profileQuery.isEmpty else { return productProfiles }
-        return productProfiles.filter {
-            $0.name.localizedCaseInsensitiveContains(profileQuery)
-                || $0.slug.localizedCaseInsensitiveContains(profileQuery)
-        }
-    }
-
     private var profileQuery: String {
         profileSearch.trimmingCharacters(in: .whitespacesAndNewlines)
     }
@@ -406,50 +88,16 @@ struct ContentView: View {
             .navigation,
             [.action(.searched), .surface(.sidebar)]
         ))
-        let first = DesktopProduct.allCases
-            .flatMap(filteredProfiles)
-            .first
-        if let first {
-            showsSettings = false
+        if let first = model.profiles.first(where: { $0.matches(profileQuery) }) {
             model.selectProfile(first.id)
         }
     }
 
-    private func openSettings() {
-        showsSettings = true
-        ProductAnalytics.shared.capture(AnalyticsEvent(
-            .navigation,
-            [.action(.viewed), .surface(.settingsGeneral)]
-        ))
-    }
-
-    private func refreshContent() {
-        ProductAnalytics.shared.capture(AnalyticsEvent(
-            .refresh,
-            [
-                .action(.manualRefresh),
-                .surface(selectedDetailAnalyticsSurface),
-                .trigger(.user),
-                .countBucket(.init(model.profiles.count))
-            ]
-        ))
-        model.refreshStats(allowCredentialInteraction: true)
-        if model.showsHome { model.resetReminders.refresh() }
-    }
-
-    private var selectedDetailAnalyticsSurface: AnalyticsSurface {
-        switch model.detailTab {
-        case .overview: .overview
-        case .advanced: .advanced
-        }
-    }
-
-    private var preferredColorScheme: ColorScheme? {
-        switch model.preferences.appearance {
-        case .system: nil
-        case .light: .light
-        case .dark: .dark
-        }
+    private var editingProfileBinding: Binding<CodexProfile?> {
+        Binding(
+            get: { model.showEditProfile ? model.selectedProfile : nil },
+            set: { if $0 == nil { model.showEditProfile = false } }
+        )
     }
 
     private var errorBinding: Binding<Bool> {
@@ -486,9 +134,256 @@ struct ContentView: View {
     }
 }
 
-private struct SidebarUpdateButton: View {
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+extension CodexProfile {
+    func matches(_ query: String) -> Bool {
+        query.isEmpty
+            || name.localizedCaseInsensitiveContains(query)
+            || slug.localizedCaseInsensitiveContains(query)
+    }
+}
 
+// MARK: - Sidebar
+
+private enum SidebarItem: Hashable {
+    case home
+    case resets
+    case official(DesktopProduct)
+    case profile(CodexProfile.ID)
+}
+
+private struct AgentDockSidebar: View {
+    @EnvironmentObject private var model: AgentDockModel
+    @EnvironmentObject private var updater: AppUpdater
+    @ObservedObject var resetReminders: ResetReminderController
+    let query: String
+
+    var body: some View {
+        List(selection: selection) {
+            Section {
+                Label("Home", systemImage: "house")
+                    .tag(SidebarItem.home)
+                Label("Available Resets", systemImage: "clock.arrow.circlepath")
+                    .badge(resetCount)
+                    .tag(SidebarItem.resets)
+                    .help("Banked Codex resets across accounts, sorted by expiration")
+            }
+
+            ForEach(DesktopProduct.allCases) { product in
+                let profiles = model.profiles.filter { $0.product == product && $0.matches(query) }
+                Section(product.displayName) {
+                    if query.isEmpty {
+                        OfficialSidebarRow(product: product)
+                            .tag(SidebarItem.official(product))
+                    }
+                    ForEach(profiles) { profile in
+                        ProfileSidebarRow(profile: profile)
+                            .tag(SidebarItem.profile(profile.id))
+                    }
+                    .onMove(perform: query.isEmpty ? { source, destination in
+                        model.moveProfiles(of: product, from: source, to: destination)
+                    } : nil)
+                }
+            }
+
+            if !query.isEmpty, !model.profiles.contains(where: { $0.matches(query) }) {
+                Text("No Matching Profiles")
+                    .foregroundStyle(.secondary)
+                    .selectionDisabled()
+            }
+        }
+        .listStyle(.sidebar)
+        .contextMenu(forSelectionType: SidebarItem.self) { items in
+            if let item = items.first, items.count == 1 {
+                SidebarContextMenu(item: item)
+            }
+        } primaryAction: { items in
+            guard let item = items.first, items.count == 1 else { return }
+            open(item)
+        }
+        .safeAreaInset(edge: .bottom, spacing: 0) {
+            if updater.presentation.isVisible {
+                SidebarUpdateButton(presentation: updater.presentation) {
+                    updater.installAvailableUpdate()
+                }
+                .padding(12)
+            }
+        }
+    }
+
+    private var resetCount: Int {
+        resetReminders.accounts.reduce(0) { $0 + $1.summary.availableCount }
+    }
+
+    private var selection: Binding<SidebarItem?> {
+        Binding(
+            get: {
+                if resetReminders.showsAvailableResets { return .resets }
+                return switch model.sidebarSelection {
+                case .home: .home
+                case let .official(product): .official(product)
+                case let .profile(id): .profile(id)
+                case nil: nil
+                }
+            },
+            set: { item in
+                switch item {
+                case .home, nil:
+                    model.selectHome()
+                case .resets:
+                    model.selectHome()
+                    resetReminders.showsAvailableResets = true
+                case let .official(product):
+                    model.selectOfficial(product)
+                case let .profile(id):
+                    model.selectProfile(id)
+                }
+            }
+        )
+    }
+
+    private func open(_ item: SidebarItem) {
+        switch item {
+        case let .official(product):
+            model.openStock(product)
+        case let .profile(id):
+            if let profile = model.profiles.first(where: { $0.id == id }) {
+                model.launch(profile)
+            }
+        case .home, .resets:
+            break
+        }
+    }
+}
+
+private struct SidebarContextMenu: View {
+    @EnvironmentObject private var model: AgentDockModel
+    let item: SidebarItem
+
+    var body: some View {
+        switch item {
+        case let .official(product):
+            let running = model.stockInstanceStatuses[product]?.isRunning == true
+            Button(running ? "Focus \(product.displayName)" : "Open \(product.displayName)") {
+                model.openStock(product)
+            }
+            .disabled(model.busyStockProducts.contains(product))
+            Divider()
+            Button("Show Data in Finder") {
+                model.revealOfficialData(product)
+            }
+        case let .profile(id):
+            if let profile = model.profiles.first(where: { $0.id == id }) {
+                profileMenu(profile)
+            }
+        case .home, .resets:
+            EmptyView()
+        }
+    }
+
+    @ViewBuilder
+    private func profileMenu(_ profile: CodexProfile) -> some View {
+        let running = model.instanceStatus(for: profile).isRunning
+        Button(running ? "Focus" : "Open in \(profile.product.displayName)") {
+            model.launch(profile)
+        }
+        .disabled(model.isBusy(profile))
+        if running {
+            Button("Close") {
+                model.close(profile)
+            }
+            .disabled(model.isBusy(profile))
+        }
+        Divider()
+        Button("Edit Profile…") {
+            model.selectProfile(profile.id)
+            model.showEditProfile = true
+        }
+        if model.shortcutExists(for: profile) {
+            Button("Show Shortcut in Finder") {
+                model.revealShortcut(profile)
+            }
+        } else {
+            Button("Install Shortcut") {
+                model.installShortcut(profile)
+            }
+            .disabled(model.isBusy(profile))
+        }
+        Button("Show Profile Data in Finder") {
+            model.revealData(profile)
+        }
+        Divider()
+        Button("Remove from AgentDock…") {
+            model.confirmRemoveProfile(profile)
+        }
+        Button("Delete Profile Data…", role: .destructive) {
+            model.pendingDeleteProfile = profile
+        }
+    }
+}
+
+private struct OfficialSidebarRow: View {
+    @EnvironmentObject private var model: AgentDockModel
+    let product: DesktopProduct
+
+    var body: some View {
+        let running = model.stockInstanceStatuses[product]?.isRunning == true
+        Label {
+            VStack(alignment: .leading, spacing: 1) {
+                Text("Official \(product.displayName)")
+                    .lineLimit(1)
+                Text("Default installation")
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            }
+        } icon: {
+            ProviderIconView(product: product, appURL: model.appURL(for: product), size: 24)
+                .runningBadge(model.preferences.showStatusInProfileList && running, diameter: 7)
+        }
+        .accessibilityValue(running ? "Running" : "Not running")
+    }
+}
+
+private struct ProfileSidebarRow: View {
+    @EnvironmentObject private var model: AgentDockModel
+    let profile: CodexProfile
+
+    var body: some View {
+        let running = model.instanceStatus(for: profile).isRunning
+        Label {
+            VStack(alignment: .leading, spacing: 1) {
+                Text(profile.name)
+                    .lineLimit(1)
+                Text(subtitle(running: running))
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            }
+        } icon: {
+            ProfileIconView(profile: profile, size: 24)
+                .runningBadge(model.preferences.showStatusInProfileList && running, diameter: 7)
+        }
+        .help(profile.name)
+        .accessibilityValue(running ? "Running" : "Not running")
+    }
+
+    private func subtitle(running: Bool) -> String {
+        var parts: [String] = []
+        if profile.product == .codex, let configProfile = model.effectiveCodexConfigProfile(for: profile) {
+            parts.append(configProfile.displayName)
+        }
+        if running {
+            parts.append("Running")
+        } else if let lastLaunchedAt = profile.lastLaunchedAt {
+            parts.append("Opened \(lastLaunchedAt.formatted(.relative(presentation: .named)))")
+        } else {
+            parts.append("Not opened yet")
+        }
+        return parts.joined(separator: " · ")
+    }
+}
+
+private struct SidebarUpdateButton: View {
     let presentation: AppUpdatePresentation
     let action: () -> Void
 
@@ -498,176 +393,101 @@ private struct SidebarUpdateButton: View {
                 if presentation.showsProgress {
                     ProgressView()
                         .controlSize(.small)
-                        .tint(.white)
                 } else {
-                    Image(systemName: presentation.usesCompactAvailableStyle
-                        ? "arrow.down.to.line"
-                        : "arrow.clockwise")
+                    Image(systemName: "arrow.down.circle.fill")
                 }
-
-                if !presentation.usesCompactAvailableStyle {
-                    Text(presentation.buttonTitle)
-                        .lineLimit(1)
-                }
-            }
-            .font(.system(size: 13, weight: .semibold))
-            .foregroundStyle(.white)
-            .padding(.horizontal, presentation.usesCompactAvailableStyle ? 0 : 11)
-            .frame(
-                width: presentation.usesCompactAvailableStyle ? 36 : nil,
-                height: 36
-            )
-            .background(AgentDockPalette.blue, in: Capsule())
-            .contentShape(Capsule())
-            .animation(
-                reduceMotion ? nil : .snappy(duration: 0.22),
-                value: presentation.usesCompactAvailableStyle
-            )
-        }
-        .buttonStyle(.plain)
-        .disabled(!presentation.allowsAction)
-        .help(helpText)
-        .accessibilityLabel(accessibilityLabel)
-    }
-
-    private var helpText: String {
-        guard let version = presentation.version else { return "Install update" }
-        return "Install AgentDock \(version)"
-    }
-
-    private var accessibilityLabel: String {
-        guard let version = presentation.version else {
-            return presentation.buttonTitle
-        }
-        return "\(presentation.buttonTitle) AgentDock \(version)"
-    }
-}
-
-private struct OfficialSidebarRow: View {
-    @EnvironmentObject private var model: AgentDockModel
-    let product: DesktopProduct
-    let isSelected: Bool
-
-    var body: some View {
-        let running = model.stockInstanceStatuses[product]?.isRunning == true
-        HStack(spacing: 9) {
-            ProviderIconView(product: product, appURL: model.appURL(for: product), size: 32)
-            VStack(alignment: .leading, spacing: 1) {
-                Text("Official \(product.displayName)")
-                    .font(.system(size: 13, weight: .medium))
-                    .foregroundStyle(.primary)
+                Text(title)
                     .lineLimit(1)
-                HStack(spacing: 6) {
-                    if model.preferences.showStatusInProfileList {
-                        StatusDot(isRunning: running, size: 6)
-                    }
-                    Text(product.rawValue)
-                        .font(.system(size: 11))
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                }
             }
-            Spacer()
-            Image(systemName: "chevron.right")
-                .font(.caption.weight(.semibold))
-                .foregroundStyle(.secondary)
+            .frame(maxWidth: .infinity)
         }
-        .padding(.horizontal, 10)
-        .frame(height: 46)
-        .background(isSelected ? AgentDockPalette.selection : .clear, in: .rect(cornerRadius: 8))
-        .contentShape(.rect)
-        .accessibilityElement(children: .combine)
-        .accessibilityAddTraits(isSelected ? [.isSelected] : [])
-        .accessibilityValue(running ? "Running" : "Stopped")
+        .buttonStyle(.glassProminent)
+        .controlSize(.large)
+        .disabled(!presentation.allowsAction)
+        .help(presentation.version.map { "Install AgentDock \($0)" } ?? "Install update")
+    }
+
+    private var title: String {
+        if presentation.usesCompactAvailableStyle, let version = presentation.version {
+            return "Update to \(version)"
+        }
+        return presentation.buttonTitle
     }
 }
 
-private struct ProfileSidebarRow: View {
-    @EnvironmentObject private var model: AgentDockModel
-    let profile: CodexProfile
-    let isSelected: Bool
-    let onSelect: () -> Void
-    let onOpen: () -> Void
-    let onMove: (CodexProfile.ID, Bool) -> Bool
-    let onMoveUp: () -> Void
-    let onMoveDown: () -> Void
+// MARK: - Detail
 
-    private static let rowHeight: CGFloat = 46
+private struct AgentDockDetail: View {
+    @EnvironmentObject private var model: AgentDockModel
+    @ObservedObject var resetReminders: ResetReminderController
 
     var body: some View {
-        let running = model.instanceStatus(for: profile).isRunning
-        HStack(spacing: 9) {
-            Button(action: onOpen) {
-                ProfileIconView(profile: profile, size: 32)
-            }
-            .buttonStyle(.plain)
-            .disabled(model.isBusy(profile))
-            .help(running ? "Focus \(profile.name)" : "Open \(profile.name)")
-            .accessibilityLabel(running ? "Focus \(profile.name)" : "Open \(profile.name)")
-
-            Button(action: onSelect) {
-                HStack(spacing: 9) {
-                    VStack(alignment: .leading, spacing: 1) {
-                        Text(profile.name)
-                            .font(.system(size: 13, weight: .medium))
-                            .foregroundStyle(.primary)
-                            .lineLimit(1)
-                        HStack(spacing: 6) {
-                            if model.preferences.showStatusInProfileList {
-                                StatusDot(isRunning: running, size: 6)
+        content
+            .navigationTitle(title)
+            .navigationSubtitle(subtitle)
+            .toolbar {
+                if !resetReminders.showsAvailableResets, model.selectedProfile != nil {
+                    ToolbarItem(placement: .principal) {
+                        Picker("Profile Section", selection: $model.detailTab) {
+                            ForEach(AgentDockDetailTab.availableTabs(hasManagedProfile: true)) { tab in
+                                Text(tab.title).tag(tab)
                             }
-                            Text(sidebarSubtitle)
-                                .font(.system(size: 11))
-                                .foregroundStyle(.secondary)
-                                .lineLimit(1)
                         }
+                        .pickerStyle(.segmented)
+                        .labelsHidden()
+                        .fixedSize()
                     }
-                    Spacer()
-                    Image(systemName: "chevron.right")
-                        .font(.caption.weight(.semibold))
-                        .foregroundStyle(.secondary)
                 }
-                .contentShape(.rect)
-            }
-            .buttonStyle(.plain)
-            .frame(maxWidth: .infinity)
-            .accessibilityElement(children: .combine)
-            .accessibilityAddTraits(isSelected ? [.isSelected] : [])
-            .accessibilityValue(running ? "Running" : "Stopped")
-            .accessibilityAdjustableAction { direction in
-                switch direction {
-                case .increment:
-                    onMoveDown()
-                case .decrement:
-                    onMoveUp()
-                @unknown default:
-                    break
+                ToolbarItemGroup(placement: .primaryAction) {
+                    Button("Refresh", systemImage: "arrow.clockwise") {
+                        model.refreshVisibleContent()
+                    }
+                    .help(model.showsHome ? "Refresh accounts, usage, and banked resets" : "Refresh activity and usage")
+
+                    Button("Add Profile", systemImage: "plus") {
+                        model.showAddProfile = true
+                    }
+                    .help("Add a profile for another account")
                 }
             }
-        }
-        .padding(.horizontal, 10)
-        .frame(height: Self.rowHeight)
-        .background(isSelected ? AgentDockPalette.selection : .clear, in: .rect(cornerRadius: 8))
-        .draggable(profile.id.uuidString)
-        .dropDestination(for: String.self) { items, location in
-            guard let rawID = items.first,
-                  let draggedID = CodexProfile.ID(uuidString: rawID)
-            else {
-                return false
+    }
+
+    @ViewBuilder
+    private var content: some View {
+        if resetReminders.showsAvailableResets {
+            AvailableResetsView(
+                controller: resetReminders,
+                openAccount: model.openResetAccount,
+                profileNames: Dictionary(uniqueKeysWithValues: model.resetSources.map { ($0.id, $0.name) })
+            )
+        } else if model.showsHome {
+            HomeView(resetReminders: resetReminders)
+        } else {
+            switch model.detailTab {
+            case .overview:
+                OverviewView()
+            case .advanced:
+                AdvancedView()
             }
-            return onMove(draggedID, location.y >= Self.rowHeight / 2)
         }
     }
 
-    private var sidebarSubtitle: String {
-        guard profile.product == .codex else { return profile.slug }
-        let provider = model.effectiveCodexConfigProfile(for: profile)?.displayName
-            ?? "Built-in Codex"
-        return "\(profile.slug) · \(provider)"
+    private var title: String {
+        if resetReminders.showsAvailableResets { return "Available Resets" }
+        if let profile = model.selectedProfile { return profile.name }
+        if let product = model.selectedOfficialProduct { return "Official \(product.displayName)" }
+        return "Home"
     }
-}
 
-extension Notification.Name {
-    static let agentDockFocusSearch = Notification.Name("AgentDock.focusSearch")
-    static let agentDockFocusProfileSearch = Notification.Name("AgentDock.focusProfileSearch")
+    private var subtitle: String {
+        if resetReminders.showsAvailableResets {
+            let count = resetReminders.accounts.reduce(0) { $0 + $1.summary.availableCount }
+            return "\(count) reported available"
+        }
+        if let profile = model.selectedProfile {
+            return "Managed \(profile.product.displayName) profile"
+        }
+        if model.selectedOfficialProduct != nil { return "Default installation" }
+        return ""
+    }
 }
