@@ -21,17 +21,13 @@ final class LocalChatSessionTests: XCTestCase {
                 .appendingPathComponent(UUID().uuidString, isDirectory: true)
         )
 
-        let result = scanner.scanOfficialClaude(
+        let result = scanner.scanOfficialClaudeForStats(
             claudeHomeURL: userData,
             claudeCodeHomeURL: claudeCodeHome
         )
 
-        XCTAssertEqual(result.availability, .available)
         XCTAssertFalse(result.sessions.isEmpty)
-        XCTAssertTrue(result.sessions.allSatisfy { session in
-            session.provider == .claude
-                && fileManager.isReadableFile(atPath: session.sourceURL.path)
-        })
+        XCTAssertTrue(result.sessions.allSatisfy { $0.provider == .claude })
     }
 
     private var root: URL!
@@ -47,55 +43,20 @@ final class LocalChatSessionTests: XCTestCase {
         root = nil
     }
 
-    func testCoworkHistoryUsesMetadataAndPreservesAuditOrder() throws {
-        let fixture = try makeCoworkFixture()
-        let scanner = LocalChatScanner(
-            transcriptPageBytes: 64 * 1_024,
-            transcriptPageEntries: 3,
-            indexRootURL: root.appendingPathComponent("Indexes")
-        )
+    func testCoworkHistoryUsesMetadataForStatsSession() throws {
+        try makeCoworkFixture()
+        let scanner = LocalChatScanner(indexRootURL: root.appendingPathComponent("Indexes"))
 
-        let result = scanner.scanOfficialClaude(claudeHomeURL: root)
+        let result = scanStats(scanner, root)
         let session = try XCTUnwrap(result.sessions.first)
-        let entries = forwardEntries(scanner: scanner, session: session)
 
-        XCTAssertEqual(result.availability, .available)
         XCTAssertEqual(result.sessions.count, 1)
         XCTAssertEqual(session.id, "cowork-session")
         XCTAssertEqual(session.provider, .claude)
         XCTAssertEqual(session.profileName, "Official Claude")
-        XCTAssertEqual(session.title, "Review the release")
-        XCTAssertEqual(session.preview, "Check the local release evidence")
         XCTAssertEqual(session.model, "claude-opus-4-1")
-        XCTAssertEqual(session.repository, "AgentDock")
-        XCTAssertNil(session.branch)
         XCTAssertEqual(session.status, "Unknown")
-        XCTAssertEqual(session.sourceURL, fixture.audit)
-        XCTAssertEqual(
-            entries.map(\.kind),
-            [.status, .message, .message, .reasoning, .command, .activity, .status, .activity]
-        )
-        XCTAssertEqual(
-            entries.compactMap(\.message).map(\.text),
-            ["Inspect the package", "The package is valid."]
-        )
-        XCTAssertEqual(entries[3].text, "I should verify the artifact.")
-        XCTAssertEqual(entries[4].title, "exec_command")
-        XCTAssertTrue(entries[4].text.contains("swift test"))
-        XCTAssertEqual(entries[5].title, "Tool result")
-        XCTAssertEqual(entries[6].title, "Completed")
-        XCTAssertEqual(entries[7].title, "Unsupported event")
-        XCTAssertEqual(entries.map(\.sourceOrdinal), Array(0..<entries.count).map(Optional.some))
-
-        let tokenBefore = result.changeToken
-        let handle = try FileHandle(forWritingTo: fixture.audit)
-        try handle.seekToEnd()
-        try handle.write(contentsOf: Data("\n".utf8))
-        try handle.close()
-        XCTAssertNotEqual(
-            scanner.officialClaudeChangeToken(claudeHomeURL: root),
-            tokenBefore
-        )
+        XCTAssertEqual(session.tokenCount, 0)
     }
 
     func testClaudeUsageDeduplicatesMessagesAndKeepsLatestLimitSignal() throws {
@@ -146,8 +107,7 @@ final class LocalChatSessionTests: XCTestCase {
         ])
 
         let session = try XCTUnwrap(
-            LocalChatScanner(indexRootURL: root.appendingPathComponent("Indexes"))
-                .scanOfficialClaude(claudeHomeURL: root)
+            scanStats(LocalChatScanner(indexRootURL: root.appendingPathComponent("Indexes")), root)
                 .sessions.first
         )
 
@@ -174,12 +134,27 @@ final class LocalChatSessionTests: XCTestCase {
         try makeCoworkFixture(userDataURL: profile.claudeUserDataPath)
         let scanner = LocalChatScanner(indexRootURL: root.appendingPathComponent("Indexes"))
 
-        let result = scanner.scan(profile: profile)
+        let result = scanner.scanForStats(profile: profile)
 
         XCTAssertEqual(result.sessions.first?.profileID, profile.id)
         XCTAssertEqual(result.sessions.first?.profileName, "Claude Work")
         XCTAssertEqual(result.sessions.first?.provider, .claude)
-        XCTAssertEqual(scanner.changeToken(profile: profile), result.changeToken)
+    }
+
+    func testManagedClaudeWithoutLocalAgentHistoryIsEmpty() {
+        let profile = CodexProfile(
+            product: .claude,
+            name: "Claude Work",
+            slug: "work",
+            rootDirectory: root,
+            shortcutDirectory: root.appendingPathComponent("Shortcuts")
+        )
+
+        let result = LocalChatScanner(indexRootURL: root.appendingPathComponent("Indexes"))
+            .scanForStats(profile: profile)
+
+        XCTAssertTrue(result.sessions.isEmpty)
+        XCTAssertFalse(result.diagnostics.inventoryTruncated)
     }
 
     func testOfficialClaudeCodeFallbackUsesBoundedIndexAndSourceMetadata() throws {
@@ -225,72 +200,23 @@ final class LocalChatSessionTests: XCTestCase {
                 "message": [
                     "role": "assistant",
                     "model": "claude-sonnet-4",
-                    "content": [
-                        ["type": "text", "text": "History opened."],
-                        ["type": "thinking", "thinking": "Check the ordered records."],
-                        [
-                            "type": "tool_use",
-                            "name": "Read",
-                            "input": ["file_path": "/private/work/project/file.swift"]
-                        ]
-                    ]
+                    "content": [["type": "text", "text": "History opened."]]
                 ]
             ]
         ], to: body)
         let scanner = LocalChatScanner(indexRootURL: root.appendingPathComponent("Indexes"))
 
-        let result = scanner.scanOfficialClaude(claudeHomeURL: root)
+        let result = scanStats(scanner, root)
         let session = try XCTUnwrap(result.sessions.first)
-        let entries = forwardEntries(scanner: scanner, session: session)
 
         XCTAssertEqual(session.id, "code-session")
-        XCTAssertEqual(session.title, "Latest title")
-        XCTAssertEqual(session.repository, "project")
-        XCTAssertEqual(session.branch, "feature/history")
         XCTAssertEqual(session.model, "claude-sonnet-4")
+        XCTAssertNil(session.tokenCount)
         XCTAssertEqual(session.startedAt, Date(timeIntervalSince1970: 1_785_232_800))
         XCTAssertEqual(session.updatedAt, Date(timeIntervalSince1970: 1_785_232_860))
-        XCTAssertEqual(entries.map(\.kind), [.message, .message, .reasoning, .activity])
-        XCTAssertEqual(entries.compactMap(\.message).map(\.text), [
-            "Open the history", "History opened."
-        ])
-        XCTAssertEqual(Set(entries.map(\.id)).count, entries.count)
-        XCTAssertTrue(entries.allSatisfy { $0.id.hasPrefix("code-session-") })
     }
 
-    func testClaudeMalformedAndOversizedRecordsAreBoundedAndHonest() throws {
-        let fixture = try makeCoworkFixture(
-            auditRecords: [
-                [
-                    "type": "user",
-                    "uuid": "large-user",
-                    "_audit_timestamp": "2026-07-28T10:00:00Z",
-                    "message": [
-                        "role": "user",
-                        "content": String(repeating: "x", count: 2_048)
-                    ]
-                ]
-            ],
-            malformedTail: true
-        )
-        let scanner = LocalChatScanner(
-            transcriptPageBytes: 8 * 1_024,
-            maximumRenderableEntryBytes: 512,
-            indexRootURL: root.appendingPathComponent("Indexes")
-        )
-        let session = try XCTUnwrap(
-            scanner.scanOfficialClaude(claudeHomeURL: root).sessions.first
-        )
-
-        let page = scanner.loadTranscriptForwardPage(for: session)
-
-        XCTAssertEqual(page.entries.map(\.kind), [.oversized, .malformed])
-        XCTAssertEqual(page.malformedEventCount, 1)
-        XCTAssertFalse(page.entries[0].text.contains(String(repeating: "x", count: 32)))
-        XCTAssertEqual(session.sourceURL, fixture.audit)
-    }
-
-    func testClaudeInventoryRejectsMetadataAndTranscriptSymlinkEscapes() throws {
+    func testClaudeInventoryRejectsMetadataAndAuditSymlinkEscapes() throws {
         let outsideMetadata = root.appendingPathComponent("outside.json")
         try Data(#"{"sessionId":"escaped","title":"Must not load"}"#.utf8)
             .write(to: outsideMetadata)
@@ -306,16 +232,14 @@ final class LocalChatSessionTests: XCTestCase {
             withDestinationURL: outsideMetadata
         )
         let scanner = LocalChatScanner(indexRootURL: root.appendingPathComponent("Indexes"))
-        XCTAssertTrue(scanner.scanOfficialClaude(claudeHomeURL: root).sessions.isEmpty)
+        XCTAssertTrue(scanStats(scanner, root).sessions.isEmpty)
 
         let fixture = try makeCoworkFixture()
-        let session = try XCTUnwrap(
-            scanner.scanOfficialClaude(claudeHomeURL: root).sessions.first
-        )
+        XCTAssertEqual(scanStats(scanner, root).sessions.map(\.id), ["cowork-session"])
         let outsideAudit = root.appendingPathComponent("outside-audit.jsonl")
         try writeJSONLines([[
-            "type": "user",
-            "message": ["role": "user", "content": "Escaped transcript"]
+            "type": "assistant",
+            "message": ["id": "escaped-message", "usage": ["input_tokens": 999]]
         ]], to: outsideAudit)
         try FileManager.default.removeItem(at: fixture.audit)
         try FileManager.default.createSymbolicLink(
@@ -323,76 +247,44 @@ final class LocalChatSessionTests: XCTestCase {
             withDestinationURL: outsideAudit
         )
 
-        let page = scanner.loadTranscriptPage(for: session)
+        let escaped = scanStats(scanner, root)
 
-        XCTAssertEqual(page.entries.map(\.kind), [.error])
-        XCTAssertFalse(page.entries.contains { $0.text.contains("Escaped transcript") })
+        XCTAssertTrue(escaped.sessions.isEmpty)
+        XCTAssertTrue(escaped.diagnostics.inventoryTruncated)
     }
 
     func testClaudeSessionIDsAreDeterministicAndCollisionsUseNewestSource() throws {
         try makeCoworkFixture(
             fixtureName: "local_old",
             sessionID: "collision-id",
-            title: "Older",
             lastActivityAt: 1_785_232_800_000
         )
         try makeCoworkFixture(
             fixtureName: "local_new",
             sessionID: "collision-id",
-            title: "Newer",
             lastActivityAt: 1_785_232_900_000
         )
         try makeCoworkFixture(
             fixtureName: "local_invalid",
             sessionID: "invalid id!",
-            title: "Derived ID",
             lastActivityAt: 1_785_232_850_000
         )
         let scanner = LocalChatScanner(indexRootURL: root.appendingPathComponent("Indexes"))
 
-        let first = scanner.scanOfficialClaude(claudeHomeURL: root)
-        let second = scanner.scanOfficialClaude(claudeHomeURL: root)
+        let first = scanStats(scanner, root)
+        let second = scanStats(scanner, root)
 
         XCTAssertEqual(first.sessions.filter { $0.id == "collision-id" }.count, 1)
-        XCTAssertEqual(first.sessions.first { $0.id == "collision-id" }?.title, "Newer")
-        let derived = try XCTUnwrap(first.sessions.first { $0.title == "Derived ID" }?.id)
+        XCTAssertEqual(
+            first.sessions.first { $0.id == "collision-id" }?.updatedAt,
+            Date(timeIntervalSince1970: 1_785_232_900)
+        )
+        let derived = try XCTUnwrap(first.sessions.first { $0.id != "collision-id" }?.id)
         XCTAssertTrue(derived.hasPrefix("claude-local-"))
         XCTAssertEqual(
             derived,
-            second.sessions.first { $0.title == "Derived ID" }?.id
+            second.sessions.first { $0.id != "collision-id" }?.id
         )
-    }
-
-    func testDuplicateClaudeEventUUIDsStillProduceUniqueStableRowIDs() throws {
-        try makeCoworkFixture(auditRecords: [
-            [
-                "type": "assistant",
-                "uuid": "duplicate-event",
-                "message": [
-                    "role": "assistant",
-                    "content": [["type": "text", "text": "First"]]
-                ]
-            ],
-            [
-                "type": "assistant",
-                "uuid": "duplicate-event",
-                "message": [
-                    "role": "assistant",
-                    "content": [["type": "text", "text": "Second"]]
-                ]
-            ]
-        ])
-        let scanner = LocalChatScanner(indexRootURL: root.appendingPathComponent("Indexes"))
-        let session = try XCTUnwrap(
-            scanner.scanOfficialClaude(claudeHomeURL: root).sessions.first
-        )
-
-        let firstRead = forwardEntries(scanner: scanner, session: session)
-        let secondRead = forwardEntries(scanner: scanner, session: session)
-
-        XCTAssertEqual(firstRead.map(\.text), ["First", "Second"])
-        XCTAssertEqual(Set(firstRead.map(\.id)).count, firstRead.count)
-        XCTAssertEqual(firstRead.map(\.id), secondRead.map(\.id))
     }
 
     func testClaudeUsageSkipsOversizedCompleteLinesAndContinuesReading() throws {
@@ -415,12 +307,12 @@ final class LocalChatSessionTests: XCTestCase {
             indexRootURL: root.appendingPathComponent("Indexes")
         )
 
-        let result = scanner.scanOfficialClaude(claudeHomeURL: root)
+        let result = scanStats(scanner, root)
 
         XCTAssertEqual(result.sessions.count, 1)
         XCTAssertEqual(result.sessions.first?.tokenCount, 7)
         XCTAssertTrue(result.diagnostics.inventoryTruncated)
-        XCTAssertTrue(scanner.scanOfficialClaude(claudeHomeURL: root).diagnostics.inventoryTruncated)
+        XCTAssertTrue(scanStats(scanner, root).diagnostics.inventoryTruncated)
     }
 
     func testClaudeInventoryBoundsFilesAndAggregateMetadataBytes() throws {
@@ -428,67 +320,24 @@ final class LocalChatSessionTests: XCTestCase {
             try makeCoworkFixture(
                 fixtureName: "local_\(index)",
                 sessionID: "session-\(index)",
-                title: "Session \(index)",
                 lastActivityAt: 1_785_232_800_000 + Double(index * 1_000)
             )
         }
-        let fileBounded = LocalChatScanner(
+        let fileBounded = scanStats(LocalChatScanner(
             maximumSessions: 10,
             maximumInventoryFiles: 2,
             indexRootURL: root.appendingPathComponent("Indexes")
-        ).scanOfficialClaude(claudeHomeURL: root)
-        let byteBounded = LocalChatScanner(
+        ), root)
+        let byteBounded = scanStats(LocalChatScanner(
             maximumSessions: 10,
             maximumInventoryFiles: 10,
             maximumMetadataBytes: 1,
             indexRootURL: root.appendingPathComponent("OtherIndexes")
-        ).scanOfficialClaude(claudeHomeURL: root)
+        ), root)
 
         XCTAssertLessThanOrEqual(fileBounded.sessions.count, 2)
         XCTAssertLessThanOrEqual(fileBounded.diagnostics.sourceFileCount, 2)
         XCTAssertTrue(byteBounded.sessions.isEmpty)
-    }
-
-    func testCodexInventoryBoundsAllEnumeratedEntries() throws {
-        let sessions = root.appendingPathComponent("sessions", isDirectory: true)
-        try FileManager.default.createDirectory(at: sessions, withIntermediateDirectories: true)
-        for index in 0..<20 {
-            let directory = sessions.appendingPathComponent("day-\(index)", isDirectory: true)
-            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-            try Data(#"{"type":"session_meta","payload":{"id":"bounded-session"}}"#.utf8)
-                .write(to: directory.appendingPathComponent("rollout-\(index).jsonl"))
-        }
-
-        let result = LocalChatScanner(
-            maximumSessions: 20,
-            maximumInventoryFiles: 5,
-            indexRootURL: root.appendingPathComponent("Indexes")
-        ).scanOfficialCodex(codexHomeURL: root)
-
-        XCTAssertTrue(result.diagnostics.inventoryTruncated)
-        XCTAssertLessThanOrEqual(result.diagnostics.sourceFileCount, 5)
-    }
-
-    func testClaudePollingTokenUsesMetadataWithoutReadingMetadataBodies() throws {
-        let fixture = try makeCoworkFixture()
-        let scanner = LocalChatScanner(indexRootURL: root.appendingPathComponent("Indexes"))
-        let initial = scanner.scanOfficialClaude(claudeHomeURL: root)
-        try FileManager.default.setAttributes(
-            [.posixPermissions: 0o000],
-            ofItemAtPath: fixture.metadata.path
-        )
-        defer {
-            try? FileManager.default.setAttributes(
-                [.posixPermissions: 0o600],
-                ofItemAtPath: fixture.metadata.path
-            )
-        }
-
-        XCTAssertFalse(initial.changeToken.isEmpty)
-        XCTAssertEqual(
-            scanner.officialClaudeChangeToken(claudeHomeURL: root),
-            initial.changeToken
-        )
     }
 
     func testLargeClaudeCodeHistoryUsesRecentTailAndReusesUnchangedIndex() throws {
@@ -514,10 +363,10 @@ final class LocalChatSessionTests: XCTestCase {
         }
         let scanner = LocalChatScanner(indexRootURL: root.appendingPathComponent("Indexes"))
         let coldStart = Date()
-        let cold = scanner.scanOfficialClaude(claudeHomeURL: root)
+        let cold = scanStats(scanner, root)
         let coldDuration = Date().timeIntervalSince(coldStart)
         let warmStart = Date()
-        let warm = scanner.scanOfficialClaude(claudeHomeURL: root)
+        let warm = scanStats(scanner, root)
         let warmDuration = Date().timeIntervalSince(warmStart)
 
         XCTAssertEqual(cold.sessions.first?.id, "recent-session")
@@ -536,29 +385,32 @@ final class LocalChatSessionTests: XCTestCase {
         let body = root.appendingPathComponent("projects/-synthetic-project/session.jsonl")
         try FileManager.default.createDirectory(at: body.deletingLastPathComponent(), withIntermediateDirectories: true)
         try writeJSONLines([["type": "assistant", "message": ["model": "synthetic-model"]]], to: body)
-        func record(_ title: String) -> [String: Any] {
-            ["display": title, "project": "/synthetic/project", "sessionId": "session", "timestamp": 1_785_232_860_000]
+        func record(_ timestamp: Double) -> [String: Any] {
+            ["display": "Synthetic", "project": "/synthetic/project", "sessionId": "session", "timestamp": timestamp]
         }
-        try writeJSONLines([record("First title")], to: history)
+        func updatedAt(_ result: LocalChatScanResult) -> TimeInterval? {
+            result.sessions.first?.updatedAt.timeIntervalSince1970
+        }
+        try writeJSONLines([record(1_785_232_860_000)], to: history)
         let scanner = LocalChatScanner(indexRootURL: root.appendingPathComponent("Indexes"))
-        XCTAssertEqual(scanner.scanOfficialClaude(claudeHomeURL: root).sessions.first?.title, "First title")
-        XCTAssertEqual(scanner.scanOfficialClaude(claudeHomeURL: root).diagnostics.cacheHitCount, 1)
+        XCTAssertEqual(updatedAt(scanStats(scanner, root)), 1_785_232_860)
+        XCTAssertEqual(scanStats(scanner, root).diagnostics.cacheHitCount, 1)
         let handle = try FileHandle(forWritingTo: history)
         try handle.seekToEnd()
-        try handle.write(contentsOf: Data([0x0A]) + JSONSerialization.data(withJSONObject: record("Later title")) + Data([0x0A]))
+        try handle.write(contentsOf: Data([0x0A]) + JSONSerialization.data(withJSONObject: record(1_785_232_920_000)) + Data([0x0A]))
         try handle.close()
-        let appended = scanner.scanOfficialClaude(claudeHomeURL: root)
-        XCTAssertEqual(appended.sessions.first?.title, "Later title")
+        let appended = scanStats(scanner, root)
+        XCTAssertEqual(updatedAt(appended), 1_785_232_920)
         XCTAssertGreaterThan(appended.diagnostics.inspectedHistoryBytes, 0)
         let originalDate = try XCTUnwrap(history.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate)
-        try writeJSONLines([record("Other title")], to: history)
+        try writeJSONLines([record(1_785_232_990_000)], to: history)
         try FileManager.default.setAttributes([.modificationDate: originalDate], ofItemAtPath: history.path)
-        XCTAssertEqual(scanner.scanOfficialClaude(claudeHomeURL: root).sessions.first?.title, "Other title")
+        XCTAssertEqual(updatedAt(scanStats(scanner, root)), 1_785_232_990)
         let outside = root.appendingPathComponent("outside.jsonl")
-        try writeJSONLines([record("Linked title")], to: outside)
+        try writeJSONLines([record(1_785_233_000_000)], to: outside)
         try FileManager.default.removeItem(at: history)
         try FileManager.default.createSymbolicLink(at: history, withDestinationURL: outside)
-        let linked = scanner.scanOfficialClaude(claudeHomeURL: root)
+        let linked = scanStats(scanner, root)
         XCTAssertTrue(linked.sessions.isEmpty)
         XCTAssertEqual(linked.diagnostics.cacheHitCount, 0)
     }
@@ -573,14 +425,14 @@ final class LocalChatSessionTests: XCTestCase {
             maximumClaudeUsageCacheEntries: 3,
             indexRootURL: root.appendingPathComponent("Indexes")
         )
-        XCTAssertEqual(scanner.scanOfficialClaude(claudeHomeURL: first).diagnostics.parsedFileCount, 2)
-        XCTAssertEqual(scanner.scanOfficialClaude(claudeHomeURL: second).diagnostics.parsedFileCount, 1)
-        XCTAssertEqual(scanner.scanOfficialClaude(claudeHomeURL: first).diagnostics.cacheHitCount, 2)
+        XCTAssertEqual(scanStats(scanner, first).diagnostics.parsedFileCount, 2)
+        XCTAssertEqual(scanStats(scanner, second).diagnostics.parsedFileCount, 1)
+        XCTAssertEqual(scanStats(scanner, first).diagnostics.cacheHitCount, 2)
         try FileManager.default.removeItem(at: oldest.metadata)
         try makeCoworkFixture(userDataURL: second, fixtureName: "local_newest", sessionID: "newest")
-        let added = scanner.scanOfficialClaude(claudeHomeURL: second)
+        let added = scanStats(scanner, second)
         XCTAssertEqual(added.diagnostics.parsedFileCount, 1)
-        let retained = scanner.scanOfficialClaude(claudeHomeURL: first)
+        let retained = scanStats(scanner, first)
         XCTAssertEqual(retained.diagnostics.cacheHitCount, 2)
         XCTAssertEqual(retained.diagnostics.parsedFileCount, 0)
         XCTAssertTrue(retained.sessions.allSatisfy { $0.tokenCount != nil })
@@ -592,32 +444,24 @@ final class LocalChatSessionTests: XCTestCase {
         }
         let fixture = try makeCoworkFixture(auditRecords: [usage(100)])
         let scanner = LocalChatScanner(indexRootURL: root.appendingPathComponent("Indexes"))
-        XCTAssertEqual(scanner.scanOfficialClaude(claudeHomeURL: root).sessions.first?.tokenCount, 100)
+        XCTAssertEqual(scanStats(scanner, root).sessions.first?.tokenCount, 100)
         let originalDate = try XCTUnwrap(fixture.audit.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate)
         try writeJSONLines([usage(999)], to: fixture.audit)
         try FileManager.default.setAttributes([.modificationDate: originalDate], ofItemAtPath: fixture.audit.path)
-        let rewritten = scanner.scanOfficialClaude(claudeHomeURL: root)
+        let rewritten = scanStats(scanner, root)
         XCTAssertEqual(rewritten.sessions.first?.tokenCount, 999)
         XCTAssertEqual(rewritten.diagnostics.parsedFileCount, 1)
         let replacement = try JSONSerialization.data(withJSONObject: usage(888), options: [.sortedKeys])
         try replacement.write(to: fixture.audit, options: [.atomic])
         try FileManager.default.setAttributes([.modificationDate: originalDate], ofItemAtPath: fixture.audit.path)
-        let replaced = scanner.scanOfficialClaude(claudeHomeURL: root)
+        let replaced = scanStats(scanner, root)
         XCTAssertEqual(replaced.sessions.first?.tokenCount, 888)
         XCTAssertEqual(replaced.diagnostics.parsedFileCount, 1)
-        XCTAssertEqual(scanner.scanOfficialClaude(claudeHomeURL: root).diagnostics.cacheHitCount, 1)
+        XCTAssertEqual(scanStats(scanner, root).diagnostics.cacheHitCount, 1)
     }
 
-    func testStatsScanPreservesUsageAndModelsWithoutPresentationDetailsOrChangeToken() throws {
-        try makeCoworkFixture()
-        let scanner = LocalChatScanner(indexRootURL: root.appendingPathComponent("Indexes"))
-        let presentation = scanner.scanOfficialClaude(claudeHomeURL: root)
-        let summaries = scanner.scanOfficialClaudeForStats(claudeHomeURL: root, claudeCodeHomeURL: root)
-        XCTAssertEqual(summaries.sessions.map(\.tokenCount), presentation.sessions.map(\.tokenCount))
-        XCTAssertEqual(summaries.sessions.map(\.model), presentation.sessions.map(\.model))
-        XCTAssertEqual(summaries.sessions.map(\.updatedAt), presentation.sessions.map(\.updatedAt))
-        XCTAssertTrue(summaries.changeToken.isEmpty)
-        XCTAssertTrue(summaries.sessions.allSatisfy { $0.preview == nil && $0.repository == nil && $0.branch == nil })
+    private func scanStats(_ scanner: LocalChatScanner, _ home: URL) -> LocalChatScanResult {
+        scanner.scanOfficialClaudeForStats(claudeHomeURL: home, claudeCodeHomeURL: home)
     }
 
     @discardableResult
@@ -625,10 +469,8 @@ final class LocalChatSessionTests: XCTestCase {
         userDataURL: URL? = nil,
         fixtureName: String = "local_fixture",
         sessionID: String = "cowork-session",
-        title: String = "Review the release",
         lastActivityAt: Double = 1_785_232_860_000,
-        auditRecords: [[String: Any]]? = nil,
-        malformedTail: Bool = false
+        auditRecords: [[String: Any]]? = nil
     ) throws -> (metadata: URL, audit: URL) {
         let userDataURL = userDataURL ?? root!
         let metadata = userDataURL.appendingPathComponent(
@@ -647,7 +489,7 @@ final class LocalChatSessionTests: XCTestCase {
         )
         let metadataObject: [String: Any] = [
             "sessionId": sessionID,
-            "title": title,
+            "title": "Review the release",
             "promptSuggestion": "Check the local release evidence",
             "cwd": "/private/work/AgentDock",
             "model": "claude-opus-4-1",
@@ -680,65 +522,12 @@ final class LocalChatSessionTests: XCTestCase {
                 "_audit_timestamp": "2026-07-28T10:00:02Z",
                 "message": [
                     "role": "assistant",
-                    "content": [
-                        ["type": "text", "text": "The package is valid."],
-                        ["type": "thinking", "thinking": "I should verify the artifact."],
-                        [
-                            "type": "tool_use",
-                            "name": "exec_command",
-                            "input": ["cmd": "swift test"]
-                        ]
-                    ]
+                    "content": [["type": "text", "text": "The package is valid."]]
                 ]
-            ],
-            [
-                "type": "user",
-                "uuid": "tool-result-event",
-                "_audit_timestamp": "2026-07-28T10:00:03Z",
-                "message": [
-                    "role": "user",
-                    "content": [[
-                        "type": "tool_result",
-                        "tool_use_id": "tool-1",
-                        "content": "All tests passed."
-                    ]]
-                ]
-            ],
-            [
-                "type": "result",
-                "uuid": "result-event",
-                "_audit_timestamp": "2026-07-28T10:00:04Z",
-                "is_error": false,
-                "result": "Done"
-            ],
-            [
-                "type": "attachment",
-                "uuid": "attachment-event",
-                "_audit_timestamp": "2026-07-28T10:00:05Z"
             ]
         ]
         try writeJSONLines(records, to: audit)
-        if malformedTail {
-            let handle = try FileHandle(forWritingTo: audit)
-            try handle.seekToEnd()
-            try handle.write(contentsOf: Data("\n{\"type\":".utf8))
-            try handle.close()
-        }
         return (metadata, audit)
-    }
-
-    private func forwardEntries(
-        scanner: LocalChatScanner,
-        session: LocalChatSession
-    ) -> [LocalChatTranscriptEntry] {
-        var entries: [LocalChatTranscriptEntry] = []
-        var cursor: LocalChatTranscriptCursor?
-        repeat {
-            let page = scanner.loadTranscriptForwardPage(for: session, after: cursor)
-            entries.append(contentsOf: page.entries)
-            cursor = page.olderCursor
-        } while cursor != nil
-        return entries
     }
 
     private func writeJSONLines(_ records: [[String: Any]], to url: URL) throws {

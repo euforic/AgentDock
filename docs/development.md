@@ -165,10 +165,10 @@ signed bundle in the installed-app and live lifecycle/isolation checks. These
 overrides leave the normally installed app in place.
 Repeat it after provider updates. Both installed-profile checks and runtime
 launches resolve the current nested CLI bundle with a legacy fallback.
-The separate renderer showcase omits Codex accounting-only `token_usage_record`
-events from presentation; unknown history events appear as unsupported records.
-The main app has no chat browser. Its Claude activity summaries retain shared
-bounded session scanning.
+The main app has no chat browser, and the core package has no chat-listing or
+transcript-paging API. Claude activity summaries use the bounded summary-only
+scanner in
+[LocalChatSession.swift](../Sources/AgentDockCore/LocalChatSession.swift).
 
 These checks can open installed provider applications or terminate the exact
 active managed profile named in the environment. Run them only on a Mac where
@@ -179,7 +179,8 @@ that interaction is expected.
 - Keep provider-specific discovery and parsing in `AgentDockCore`.
 - Keep transcript presentation provider-neutral and capability-gated.
 - Preserve stable event identities and exact source order.
-- Bound file inventories, subprocess output, transcript pages, and layout work.
+- Bound file inventories, subprocess output, rendered transcript output, and
+  layout work.
 - Validate paths and signatures immediately before security-sensitive actions.
 - Update README or focused docs with user-visible behavior and contract changes.
 - Never commit profiles, chats, logs, databases, credentials, screenshots with

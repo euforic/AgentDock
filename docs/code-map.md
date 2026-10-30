@@ -20,7 +20,7 @@
 | `Sources/AgentDockCore/CodexLauncher.swift` | Codex app validation and managed process lifecycle |
 | `Sources/AgentDockCore/ClaudeLauncher.swift` | Claude app validation and managed process lifecycle |
 | `Sources/AgentDockCore/DesktopAppRegistry.swift` | Official app identities and provider launch contracts |
-| `Sources/AgentDockCore/LocalChatSession.swift` | Shared bounded session readers and indexes, including Claude activity-summary input |
+| `Sources/AgentDockCore/LocalChatSession.swift` | Bounded Claude session readers for activity summaries and legacy chat-index cleanup |
 | `Sources/AgentDockCore/BoundedSubprocess.swift` | Timeout and output-bounded subprocess execution |
 | `Sources/AgentDockCore/ShortcutInstaller.swift` | Profile shortcut generation and replacement |
 

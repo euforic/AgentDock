@@ -57,7 +57,7 @@ in `AgentDockCore`; the UI consumes only `ProfileRateLimits`.
 - shortcut creation and validation;
 - bounded subprocess execution;
 - provider-aware usage retrieval;
-- local activity scanning and shared bounded session/transcript readers;
+- local activity scanning, including bounded Claude session readers;
 - profile-specific MCP callback configuration.
 
 Core operations fail closed when a path, process, bundle, signature, ownership
