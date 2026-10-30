@@ -77,39 +77,47 @@ release procedures.
 
 ## Quick Start
 
-1. Open AgentDock and choose **Add Profile**.
+1. Open AgentDock and choose **Add Profile** (Command-N).
 2. Select the provider and give the profile a descriptive name.
-3. Select the profile and choose **Open**.
+3. Select the profile and choose **Open**, or double-click it in the sidebar.
 4. Sign in inside that managed provider window.
 5. Optionally choose **Install Shortcut** for a Dock-pinnable launcher.
 6. Repeat for another account or provider.
 
-For Codex, the compact Provider row beneath Usage discovers native
-`CODEX_HOME/<name>.config.toml` profiles for that account. Choose **Use
-Default**, **Built-in Codex (OAuth)**, or a named profile such as Ollama.
-**Make Default** changes the provider default only for the selected managed or
-official account. Changing the selection while Codex is running closes and
+For Codex, the Provider section beneath Usage Limits discovers native
+`CODEX_HOME/<name>.config.toml` profiles for that account. Choose **Default**,
+**Built-in Codex (OAuth)**, or a named profile such as Ollama.
+**Make Current Default** changes the provider default only for the selected
+managed or official account. Changing the selection while Codex is running closes and
 reopens only that account with the selected profile applied as desktop
 app-server configuration overrides.
 
 Drag managed profiles within their provider section to keep the sidebar in the
 order you prefer. The order persists across launches; official provider rows
-remain fixed.
+remain fixed. Control-click a sidebar row, or use the **Profile** menu, to open,
+close, edit, install a shortcut, or show a profile's data in Finder.
 
 The action changes to **Focus** while a profile is running. **Close** targets
-only the selected profile. **Remove From List** preserves its local data;
+only the selected profile. **Remove from AgentDock** preserves its local data;
 permanent deletion is a separate confirmed action.
 
 Home is the default startup screen. Last Opened Profile and Overview remain
 available in Settings; a legacy Chats startup choice migrates to Overview.
-**Command-1** returns to Home; selecting a source opens
-its Overview and supported Advanced sections. Codex rows show
-reported available resets for that account, with an amber icon for a known
-expiration within seven days. Select the count to view the reset inventory.
+Home summarizes every account in one sortable table: running state, session and
+weekly usage with reset countdowns, and banked Codex resets, with an amber or red
+expiration time when a reset expires within seven days or 24 hours. Selecting a
+source shows its details; managed profiles switch between Overview and Advanced
+from the toolbar.
 
-Use **Command-F** to search profiles,
-**Command-Shift-F** to search profiles from anywhere, and **Command-R** to
-refresh. The selected profile remains visible above each detail section.
+| Shortcut | Action |
+| --- | --- |
+| Command-1 / Command-2 | Home / Available Resets |
+| Command-F | Search profiles |
+| Command-R | Refresh |
+| Command-N | New profile |
+| Command-O | Open or focus the selected profile |
+| Command-I | Edit the selected profile |
+| Command-Comma | Settings |
 
 ## Local Data and Privacy
 

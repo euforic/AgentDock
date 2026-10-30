@@ -1,3 +1,5 @@
+import AppKit
+import AgentDockCore
 import SwiftUI
 
 @main
@@ -5,12 +7,17 @@ struct AgentDockApp: App {
     @StateObject private var model = AgentDockModel()
     @StateObject private var updater = AppUpdater()
 
+    init() {
+        // A single-window utility: no tab bar or tab commands in the View and Window menus.
+        NSWindow.allowsAutomaticWindowTabbing = false
+    }
+
     var body: some Scene {
-        WindowGroup {
+        WindowGroup("AgentDock", id: "main") {
             ContentView()
                 .environmentObject(model)
                 .environmentObject(updater)
-                .frame(minWidth: 900, minHeight: 600)
+                .frame(minWidth: 820, minHeight: 540)
                 .task {
                     model.resetReminders.configure(sources: model.resetSources, appURL: model.codexAppURL)
                 }
@@ -20,39 +27,19 @@ struct AgentDockApp: App {
                 .onChange(of: model.codexAppURL) {
                     model.resetReminders.configure(sources: model.resetSources, appURL: model.codexAppURL)
                 }
+                .onChange(of: model.preferences.appearance, initial: true) { _, appearance in
+                    // Applying the choice app-wide also covers Settings, sheets, and
+                    // menus, and a return to System follows the system appearance again.
+                    NSApp.appearance = appearance.nsAppearance
+                }
                 .onAppear {
                     NSApp.setActivationPolicy(.regular)
-                    NSApp.activate(ignoringOtherApps: true)
                 }
         }
         .defaultSize(width: 1080, height: 720)
-        .windowStyle(.hiddenTitleBar)
+        .windowToolbarStyle(.unified)
         .commands {
-            CommandGroup(replacing: .newItem) {
-                Button("New Profile") {
-                    model.showAddProfile = true
-                }
-                .keyboardShortcut("n", modifiers: [.command])
-            }
-
-            CommandGroup(after: .appInfo) {
-                Button("Check for Updates…") {
-                    updater.checkForUpdates()
-                }
-                .disabled(!updater.isConfigured)
-            }
-
-            CommandGroup(after: .textEditing) {
-                Button("Find…") {
-                    NotificationCenter.default.post(name: .agentDockFocusSearch, object: nil)
-                }
-                .keyboardShortcut("f", modifiers: .command)
-
-                Button("Search Profiles") {
-                    NotificationCenter.default.post(name: .agentDockFocusProfileSearch, object: nil)
-                }
-                .keyboardShortcut("f", modifiers: [.command, .shift])
-            }
+            AgentDockCommands(model: model, updater: updater)
         }
 
         Settings {
@@ -60,7 +47,124 @@ struct AgentDockApp: App {
                 .environmentObject(model)
                 .environmentObject(updater)
         }
-        .defaultSize(width: 840, height: 600)
-        .windowStyle(.hiddenTitleBar)
     }
+}
+
+private struct AgentDockCommands: Commands {
+    @ObservedObject var model: AgentDockModel
+    @ObservedObject var updater: AppUpdater
+
+    var body: some Commands {
+        CommandGroup(after: .appInfo) {
+            Button("Check for Updates…") {
+                updater.checkForUpdates()
+            }
+            .disabled(!updater.isConfigured)
+        }
+
+        CommandGroup(replacing: .newItem) {
+            Button("New Profile…") {
+                model.showAddProfile = true
+            }
+            .keyboardShortcut("n")
+
+            Button("Restore Profile…") {
+                model.restoreProfile()
+            }
+        }
+
+        CommandGroup(after: .textEditing) {
+            Button("Find Profile") {
+                NotificationCenter.default.post(name: .agentDockFocusSearch, object: nil)
+            }
+            .keyboardShortcut("f")
+        }
+
+        SidebarCommands()
+
+        CommandGroup(before: .sidebar) {
+            Button("Home") {
+                model.selectHome()
+            }
+            .keyboardShortcut("1")
+
+            Button("Available Resets") {
+                model.selectHome()
+                model.resetReminders.showsAvailableResets = true
+            }
+            .keyboardShortcut("2")
+
+            Divider()
+
+            Button("Refresh") {
+                model.refreshVisibleContent()
+            }
+            .keyboardShortcut("r")
+
+            Divider()
+        }
+
+        CommandMenu("Profile") {
+            let profile = model.selectedProfile
+            let official = model.selectedOfficialProduct
+            let running = profile.map { model.instanceStatus(for: $0).isRunning }
+                ?? official.map { model.stockInstanceStatuses[$0]?.isRunning == true }
+                ?? false
+
+            Button(running ? "Focus" : "Open") {
+                if let profile {
+                    model.launch(profile)
+                } else if let official {
+                    model.openStock(official)
+                }
+            }
+            .keyboardShortcut("o")
+            .disabled(profile.map(model.isBusy) ?? official.map { model.busyStockProducts.contains($0) } ?? true)
+
+            Button("Close") {
+                if let profile { model.close(profile) }
+            }
+            .disabled(!running || (profile.map(model.isBusy) ?? true))
+
+            Divider()
+
+            Button("Edit Profile…") {
+                model.showEditProfile = true
+            }
+            .keyboardShortcut("i")
+            .disabled(profile == nil)
+
+            if let profile, model.shortcutExists(for: profile) {
+                Button("Show Shortcut in Finder") {
+                    model.revealShortcut(profile)
+                }
+            } else {
+                Button("Install Shortcut") {
+                    if let profile { model.installShortcut(profile) }
+                }
+                .disabled(profile == nil)
+            }
+
+            Button("Show Profile Data in Finder") {
+                if let profile { model.revealData(profile) }
+            }
+            .disabled(profile == nil)
+
+            Divider()
+
+            Button("Remove from AgentDock…") {
+                if let profile { model.confirmRemoveProfile(profile) }
+            }
+            .disabled(profile == nil)
+
+            Button("Delete Profile Data…") {
+                model.pendingDeleteProfile = profile
+            }
+            .disabled(profile == nil)
+        }
+    }
+}
+
+extension Notification.Name {
+    static let agentDockFocusSearch = Notification.Name("AgentDock.focusSearch")
 }

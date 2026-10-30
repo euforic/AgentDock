@@ -80,7 +80,7 @@ final class AgentDockModelTests: XCTestCase {
         XCTAssertEqual(model.stats(for: profile).totalSessions, 2)
     }
 
-    func testPartialRefreshClearsCancelledFullRefreshLoadingState() throws {
+    func testPartialRefreshDoesNotCancelRunningFullRefresh() async throws {
         let store = try makeStore()
         let first = try store.createProfile(product: .claude, name: "First")
         let second = try store.createProfile(product: .claude, name: "Second")
@@ -100,10 +100,28 @@ final class AgentDockModelTests: XCTestCase {
         XCTAssertEqual(model.statsLoadingProfileIDs, [first.id, second.id])
         XCTAssertTrue(model.officialStatsLoading)
 
+        // Launching a profile requests a partial refresh. It must not discard the
+        // official and sibling results of the full refresh already in flight.
         model.refreshStats(for: first)
 
-        XCTAssertEqual(model.statsLoadingProfileIDs, [first.id])
-        XCTAssertFalse(model.officialStatsLoading)
+        XCTAssertEqual(model.statsLoadingProfileIDs, [first.id, second.id])
+        XCTAssertTrue(model.officialStatsLoading)
+        await waitUntil { model.statsLoadingProfileIDs.isEmpty && !model.officialStatsLoading }
+        XCTAssertNotNil(model.lastStatsRefreshAt)
+    }
+
+    func testPartialRefreshesCoalesceWithoutDroppingEarlierProfiles() async throws {
+        let store = try makeStore()
+        let first = try store.createProfile(name: "First")
+        let second = try store.createProfile(name: "Second")
+        let model = makeModel(store: store)
+        await waitUntil { model.statsLoadingProfileIDs.isEmpty && !model.officialStatsLoading }
+
+        model.refreshStats(for: first)
+        model.refreshStats(for: second)
+
+        XCTAssertEqual(model.statsLoadingProfileIDs, [first.id, second.id])
+        await waitUntil { model.statsLoadingProfileIDs.isEmpty }
     }
 
     func testActivityRefreshScopeSeparatesFreshStatsFromStaleQuota() {
@@ -189,6 +207,32 @@ final class AgentDockModelTests: XCTestCase {
             usageChecker: NeverInUseModelChecker()
         )
         XCTAssertEqual(reloaded.profiles.map(\.id), [third.id, first.id, second.id])
+    }
+
+    func testSidebarListMovesUseInsertionIndexSemantics() async throws {
+        let store = try makeStore()
+        let first = try store.createProfile(name: "First")
+        let second = try store.createProfile(name: "Second")
+        let third = try store.createProfile(name: "Third")
+        let claude = try store.createProfile(product: .claude, name: "Claude")
+        let model = makeModel(store: store)
+
+        // Dropping below the last row appends.
+        model.moveProfiles(of: .codex, from: [0], to: 3)
+        XCTAssertEqual(model.profiles.filter { $0.product == .codex }.map(\.id), [second.id, third.id, first.id])
+        await waitUntil { !model.storeMutationInProgress }
+
+        // The destination is the row the item is inserted before.
+        model.moveProfiles(of: .codex, from: [2], to: 1)
+        XCTAssertEqual(model.profiles.filter { $0.product == .codex }.map(\.id), [second.id, first.id, third.id])
+        await waitUntil { !model.storeMutationInProgress }
+
+        // Dropping an item onto its own position changes nothing.
+        model.moveProfiles(of: .codex, from: [1], to: 2)
+        model.moveProfiles(of: .codex, from: [1], to: 1)
+        XCTAssertEqual(store.profiles.filter { $0.product == .codex }.map(\.id), [second.id, first.id, third.id])
+        XCTAssertEqual(store.profiles.filter { $0.product == .claude }.map(\.id), [claude.id])
+        XCTAssertNil(model.errorMessage)
     }
 
     func testAddProfileCompletesAndSelectsBothProducts() async throws {
