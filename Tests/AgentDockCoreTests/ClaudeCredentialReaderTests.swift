@@ -1,5 +1,8 @@
+import CommonCrypto
+import CryptoKit
 import Foundation
 import Security
+import SQLite3
 import XCTest
 @testable import AgentDockCore
 
@@ -76,5 +79,152 @@ final class ClaudeCredentialReaderTests: XCTestCase {
         XCTAssertNil(freshReader.readDesktopCredential(
             userDataURL: managed, allowKeychainInteraction: false
         ))
+    }
+
+    func testActiveOrganizationReadsNewestPlainCookie() throws {
+        let profile = try makeDirectory()
+        try makeCookies(at: profile.appendingPathComponent("Cookies"), rows: [
+            ("claude.ai", "lastActiveOrg", "44444444-4444-4444-8444-444444444444", Data(), 1),
+            (".claude.ai", "lastActiveOrg", Self.organization.uppercased(), Data(), 2),
+            ("claude.ai.example", "lastActiveOrg", "55555555-5555-4555-8555-555555555555", Data(), 3),
+            (".claude.ai", "lastActiveProject", "66666666-6666-4666-8666-666666666666", Data(), 4)
+        ])
+
+        XCTAssertEqual(
+            ClaudeCredentialReader().activeOrganization(userDataURL: profile, key: Self.cookieKey),
+            Self.organization
+        )
+    }
+
+    func testActiveOrganizationDecryptsHostBoundCookie() throws {
+        let profile = try makeDirectory()
+        let network = profile.appendingPathComponent("Network", isDirectory: true)
+        try FileManager.default.createDirectory(at: network, withIntermediateDirectories: true)
+        try makeCookies(at: network.appendingPathComponent("Cookies"), rows: [
+            (".claude.ai", "lastActiveOrg", "", encryptCookie(Self.organization, host: ".claude.ai"), 1)
+        ])
+        XCTAssertEqual(
+            ClaudeCredentialReader().activeOrganization(userDataURL: profile, key: Self.cookieKey),
+            Self.organization
+        )
+
+        // A value bound to a different host fails validation.
+        let otherProfile = try makeDirectory()
+        try makeCookies(at: otherProfile.appendingPathComponent("Cookies"), rows: [
+            (".claude.ai", "lastActiveOrg", "", encryptCookie(Self.organization, host: "claude.ai"), 1)
+        ])
+        XCTAssertNil(ClaudeCredentialReader().activeOrganization(
+            userDataURL: otherProfile, key: Self.cookieKey
+        ))
+    }
+
+    func testActiveOrganizationRejectsCookiesLinkedFromAnotherProfile() throws {
+        let profile = try makeDirectory()
+        let otherProfile = try makeDirectory()
+        try makeCookies(at: otherProfile.appendingPathComponent("Cookies"), rows: [
+            (".claude.ai", "lastActiveOrg", Self.organization, Data(), 1)
+        ])
+        let network = profile.appendingPathComponent("Network", isDirectory: true)
+        try FileManager.default.createSymbolicLink(at: network, withDestinationURL: otherProfile)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: network.appendingPathComponent("Cookies").path))
+
+        XCTAssertNil(ClaudeCredentialReader().activeOrganization(userDataURL: profile, key: Self.cookieKey))
+        XCTAssertEqual(
+            ClaudeCredentialReader().activeOrganization(userDataURL: otherProfile, key: Self.cookieKey),
+            Self.organization
+        )
+    }
+
+    func testActiveOrganizationSkipsDatabaseWithoutCookiesTable() throws {
+        let profile = try makeDirectory()
+        try makeDatabase(at: profile.appendingPathComponent("Cookies"), sql: """
+        create table meta (key text, value text);
+        insert into meta values ('version', '24');
+        """)
+        XCTAssertNil(ClaudeCredentialReader().activeOrganization(userDataURL: profile, key: Self.cookieKey))
+
+        // The failure is limited to that database; the next location is still read.
+        let network = profile.appendingPathComponent("Network", isDirectory: true)
+        try FileManager.default.createDirectory(at: network, withIntermediateDirectories: true)
+        try makeCookies(at: network.appendingPathComponent("Cookies"), rows: [
+            (".claude.ai", "lastActiveOrg", Self.organization, Data(), 1)
+        ])
+        XCTAssertEqual(
+            ClaudeCredentialReader().activeOrganization(userDataURL: profile, key: Self.cookieKey),
+            Self.organization
+        )
+    }
+
+    private static let organization = "33333333-3333-4333-8333-333333333333"
+    // A synthetic AES-128 key passed directly; Keychain derivation is covered above.
+    private static let cookieKey = Data(repeating: 0x5A, count: kCCKeySizeAES128)
+
+    private func makeDirectory() throws -> URL {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        addTeardownBlock { try? FileManager.default.removeItem(at: directory) }
+        return directory
+    }
+
+    private func makeCookies(
+        at database: URL,
+        rows: [(host: String, name: String, value: String, encrypted: Data, updated: Int)]
+    ) throws {
+        let values = rows.map { row in
+            let encrypted = row.encrypted.map { String(format: "%02x", $0) }.joined()
+            return "(0, '\(row.host)', '\(row.name)', '\(row.value)', x'\(encrypted)', \(row.updated))"
+        }
+        try makeDatabase(at: database, sql: """
+        create table cookies (
+          creation_utc integer not null, host_key text not null, name text not null,
+          value text not null, encrypted_value blob not null, last_update_utc integer not null
+        );
+        insert into cookies values \(values.joined(separator: ", "));
+        """)
+    }
+
+    private func makeDatabase(at database: URL, sql: String) throws {
+        var connection: OpaquePointer?
+        XCTAssertEqual(
+            sqlite3_open_v2(database.path, &connection, SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE, nil),
+            SQLITE_OK
+        )
+        defer { sqlite3_close_v2(connection) }
+        XCTAssertEqual(sqlite3_exec(connection, sql, nil, nil, nil), SQLITE_OK)
+    }
+
+    // Electron v10 cookie value: AES-128-CBC, space IV, SHA-256 host-key prefix.
+    private func encryptCookie(_ value: String, host: String) -> Data {
+        let plaintext = Data(SHA256.hash(data: Data(host.utf8))) + Data(value.utf8)
+        let key = Self.cookieKey
+        let iv = Data(repeating: 0x20, count: kCCBlockSizeAES128)
+        var output = Data(count: plaintext.count + kCCBlockSizeAES128)
+        var outputLength = 0
+        let capacity = output.count
+        let status = output.withUnsafeMutableBytes { outputBytes in
+            plaintext.withUnsafeBytes { plaintextBytes in
+                key.withUnsafeBytes { keyBytes in
+                    iv.withUnsafeBytes { ivBytes in
+                        CCCrypt(
+                            CCOperation(kCCEncrypt),
+                            CCAlgorithm(kCCAlgorithmAES),
+                            CCOptions(kCCOptionPKCS7Padding),
+                            keyBytes.baseAddress,
+                            key.count,
+                            ivBytes.baseAddress,
+                            plaintextBytes.baseAddress,
+                            plaintext.count,
+                            outputBytes.baseAddress,
+                            capacity,
+                            &outputLength
+                        )
+                    }
+                }
+            }
+        }
+        XCTAssertEqual(status, CCCryptorStatus(kCCSuccess))
+        output.count = outputLength
+        return Data("v10".utf8) + output
     }
 }

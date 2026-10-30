@@ -76,6 +76,52 @@ final class LocalActivityScannerTests: XCTestCase {
         }
     }
 
+    func testOversizedOutputIsReportedForThatSourceOnly() async throws {
+        try createLogsDatabase(rowCount: 50)
+        try createStateDatabase()
+
+        let snapshot = try await LocalActivityReader(maximumOutputBytes: 1_024).read(codexHomeURL: root)
+
+        XCTAssertEqual(snapshot.availability, .partial)
+        XCTAssertTrue(snapshot.logs.isEmpty)
+        XCTAssertEqual(snapshot.archivedThreads.count, 1)
+        XCTAssertEqual(snapshot.issues, [
+            LocalActivityIssue(source: .logs, message: "Database output exceeded the safety limit.")
+        ])
+    }
+
+    func testUnexpectedSchemaReportsThatTheDatabaseCouldNotBeRead() async throws {
+        try createLogsDatabase(rowCount: 1)
+        try runSQLite(database: root.appendingPathComponent("state_5.sqlite"), sql: "CREATE TABLE unrelated (id TEXT);")
+
+        let snapshot = try await LocalActivityReader().read(codexHomeURL: root)
+
+        XCTAssertEqual(snapshot.availability, .partial)
+        XCTAssertEqual(snapshot.logs.count, 1)
+        XCTAssertEqual(snapshot.issues, [
+            LocalActivityIssue(source: .archivedThreads, message: "Database could not be read.")
+        ])
+    }
+
+    func testMissingRequiredValueFailsTheSourceInsteadOfInventingOne() async throws {
+        try runSQLite(database: root.appendingPathComponent("logs_2.sqlite"), sql: """
+        CREATE TABLE logs (
+            id INTEGER PRIMARY KEY, ts INTEGER, ts_nanos INTEGER, level TEXT, target TEXT,
+            feedback_log_body TEXT, module_path TEXT, file TEXT, thread_id TEXT
+        );
+        INSERT INTO logs (ts, ts_nanos, level, target) VALUES (1722000000, 0, NULL, 'codex_core::runner');
+        """)
+        try createStateDatabase()
+
+        let snapshot = try await LocalActivityReader().read(codexHomeURL: root)
+
+        XCTAssertEqual(snapshot.availability, .partial)
+        XCTAssertTrue(snapshot.logs.isEmpty)
+        XCTAssertEqual(snapshot.issues, [
+            LocalActivityIssue(source: .logs, message: "Database read timed out or failed.")
+        ])
+    }
+
     private func createLogsDatabase(rowCount: Int) throws {
         var statements = [
             """

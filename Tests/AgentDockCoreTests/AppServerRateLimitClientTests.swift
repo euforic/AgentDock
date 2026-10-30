@@ -42,7 +42,7 @@ final class AppServerRateLimitClientTests: XCTestCase {
         try? FileManager.default.removeItem(at: root)
     }
 
-    func testInstalledAppServerRespondsFromAnIsolatedHomeWhenEnabled() throws {
+    func testInstalledAppServerRespondsFromAnIsolatedHomeWhenEnabled() async throws {
         guard ProcessInfo.processInfo.environment["AGENTDOCK_INSTALLED_APP_TEST"] == "1" else {
             throw XCTSkip("Set AGENTDOCK_INSTALLED_APP_TEST=1 to exercise the installed Codex app-server.")
         }
@@ -50,7 +50,7 @@ final class AppServerRateLimitClientTests: XCTestCase {
         try OfficialCodexAppValidator().validateCodexApp(at: appURL)
         try CodexMCPConfiguration.configure(codexHomeURL: root, callbackPort: 49_152)
 
-        let limits = AppServerRateLimitClient().fetchRateLimits(
+        let limits = await AppServerRateLimitClient().fetchRateLimits(
             codexHomeURL: root,
             codexAppURL: appURL
         )
@@ -61,7 +61,7 @@ final class AppServerRateLimitClientTests: XCTestCase {
         XCTAssertTrue(limits.buckets.isEmpty)
     }
 
-    func testUsesProfileCodexHomeAndAcceptsWhitespaceInResponseID() throws {
+    func testUsesProfileCodexHomeAndAcceptsWhitespaceInResponseID() async throws {
         let profile = CodexProfile(name: "Work", slug: "work", rootDirectory: root)
         try FileManager.default.createDirectory(at: profile.codexHomePath, withIntermediateDirectories: true)
         let initializeRequest = root.appendingPathComponent("initialize-request.json")
@@ -92,7 +92,7 @@ final class AppServerRateLimitClientTests: XCTestCase {
             clientVersion: "0.1.0"
         )
 
-        let limits = client.fetchRateLimits(
+        let limits = await client.fetchRateLimits(
             for: profile,
             codexAppURL: URL(fileURLWithPath: "/Applications/Alternate Codex.app")
         )
@@ -109,7 +109,7 @@ final class AppServerRateLimitClientTests: XCTestCase {
         XCTAssertEqual(clientInfo["version"] as? String, "0.1.0")
     }
 
-    func testTimeoutTerminatesAndReturnsPromptly() throws {
+    func testTimeoutTerminatesAndReturnsPromptly() async throws {
         let profile = CodexProfile(name: "Slow", slug: "slow", rootDirectory: root)
         let executable = try makeExecutable(named: "timeout", script: """
         #!/bin/sh
@@ -118,7 +118,7 @@ final class AppServerRateLimitClientTests: XCTestCase {
         let client = AppServerRateLimitClient(codexExecutable: executable, timeoutSeconds: 0.1)
         let start = Date()
 
-        let limits = client.fetchRateLimits(for: profile, codexAppURL: URL(fileURLWithPath: "/Applications/Codex.app"))
+        let limits = await client.fetchRateLimits(for: profile, codexAppURL: URL(fileURLWithPath: "/Applications/Codex.app"))
 
         XCTAssertLessThan(Date().timeIntervalSince(start), 2)
         XCTAssertEqual(limits.errorMessage, "Timed out reading Codex usage limits.")
@@ -134,7 +134,7 @@ final class AppServerRateLimitClientTests: XCTestCase {
         let start = Date()
 
         let task = Task.detached {
-            client.fetchRateLimits(for: profile, codexAppURL: URL(fileURLWithPath: "/unused"))
+            await client.fetchRateLimits(for: profile, codexAppURL: URL(fileURLWithPath: "/unused"))
         }
         try await Task.sleep(for: .milliseconds(100))
         task.cancel()
@@ -144,7 +144,7 @@ final class AppServerRateLimitClientTests: XCTestCase {
         XCTAssertLessThan(Date().timeIntervalSince(start), 2)
     }
 
-    func testEarlyExitReturnsSpecificErrorWithoutWaitingForTimeout() throws {
+    func testEarlyExitReturnsSpecificErrorWithoutWaitingForTimeout() async throws {
         let profile = CodexProfile(name: "Exit", slug: "exit", rootDirectory: root)
         let executable = try makeExecutable(named: "exit", script: """
         #!/bin/sh
@@ -153,13 +153,13 @@ final class AppServerRateLimitClientTests: XCTestCase {
         let client = AppServerRateLimitClient(codexExecutable: executable, timeoutSeconds: 5)
         let start = Date()
 
-        let limits = client.fetchRateLimits(for: profile, codexAppURL: URL(fileURLWithPath: "/Applications/Codex.app"))
+        let limits = await client.fetchRateLimits(for: profile, codexAppURL: URL(fileURLWithPath: "/Applications/Codex.app"))
 
         XCTAssertLessThan(Date().timeIntervalSince(start), 1)
         XCTAssertEqual(limits.errorMessage, "Codex app-server exited before returning usage limits.")
     }
 
-    func testEarlyExitAlsoTerminatesBackgroundDescendants() throws {
+    func testEarlyExitAlsoTerminatesBackgroundDescendants() async throws {
         let profile = CodexProfile(name: "Child", slug: "child", rootDirectory: root)
         let childPIDFile = root.appendingPathComponent("child.pid")
         let executable = try makeExecutable(named: "background-child", script: """
@@ -171,7 +171,7 @@ final class AppServerRateLimitClientTests: XCTestCase {
         """)
         let client = AppServerRateLimitClient(codexExecutable: executable, timeoutSeconds: 2)
 
-        _ = client.fetchRateLimits(
+        _ = await client.fetchRateLimits(
             for: profile,
             codexAppURL: URL(fileURLWithPath: "/Applications/Codex.app")
         )
@@ -181,12 +181,12 @@ final class AppServerRateLimitClientTests: XCTestCase {
         )
         let deadline = Date().addingTimeInterval(1)
         while processExists(childPID), Date() < deadline {
-            Thread.sleep(forTimeInterval: 0.01)
+            try await Task.sleep(for: .milliseconds(10))
         }
         XCTAssertFalse(processExists(childPID))
     }
 
-    func testOversizedResponseIsBounded() throws {
+    func testOversizedResponseIsBounded() async throws {
         let profile = CodexProfile(name: "Large", slug: "large", rootDirectory: root)
         let executable = try makeExecutable(named: "large", script: """
         #!/bin/sh
@@ -199,16 +199,16 @@ final class AppServerRateLimitClientTests: XCTestCase {
             maximumResponseBytes: 128
         )
 
-        let limits = client.fetchRateLimits(for: profile, codexAppURL: URL(fileURLWithPath: "/Applications/Codex.app"))
+        let limits = await client.fetchRateLimits(for: profile, codexAppURL: URL(fileURLWithPath: "/Applications/Codex.app"))
 
         XCTAssertEqual(limits.errorMessage, "Codex app-server response exceeded 128 bytes.")
     }
 
-    func testBundledExecutableIsNotRunWhenAppValidationFails() {
+    func testBundledExecutableIsNotRunWhenAppValidationFails() async {
         let profile = CodexProfile(name: "Rejected", slug: "rejected", rootDirectory: root)
         let client = AppServerRateLimitClient(appValidator: RejectingValidator())
 
-        let limits = client.fetchRateLimits(
+        let limits = await client.fetchRateLimits(
             for: profile,
             codexAppURL: URL(fileURLWithPath: "/tmp/TamperedCodex.app")
         )

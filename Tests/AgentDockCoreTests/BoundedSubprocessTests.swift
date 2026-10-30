@@ -107,6 +107,85 @@ final class BoundedSubprocessTests: XCTestCase {
         XCTAssertLessThan(Date().timeIntervalSince(start), 1.5)
     }
 
+    func testAsyncRunCapturesOutputAndExitStatus() async throws {
+        let result = try await BoundedSubprocess.run(
+            executableURL: URL(fileURLWithPath: "/bin/sh"),
+            arguments: ["-c", "printf async; exit 3"],
+            timeout: 2,
+            maximumOutputBytes: 1_024
+        )
+
+        XCTAssertEqual(String(decoding: result.output, as: UTF8.self), "async")
+        XCTAssertEqual(result.terminationStatus, 3)
+        XCTAssertFalse(result.exceededOutputLimit)
+    }
+
+    func testAsyncCancellationKillsTermIgnoringGroupPromptly() async throws {
+        let pidFile = FileManager.default.temporaryDirectory
+            .appendingPathComponent("AgentDock-async-child-\(UUID().uuidString).pid")
+        defer { try? FileManager.default.removeItem(at: pidFile) }
+        let script = "trap '' TERM; sleep 30 & echo $! > '\(pidFile.path)'; wait"
+        let start = Date()
+
+        let task = Task {
+            try await BoundedSubprocess.run(
+                executableURL: URL(fileURLWithPath: "/bin/sh"),
+                arguments: ["-c", script],
+                timeout: 30,
+                maximumOutputBytes: 1_024
+            )
+        }
+        while (try? String(contentsOf: pidFile, encoding: .utf8))?.isEmpty != false,
+              Date().timeIntervalSince(start) < 2
+        {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        task.cancel()
+
+        do {
+            _ = try await task.value
+            XCTFail("Expected the cancelled run to fail")
+        } catch {
+            XCTAssertEqual(error as? BoundedSubprocessError, .timedOut)
+        }
+        XCTAssertLessThan(Date().timeIntervalSince(start), 4)
+        let processID = try XCTUnwrap(
+            Int32(
+                String(contentsOf: pidFile, encoding: .utf8)
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+            )
+        )
+        let deadline = Date().addingTimeInterval(1)
+        while kill(processID, 0) == 0, Date() < deadline {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        XCTAssertEqual(kill(processID, 0), -1)
+    }
+
+    func testConcurrentAsyncRunsDoNotHoldCooperativeThreads() async throws {
+        // More waits than cooperative threads: blocking waits would serialize
+        // into at least three rounds of one second each.
+        let count = ProcessInfo.processInfo.activeProcessorCount * 3
+        let start = Date()
+
+        let statuses = try await withThrowingTaskGroup(of: Int32.self) { group in
+            for _ in 0..<count {
+                group.addTask {
+                    try await BoundedSubprocess.run(
+                        executableURL: URL(fileURLWithPath: "/bin/sleep"),
+                        arguments: ["1"],
+                        timeout: 10,
+                        maximumOutputBytes: 1_024
+                    ).terminationStatus
+                }
+            }
+            return try await group.reduce(into: []) { $0.append($1) }
+        }
+
+        XCTAssertEqual(statuses, Array(repeating: 0, count: count))
+        XCTAssertLessThan(Date().timeIntervalSince(start), 2.5)
+    }
+
     func testSystemUsageCheckerFailsClosedForMissingDirectory() {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("Missing-Usage-Check-\(UUID().uuidString)")

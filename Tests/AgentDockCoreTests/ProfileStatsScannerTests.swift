@@ -356,20 +356,42 @@ final class ProfileStatsScannerTests: XCTestCase {
         XCTAssertEqual(stats.lastActivityAt, Date(timeIntervalSince1970: 1_785_232_860))
     }
 
-    func testHungSQLiteProcessIsTerminatedAtTimeout() throws {
-        let profile = CodexProfile(name: "Hung", slug: "hung", rootDirectory: root)
+    func testSlowQueryIsInterruptedAtTimeout() throws {
+        let profile = CodexProfile(name: "Slow", slug: "slow", rootDirectory: root)
         try FileManager.default.createDirectory(at: profile.codexHomePath, withIntermediateDirectories: true)
-        try Data().write(to: profile.codexHomePath.appendingPathComponent("state_5.sqlite"))
-        let fakeSQLite = root.appendingPathComponent("slow-sqlite")
-        try Data("#!/bin/sh\nsleep 5\n".utf8).write(to: fakeSQLite)
-        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: fakeSQLite.path)
-        let scanner = ProfileStatsScanner(sqliteExecutable: fakeSQLite, queryTimeout: 0.1)
+        // A real view that never finishes, as a pathological provider database could define.
+        try runSQLite(profile.codexHomePath.appendingPathComponent("state_5.sqlite"), sql: """
+        create view threads as
+        with recursive sequence(value) as (select 1 union all select value + 1 from sequence)
+        select value as id from sequence;
+        """)
+        let scanner = ProfileStatsScanner(queryTimeout: 0.1)
         let start = Date()
 
         let stats = scanner.stats(for: profile)
 
         XCTAssertLessThan(Date().timeIntervalSince(start), 2)
-        XCTAssertTrue(stats.errorMessages.contains { $0.contains("Timed out") })
+        XCTAssertTrue(stats.errorMessages.contains("Timed out reading profile state."), "\(stats.errorMessages)")
+    }
+
+    func testCancelledScanStopsRunningQueryWithoutReportingAnError() async throws {
+        let profile = CodexProfile(name: "Cancelled", slug: "cancelled", rootDirectory: root)
+        try FileManager.default.createDirectory(at: profile.codexHomePath, withIntermediateDirectories: true)
+        try runSQLite(profile.codexHomePath.appendingPathComponent("state_5.sqlite"), sql: """
+        create view threads as
+        with recursive sequence(value) as (select 1 union all select value + 1 from sequence)
+        select value as id from sequence;
+        """)
+        let scanner = ProfileStatsScanner(queryTimeout: 30)
+        let start = Date()
+
+        let task = Task.detached { scanner.stats(for: profile) }
+        try await Task.sleep(for: .milliseconds(200))
+        task.cancel()
+        let stats = await task.value
+
+        XCTAssertLessThan(Date().timeIntervalSince(start), 3)
+        XCTAssertFalse(stats.errorMessages.contains { $0.contains("Timed out") }, "\(stats.errorMessages)")
     }
 
     private func runSQLite(_ database: URL, sql: String) throws {

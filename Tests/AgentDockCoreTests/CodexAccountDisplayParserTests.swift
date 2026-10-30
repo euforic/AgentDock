@@ -2,11 +2,11 @@ import XCTest
 @testable import AgentDockCore
 
 final class CodexAccountDisplayParserTests: XCTestCase {
-    func testInstalledCodexAccountDisplayRoundTrip() throws {
+    func testInstalledCodexAccountDisplayRoundTrip() async throws {
         guard ProcessInfo.processInfo.environment["AGENTDOCK_LIVE_RESET_ACCOUNT_DISPLAY"] == "1" else {
             throw XCTSkip("Signed-in installed Codex account check is opt in.")
         }
-        let result = AppServerRateLimitClient().fetchRateLimits(
+        let result = await AppServerRateLimitClient().fetchRateLimits(
             codexHomeURL: FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".codex"),
             codexAppURL: URL(fileURLWithPath: "/Applications/Codex.app"), includeAccountDetails: true)
         XCTAssertNil(result.errorMessage)

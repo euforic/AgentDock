@@ -94,8 +94,6 @@ public struct LocalActivitySnapshot: Sendable {
 }
 
 public struct LocalActivityReader: @unchecked Sendable {
-    private static let sqliteURL = URL(fileURLWithPath: "/usr/bin/sqlite3")
-
     private let fileManager: FileManager
     private let maximumLogEntries: Int
     private let maximumArchivedThreads: Int
@@ -123,7 +121,6 @@ public struct LocalActivityReader: @unchecked Sendable {
             at: codexHomeURL.appendingPathComponent("logs_2.sqlite"),
             source: .logs,
             query: """
-            PRAGMA query_only=ON;
             SELECT
                 ts,
                 level,
@@ -135,6 +132,7 @@ public struct LocalActivityReader: @unchecked Sendable {
             ORDER BY ts DESC, ts_nanos DESC, id DESC
             LIMIT \(maximumLogEntries);
             """,
+            maximumRows: maximumLogEntries,
             decode: decodeLogs
         )
 
@@ -144,7 +142,6 @@ public struct LocalActivityReader: @unchecked Sendable {
             at: codexHomeURL.appendingPathComponent("state_5.sqlite"),
             source: .archivedThreads,
             query: """
-            PRAGMA query_only=ON;
             SELECT
                 substr(id, 1, 128) AS id,
                 substr(title, 1, 512) AS title,
@@ -158,6 +155,7 @@ public struct LocalActivityReader: @unchecked Sendable {
             ORDER BY COALESCE(archived_at, updated_at) DESC, id DESC
             LIMIT \(maximumArchivedThreads);
             """,
+            maximumRows: maximumArchivedThreads,
             decode: decodeArchivedThreads
         )
 
@@ -186,7 +184,8 @@ public struct LocalActivityReader: @unchecked Sendable {
         at databaseURL: URL,
         source: LocalActivitySource,
         query: String,
-        decode: (Data) throws -> [Value]
+        maximumRows: Int,
+        decode: ([[SQLiteValue]]) throws -> [Value]
     ) -> ReadResult<Value> {
         guard fileManager.isReadableFile(atPath: databaseURL.path) else {
             return ReadResult(
@@ -197,38 +196,28 @@ public struct LocalActivityReader: @unchecked Sendable {
         }
 
         do {
-            let databaseArgument = try SQLiteReadOnly.databaseArgument(for: databaseURL)
-            let result = try BoundedSubprocess.run(
-                executableURL: Self.sqliteURL,
-                arguments: [
-                    "-nofollow",
-                    "-readonly",
-                    "-json",
-                    databaseArgument,
-                    query
-                ],
+            let rows = try SQLiteReadOnly.query(
+                database: databaseURL,
+                sql: query,
                 timeout: timeout,
                 maximumOutputBytes: maximumOutputBytes,
-                captureStandardError: true
+                maximumRows: maximumRows
             )
-            if Task.isCancelled {
-                return ReadResult(values: [], issues: [], succeeded: false)
-            }
-            guard !result.exceededOutputLimit else {
-                return ReadResult(
-                    values: [],
-                    issues: [LocalActivityIssue(source: source, message: "Database output exceeded the safety limit.")],
-                    succeeded: false
-                )
-            }
-            guard result.terminationStatus == 0 else {
-                return ReadResult(
-                    values: [],
-                    issues: [LocalActivityIssue(source: source, message: "Database could not be read.")],
-                    succeeded: false
-                )
-            }
-            return ReadResult(values: try decode(result.output), issues: [], succeeded: true)
+            return ReadResult(values: try decode(rows), issues: [], succeeded: true)
+        } catch SQLiteReadOnlyError.cancelled {
+            return ReadResult(values: [], issues: [], succeeded: false)
+        } catch SQLiteReadOnlyError.outputLimitExceeded, SQLiteReadOnlyError.rowLimitExceeded {
+            return ReadResult(
+                values: [],
+                issues: [LocalActivityIssue(source: source, message: "Database output exceeded the safety limit.")],
+                succeeded: false
+            )
+        } catch SQLiteReadOnlyError.sqlite(_) {
+            return ReadResult(
+                values: [],
+                issues: [LocalActivityIssue(source: source, message: "Database could not be read.")],
+                succeeded: false
+            )
         } catch {
             return ReadResult(
                 values: [],
@@ -238,36 +227,33 @@ public struct LocalActivityReader: @unchecked Sendable {
         }
     }
 
-    private func decodeLogs(_ data: Data) throws -> [LocalActivityLogEntry] {
-        try decode([LogRow].self, from: data).map {
-            LocalActivityLogEntry(
-                timestamp: Self.date(fromUnixValue: $0.ts),
-                level: Self.cleanMetadata($0.level),
-                target: Self.cleanMetadata($0.target),
-                message: Self.safeMessage($0.message),
-                source: Self.safeSource($0.source),
-                threadID: Self.nonempty(Self.cleanMetadata($0.threadID ?? ""))
+    private func decodeLogs(_ rows: [[SQLiteValue]]) throws -> [LocalActivityLogEntry] {
+        try rows.map { values in
+            let row = try ActivityRow(values, columns: 6)
+            return LocalActivityLogEntry(
+                timestamp: Self.date(fromUnixValue: try row.integer(0)),
+                level: Self.cleanMetadata(try row.text(1)),
+                target: Self.cleanMetadata(try row.text(2)),
+                message: Self.safeMessage(try row.text(3)),
+                source: Self.safeSource(try row.optionalText(4)),
+                threadID: Self.nonempty(Self.cleanMetadata(try row.optionalText(5) ?? ""))
             )
         }
     }
 
-    private func decodeArchivedThreads(_ data: Data) throws -> [LocalArchivedThreadSummary] {
-        try decode([ArchivedThreadRow].self, from: data).map {
-            LocalArchivedThreadSummary(
-                id: Self.cleanMetadata($0.id),
-                title: Self.safeMessage($0.title),
-                repository: Self.repositoryBasename($0.cwd),
-                branch: Self.nonempty(Self.cleanMetadata($0.gitBranch ?? "")),
-                updatedAt: Self.date(fromUnixValue: $0.updatedAt),
-                archivedAt: $0.archivedAt.map(Self.date(fromUnixValue:)),
-                tokenCount: max(0, $0.tokensUsed)
+    private func decodeArchivedThreads(_ rows: [[SQLiteValue]]) throws -> [LocalArchivedThreadSummary] {
+        try rows.map { values in
+            let row = try ActivityRow(values, columns: 7)
+            return LocalArchivedThreadSummary(
+                id: Self.cleanMetadata(try row.text(0)),
+                title: Self.safeMessage(try row.text(1)),
+                repository: Self.repositoryBasename(try row.text(2)),
+                branch: Self.nonempty(Self.cleanMetadata(try row.optionalText(3) ?? "")),
+                updatedAt: Self.date(fromUnixValue: try row.integer(4)),
+                archivedAt: try row.optionalInteger(5).map(Self.date(fromUnixValue:)),
+                tokenCount: max(0, Int(try row.integer(6)))
             )
         }
-    }
-
-    private func decode<Value: Decodable>(_ type: Value.Type, from data: Data) throws -> Value {
-        let input = data.isEmpty ? Data("[]".utf8) : data
-        return try JSONDecoder().decode(type, from: input)
     }
 
     private static func date(fromUnixValue value: Int64) -> Date {
@@ -357,40 +343,46 @@ private struct ReadResult<Value> {
     let succeeded: Bool
 }
 
-private struct LogRow: Decodable {
-    let ts: Int64
-    let level: String
-    let target: String
-    let message: String
-    let source: String?
-    let threadID: String?
+/// Typed columns from a fixed `SELECT`. A missing, NULL, or mistyped required
+/// value fails the whole read rather than inventing a default.
+private struct ActivityRow {
+    private let values: [SQLiteValue]
 
-    enum CodingKeys: String, CodingKey {
-        case ts
-        case level
-        case target
-        case message
-        case source
-        case threadID = "thread_id"
+    init(_ values: [SQLiteValue], columns: Int) throws {
+        guard values.count == columns else { throw ActivityRowError.malformed }
+        self.values = values
+    }
+
+    func integer(_ column: Int) throws -> Int64 {
+        guard let value = try optionalInteger(column) else { throw ActivityRowError.malformed }
+        return value
+    }
+
+    func optionalInteger(_ column: Int) throws -> Int64? {
+        switch values[column] {
+        case .null: return nil
+        case let .integer(value): return value
+        case let .real(value):
+            guard let integer = Int64(exactly: value) else { throw ActivityRowError.malformed }
+            return integer
+        case .text, .blob: throw ActivityRowError.malformed
+        }
+    }
+
+    func text(_ column: Int) throws -> String {
+        guard let value = try optionalText(column) else { throw ActivityRowError.malformed }
+        return value
+    }
+
+    func optionalText(_ column: Int) throws -> String? {
+        switch values[column] {
+        case .null: return nil
+        case let .text(value): return value
+        case .integer, .real, .blob: throw ActivityRowError.malformed
+        }
     }
 }
 
-private struct ArchivedThreadRow: Decodable {
-    let id: String
-    let title: String
-    let cwd: String
-    let gitBranch: String?
-    let updatedAt: Int64
-    let archivedAt: Int64?
-    let tokensUsed: Int
-
-    enum CodingKeys: String, CodingKey {
-        case id
-        case title
-        case cwd
-        case gitBranch = "git_branch"
-        case updatedAt = "updated_at"
-        case archivedAt = "archived_at"
-        case tokensUsed = "tokens_used"
-    }
+private enum ActivityRowError: Error {
+    case malformed
 }

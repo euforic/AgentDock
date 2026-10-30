@@ -36,6 +36,36 @@ therefore reuse an explicitly dated measurement. The storage cache retains at
 most 64 roots. Entry, depth, time, and cancellation limits preserve lower-bound
 semantics through `dataSizeIsTruncated`.
 
+Codex stats and local activity query `state_5.sqlite` and `logs_2.sqlite` in
+process through [SQLiteReadOnly.swift](../Sources/AgentDockCore/SQLiteReadOnly.swift)
+instead of launching `/usr/bin/sqlite3`; a refresh starts no database child
+process. The existing path check still resolves only the parent, rejects
+symlinked or non-regular databases and sidecars, and adds `immutable=1` only
+when no `-wal` or `-shm` file exists. Connections open with
+`SQLITE_OPEN_READONLY | SQLITE_OPEN_NOFOLLOW`, set `trusted_schema=OFF` and
+`query_only=ON`, and refuse any statement SQLite does not report as read-only.
+A progress handler interrupts a query at its timeout or when the calling task is
+cancelled. Output bytes and rows are counted while each value is copied: stats
+keep their 8 MiB budget, and activity keeps its configured byte budget plus a
+row limit equal to its `LIMIT`. Text that is not UTF-8, or a missing or mistyped
+required activity column, fails that source instead of being repaired.
+
+Claude's active-organization lookup reads the `lastActiveOrg` cookie from a
+profile's `Cookies` or `Network/Cookies` database through the same reader. It
+passes the profile's user-data root, so a database whose resolved path leaves
+that root is refused, and keeps a 2-second timeout, a 4 KiB output budget, and
+one row. Any query failure yields no organization for that database.
+
+Subprocess waits are event driven. `BoundedSubprocess` watches root exit, pipe
+output, and its deadline with dispatch sources on a private queue, and its async
+overload suspends the calling task until they finish; the synchronous overload
+remains for synchronous callers. The Codex app-server quota read awaits its
+initialize, response, and exit milestones and its termination grace period, so
+neither holds a cooperative thread. Desktop instance status reads await their
+`ps` snapshot the same way; launch, close, and focus flows keep the synchronous
+overload (see [apis.md](apis.md)). Timeouts, process-group SIGTERM then
+SIGKILL, cancellation, and output limits are unchanged.
+
 Staleness checks schedule local stats and provider quotas independently. A quota
 retry does not rescan fresh local stats, and stale local stats do not bypass the
 one-minute quota retry backoff.

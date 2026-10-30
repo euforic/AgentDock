@@ -26,10 +26,14 @@ for variant in ['baseline', 'candidate']:
         text = path.read_text()
         assert marker in text
         path.write_text(text.replace(marker, '        ResourceBenchmarkCounters.launched(executableURL.lastPathComponent)\n' + marker, 1))
+    # Revisions that still launch sqlite3 for stats count it; the in-process
+    # reader has no launch to count.
     path = root / 'ProfileStats.swift'
     text = path.read_text()
-    assert '            try process.run()' in text
-    path.write_text(text.replace('            try process.run()', '            try process.run()\n            ResourceBenchmarkCounters.launched(sqliteExecutable.lastPathComponent)', 1))
+    if '            try process.run()' in text:
+        path.write_text(text.replace('            try process.run()', '            try process.run()\n            ResourceBenchmarkCounters.launched(sqliteExecutable.lastPathComponent)', 1))
+    else:
+        assert 'sqliteExecutable' not in text
     for name, marker in [('DesktopAppRegistry.swift', '    public func validateApp(at url: URL, product: DesktopProduct) throws {'),
                          ('CodexLauncher.swift', '    public func validateCodexApp(at url: URL) throws {')]:
         path = root / name
@@ -39,7 +43,9 @@ for variant in ['baseline', 'candidate']:
 PY
 for variant in baseline candidate; do
     sources=("$benchmark_tmp/$variant/Sources/AgentDockCore/"*.swift)
-    flags=(-D BASELINE)
+    # A baseline that already has the candidate's scenario APIs can set
+    # AGENTDOCK_BENCHMARK_BASELINE_DEFINE=CANDIDATE to run the same calls.
+    flags=(-D "${AGENTDOCK_BENCHMARK_BASELINE_DEFINE:-BASELINE}")
     if [[ "$variant" == candidate ]]; then flags=(-D CANDIDATE); fi
     swiftc -O -whole-module-optimization -parse-as-library -module-name AgentDockCore "${flags[@]}" "${sources[@]}" script/benchmark_resources.swift -o "$benchmark_tmp/$variant/benchmark"
 done

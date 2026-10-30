@@ -97,6 +97,50 @@ final class GroupedSubprocess {
         return result == 0
     }
 
+    /// Calls `handler` on `queue` when the root exits. Reaping stays with
+    /// `isRunning` and termination, which own the exit status.
+    func observeExit(
+        on queue: DispatchQueue,
+        handler: @escaping @Sendable () -> Void
+    ) -> any DispatchSourceProcess {
+        let source = DispatchSource.makeProcessSource(identifier: processID, eventMask: .exit, queue: queue)
+        source.setEventHandler(handler: handler)
+        source.resume()
+        return source
+    }
+
+    /// The same escalation as `terminateAndWait`, suspending between checks
+    /// instead of sleeping on the calling thread. Cancellation does not cut
+    /// it short: the group is always signalled and the root always reaped.
+    func terminate(gracePeriod: TimeInterval = 1) async {
+        try? standardInput.close()
+        _ = kill(-processID, SIGTERM)
+        let deadline = Date().addingTimeInterval(gracePeriod)
+        while groupExists, Date() < deadline {
+            _ = isRunning
+            await Self.pause()
+        }
+        if groupExists {
+            _ = kill(-processID, SIGKILL)
+        }
+        while !rootReaped, isRunning {
+            await Self.pause()
+        }
+        if !rootReaped {
+            _ = waitpid(processID, &waitStatus, 0)
+            rootReaped = true
+        }
+        try? standardOutput.close()
+    }
+
+    private static func pause() async {
+        await withCheckedContinuation { continuation in
+            DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + .milliseconds(10)) {
+                continuation.resume()
+            }
+        }
+    }
+
     func terminateAndWait(gracePeriod: TimeInterval = 1) {
         try? standardInput.close()
         _ = kill(-processID, SIGTERM)

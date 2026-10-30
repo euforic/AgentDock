@@ -74,6 +74,53 @@ all 102 interval records plus the native lifecycle trace. Reproduce with:
 AGENTDOCK_BENCHMARK_LIVE_QUOTA=1 ./script/benchmark_resources.sh 0acab4c /tmp/agentdock-resource-live-results
 ```
 
+## In-process SQLite stats reads, October 30, 2026
+
+Codex stats now query their databases in process (see
+[resource-usage-readers.md](resource-usage-readers.md)). The same runner compared
+main `9af151b` with that candidate, three fresh processes each, sequentially.
+The SQLite fixture scenario is the attributable row; nine samples per revision.
+
+| Scenario | Wall time, baseline → candidate | CPU, baseline → candidate | Observed result |
+| --- | --- | --- | --- |
+| 50,000 sessions / two million SQLite log rows | 287.56 ms → 247.94 ms | parent 4.79 → 244.85 ms; child 271.68 → 0 ms | `sqlite3` launches 5 → 0 per refresh; all sessions, zero query errors in both. |
+
+Query work moves from child to parent CPU, so parent CPU rises while the total
+falls slightly. The status rows in the same receipt differ because the runner's
+baseline branch deliberately calls the older per-provider status API; they do not
+measure this change. History and storage scenarios use unchanged readers and
+stayed within run-to-run variation. Async subprocess waits are covered by
+`BoundedSubprocessTests`, where more concurrent waits than cooperative threads
+finish in one round instead of serializing.
+
+The runner counts `sqlite3` launches only in revisions whose stats reader still
+starts one.
+
+## Suspending status snapshots, October 30, 2026
+
+Desktop instance status reads now await their `ps` snapshot (see
+[apis.md](apis.md)). Both revisions ran the same `statusBatch` call:
+
+```bash
+AGENTDOCK_BENCHMARK_BASELINE_DEFINE=CANDIDATE ./script/benchmark_resources.sh df0ad30 /tmp/agentdock-resource-results
+```
+
+Nine installed-status samples per revision, against the signed installed
+providers:
+
+| Scenario | Wall time, baseline → candidate | CPU, baseline → candidate | Observed result |
+| --- | --- | --- | --- |
+| Installed managed + official statuses | 515.56 ms → 492.81 ms | parent 349.53 → 340.32 ms; child 219.98 → 220.91 ms | `ps` launches 2 → 2; full validator entries 1 → 1; same managed and official result counts. |
+
+Wall ranges overlapped: baseline 407.9–584.2 ms, candidate 464.3–564.9 ms.
+An earlier run with the same flags on a less loaded machine gave 421.81 →
+334.47 ms. The measurement shows no regression in sequential status latency.
+It claims no latency improvement. The concurrency benefit is covered by
+`DesktopInstanceControllerTests`: more concurrent status batches than
+cooperative threads finish in one round. On a blocking snapshot the same test
+takes three rounds. History, storage, and SQLite readers are unchanged here.
+Their rows overlapped across revisions.
+
 ## Native lifecycle evidence
 
 The bundled [self-contained probe](../script/probe_application_lifecycle.swift)

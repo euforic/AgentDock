@@ -90,12 +90,12 @@ final class CodexAccountRateLimitReaderTests: XCTestCase {
         XCTAssertEqual(counts.accountReads, 1)
     }
 
-    func testBatchRejectsRealUnsignedProviderForEveryHome() throws {
+    func testBatchRejectsRealUnsignedProviderForEveryHome() async throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: root) }
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         let homes = [root.appendingPathComponent("a"), root.appendingPathComponent("b")]
-        let results = AppServerRateLimitClient().fetchRateLimitsBatch(codexHomeURLs: homes,
+        let results = await AppServerRateLimitClient().fetchRateLimitsBatch(codexHomeURLs: homes,
             codexAppURL: root)
         XCTAssertEqual(Set(results.keys), Set(homes))
         XCTAssertTrue(results.values.allSatisfy { $0.errorMessage != nil })

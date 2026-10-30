@@ -70,7 +70,7 @@ public actor CodexAccountRateLimitReader {
         let client = client
         worker = Task {
             let read = Task.detached(priority: .utility) {
-                client.fetchRateLimitsBatch(codexHomeURLs: keys.map(\.home), codexAppURL: first.app)
+                await client.fetchRateLimitsBatch(codexHomeURLs: keys.map(\.home), codexAppURL: first.app)
             }
             let results = await withTaskCancellationHandler { await read.value } onCancel: { read.cancel() }
             finish(keys: keys, results: Task.isCancelled ? [:] : results, cancelled: Task.isCancelled)

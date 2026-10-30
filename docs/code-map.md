@@ -23,6 +23,7 @@
 | `Sources/AgentDockCore/LocalChatSession.swift` | Bounded Claude session readers for activity summaries and legacy chat-index cleanup |
 | `Sources/AgentDockCore/BoundedSubprocess.swift` | Timeout and output-bounded subprocess execution |
 | `Sources/AgentDockCore/ShortcutInstaller.swift` | Profile shortcut generation and replacement |
+| `Sources/AgentDockCore/SQLiteReadOnly.swift` | Path-checked, read-only, no-follow, bounded in-process provider database queries |
 
 ## UI and Rendering
 

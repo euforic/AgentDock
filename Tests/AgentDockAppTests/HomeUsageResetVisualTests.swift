@@ -57,7 +57,7 @@ final class HomeUsageResetVisualTests: XCTestCase {
             try await Task.sleep(for: .milliseconds(800))
             view.layoutSubtreeIfNeeded()
             let imageURL = directory.appendingPathComponent("usage-resets-\(scheme == .dark ? "dark" : "light").png")
-            let capture = try BoundedSubprocess.run(executableURL: URL(fileURLWithPath: "/usr/sbin/screencapture"),
+            let capture = try await BoundedSubprocess.run(executableURL: URL(fileURLWithPath: "/usr/sbin/screencapture"),
                 arguments: ["-x", "-o", "-l", String(window.windowNumber), imageURL.path],
                 timeout: 5, maximumOutputBytes: 1024)
             XCTAssertEqual(capture.terminationStatus, 0)
