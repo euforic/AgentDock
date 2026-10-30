@@ -93,7 +93,6 @@ public struct TokenUsageBucket: Equatable, Identifiable, Sendable {
 
 public final class ProfileStatsScanner: @unchecked Sendable {
     private let fileManager: FileManager
-    private let sqliteExecutable: URL
     private let queryTimeout: TimeInterval
     private let claudeChatScanner: LocalChatScanner
     private let dataSizeMaximumEntries: Int
@@ -104,7 +103,6 @@ public final class ProfileStatsScanner: @unchecked Sendable {
 
     public init(
         fileManager: FileManager = .default,
-        sqliteExecutable: URL = URL(fileURLWithPath: "/usr/bin/sqlite3"),
         queryTimeout: TimeInterval = 10,
         claudeChatScanner: LocalChatScanner = LocalChatScanner(maximumSessions: 10_000),
         dataSizeMaximumEntries: Int = 100_000,
@@ -112,7 +110,6 @@ public final class ProfileStatsScanner: @unchecked Sendable {
         dataSizeTimeout: TimeInterval = 2
     ) {
         self.fileManager = fileManager
-        self.sqliteExecutable = sqliteExecutable
         self.queryTimeout = queryTimeout
         self.claudeChatScanner = claudeChatScanner
         self.dataSizeMaximumEntries = max(1, dataSizeMaximumEntries)
@@ -437,82 +434,37 @@ public final class ProfileStatsScanner: @unchecked Sendable {
         operation: String,
         errors: inout [String]
     ) -> [[String]] {
-        let databaseArgument: String
         do {
-            databaseArgument = try SQLiteReadOnly.databaseArgument(for: database)
-        } catch {
+            return try SQLiteReadOnly.query(
+                database: database,
+                sql: sql,
+                timeout: queryTimeout,
+                maximumOutputBytes: 8 * 1_024 * 1_024
+            ).map { row in row.map(Self.text) }
+        } catch SQLiteReadOnlyError.cancelled {
+            return []
+        } catch SQLiteReadOnlyError.unsafeDatabase {
             errors.append("Could not read \(operation): the database path is not safe.")
-            return []
-        }
-        let process = Process()
-        process.executableURL = sqliteExecutable
-        process.arguments = [
-            "-nofollow",
-            "-readonly",
-            "-noheader",
-            "-separator",
-            "\u{1F}",
-            databaseArgument,
-            sql
-        ]
-
-        let output = Pipe()
-        process.standardOutput = output
-        process.standardError = FileHandle.nullDevice
-        let capture = StatsProcessCapture(maximumBytes: 8 * 1_024 * 1_024)
-        let completion = DispatchSemaphore(value: 0)
-        output.fileHandleForReading.readabilityHandler = { handle in
-            capture.append(handle.availableData)
-        }
-        process.terminationHandler = { _ in completion.signal() }
-
-        do {
-            try process.run()
-            let deadline = Date().addingTimeInterval(queryTimeout)
-            var completed = false
-            while !Task.isCancelled, Date() < deadline {
-                if completion.wait(timeout: .now() + 0.1) == .success {
-                    completed = true
-                    break
-                }
-            }
-            guard !Task.isCancelled else {
-                output.fileHandleForReading.readabilityHandler = nil
-                SubprocessTerminator.terminateAndWait(process)
-                return []
-            }
-            guard completed else {
-                output.fileHandleForReading.readabilityHandler = nil
-                SubprocessTerminator.terminateAndWait(process)
-                errors.append("Timed out reading \(operation).")
-                return []
-            }
-            output.fileHandleForReading.readabilityHandler = nil
-            capture.append(output.fileHandleForReading.readDataToEndOfFile())
-            process.waitUntilExit()
-            if capture.exceededLimit {
-                errors.append("Could not read \(operation): sqlite3 output exceeded the safety limit.")
-                return []
-            }
-            guard process.terminationStatus == 0 else {
-                errors.append("Could not read \(operation) (sqlite3 exited with status \(process.terminationStatus)).")
-                return []
-            }
-            let data = capture.data
-            guard let text = String(data: data, encoding: .utf8), !text.isEmpty else {
-                return []
-            }
-            return text
-                .split(separator: "\n", omittingEmptySubsequences: true)
-                .map { line in
-                    line.split(separator: "\u{1F}", omittingEmptySubsequences: false)
-                        .map(String.init)
-                }
+        } catch SQLiteReadOnlyError.timedOut {
+            errors.append("Timed out reading \(operation).")
+        } catch SQLiteReadOnlyError.outputLimitExceeded {
+            errors.append("Could not read \(operation): SQLite output exceeded the safety limit.")
+        } catch let SQLiteReadOnlyError.sqlite(code) {
+            errors.append("Could not read \(operation) (SQLite error \(code)).")
         } catch {
-            output.fileHandleForReading.readabilityHandler = nil
-            SubprocessTerminator.terminateAndWait(process)
             errors.append("Could not read \(operation): \(error.localizedDescription)")
-            return []
+        }
+        return []
+    }
+
+    /// Text in the form the former `sqlite3` list output gave the parsers below.
+    private static func text(_ value: SQLiteValue) -> String {
+        switch value {
+        case .null: ""
+        case let .integer(value): String(value)
+        case let .real(value): String(value)
+        case let .text(value): value
+        case let .blob(value): String(data: value, encoding: .utf8) ?? ""
         }
     }
 
@@ -612,41 +564,5 @@ private extension NSLock {
         lock()
         defer { unlock() }
         return operation()
-    }
-}
-
-private final class StatsProcessCapture: @unchecked Sendable {
-    private let lock = NSLock()
-    private let maximumBytes: Int
-    private var storage = Data()
-    private var overflowed = false
-
-    init(maximumBytes: Int) {
-        self.maximumBytes = maximumBytes
-    }
-
-    var data: Data {
-        lock.lock()
-        defer { lock.unlock() }
-        return storage
-    }
-
-    var exceededLimit: Bool {
-        lock.lock()
-        defer { lock.unlock() }
-        return overflowed
-    }
-
-    func append(_ data: Data) {
-        guard !data.isEmpty else { return }
-        lock.lock()
-        defer { lock.unlock() }
-        guard !overflowed else { return }
-        guard storage.count + data.count <= maximumBytes else {
-            overflowed = true
-            storage.removeAll(keepingCapacity: false)
-            return
-        }
-        storage.append(data)
     }
 }

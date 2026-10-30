@@ -12,7 +12,8 @@ Security-sensitive operations validate:
 - exact managed profile roots and ownership markers;
 - process ancestry, PIDs, and profile arguments;
 - path containment and symlink rejection;
-- bounded file counts, bytes, subprocess output, and shared session readers.
+- bounded file counts, bytes, subprocess output, read-only provider database
+  queries, and shared session readers.
 
 If those checks fail, managed launch, focus, close, restore, delete, or
 local activity reads fail closed.

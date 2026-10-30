@@ -36,6 +36,20 @@ therefore reuse an explicitly dated measurement. The storage cache retains at
 most 64 roots. Entry, depth, time, and cancellation limits preserve lower-bound
 semantics through `dataSizeIsTruncated`.
 
+Codex stats and local activity query `state_5.sqlite` and `logs_2.sqlite` in
+process through [SQLiteReadOnly.swift](../Sources/AgentDockCore/SQLiteReadOnly.swift)
+instead of launching `/usr/bin/sqlite3`; a refresh starts no database child
+process. The existing path check still resolves only the parent, rejects
+symlinked or non-regular databases and sidecars, and adds `immutable=1` only
+when no `-wal` or `-shm` file exists. Connections open with
+`SQLITE_OPEN_READONLY | SQLITE_OPEN_NOFOLLOW`, set `trusted_schema=OFF` and
+`query_only=ON`, and refuse any statement SQLite does not report as read-only.
+A progress handler interrupts a query at its timeout or when the calling task is
+cancelled. Output bytes and rows are counted while each value is copied: stats
+keep their 8 MiB budget, and activity keeps its configured byte budget plus a
+row limit equal to its `LIMIT`. Text that is not UTF-8, or a missing or mistyped
+required activity column, fails that source instead of being repaired.
+
 Staleness checks schedule local stats and provider quotas independently. A quota
 retry does not rescan fresh local stats, and stale local stats do not bypass the
 one-minute quota retry backoff.

@@ -22,6 +22,7 @@
 | `Sources/AgentDockCore/DesktopAppRegistry.swift` | Official app identities and provider launch contracts |
 | `Sources/AgentDockCore/LocalChatSession.swift` | Shared bounded session readers and indexes, including Claude activity-summary input |
 | `Sources/AgentDockCore/BoundedSubprocess.swift` | Timeout and output-bounded subprocess execution |
+| `Sources/AgentDockCore/SQLiteReadOnly.swift` | Path-checked, read-only, no-follow, bounded in-process provider database queries |
 | `Sources/AgentDockCore/ShortcutInstaller.swift` | Profile shortcut generation and replacement |
 
 ## UI and Rendering
