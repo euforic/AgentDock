@@ -21,9 +21,9 @@
 | `Sources/AgentDockCore/ClaudeLauncher.swift` | Claude app validation and managed process lifecycle |
 | `Sources/AgentDockCore/DesktopAppRegistry.swift` | Official app identities and provider launch contracts |
 | `Sources/AgentDockCore/LocalChatSession.swift` | Shared bounded session readers and indexes, including Claude activity-summary input |
-| `Sources/AgentDockCore/BoundedSubprocess.swift` | Timeout and output-bounded subprocess execution, with an async overload that suspends |
-| `Sources/AgentDockCore/SQLiteReadOnly.swift` | Path-checked, read-only, no-follow, bounded in-process provider database queries |
+| `Sources/AgentDockCore/BoundedSubprocess.swift` | Timeout and output-bounded subprocess execution |
 | `Sources/AgentDockCore/ShortcutInstaller.swift` | Profile shortcut generation and replacement |
+| `Sources/AgentDockCore/SQLiteReadOnly.swift` | Path-checked, read-only, no-follow, bounded in-process provider database queries |
 
 ## UI and Rendering
 
