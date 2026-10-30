@@ -15,9 +15,11 @@ final class LegacyBrandMigrationTests: XCTestCase {
     private var journalURL: URL { support.appendingPathComponent(".agentdock-brand-migration-v1.json") }
 
     override func setUpWithError() throws {
-        // Unix-domain socket paths have a 104-byte limit on macOS.
+        // Unix-domain socket paths have a 104-byte limit on macOS. The `.noindex`
+        // suffix (same length as the old name) keeps Spotlight from briefly opening
+        // fixture files, which the migration's open-file check reports as in use.
         fixture = FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent("ADMigration-\(UUID().uuidString.prefix(12))")
+            .appendingPathComponent("ADM-\(UUID().uuidString.prefix(12)).noindex")
         try FileManager.default.createDirectory(at: fixture, withIntermediateDirectories: false,
             attributes: [.posixPermissions: 0o700])
         try FileManager.default.createDirectory(at: support, withIntermediateDirectories: true)
