@@ -117,6 +117,9 @@ final class AgentDockModel: ObservableObject {
     @Published private(set) var configProfilesByID: [CodexProfile.ID: [CodexConfigProfile]] = [:]
     private var statsGeneration = 0
     private var rateLimitGeneration = 0
+    /// Profiles covered by the running partial refresh; nil while a full refresh runs.
+    private var partialStatsProfiles: [CodexProfile]?
+    private var partialRateLimitProfiles: [CodexProfile]?
     private var appliedInitialDefaultView = false
     private let officialCodexHomeURL: URL
     private let officialClaudeUserDataURL: URL
@@ -399,6 +402,10 @@ final class AgentDockModel: ObservableObject {
         return true
     }
 
+    private static func merging(_ pending: [CodexProfile], with requested: [CodexProfile]) -> [CodexProfile] {
+        pending.filter { old in !requested.contains { $0.id == old.id } } + requested
+    }
+
     private static func applyingProfileOrder(
         _ orderedIDs: [CodexProfile.ID],
         for product: DesktopProduct,
@@ -500,7 +507,16 @@ final class AgentDockModel: ObservableObject {
         )
     }
 
-    private func refreshStats(for profiles: [CodexProfile], replaceAll: Bool) {
+    private func refreshStats(for requestedProfiles: [CodexProfile], replaceAll: Bool) {
+        var requestedProfiles = requestedProfiles
+        if !replaceAll, statsRefreshTask != nil {
+            // A running full refresh already covers these profiles. Replacing it
+            // would discard every other source's results.
+            guard let pending = partialStatsProfiles else { return }
+            requestedProfiles = Self.merging(pending, with: requestedProfiles)
+        }
+        let profiles = requestedProfiles
+        partialStatsProfiles = replaceAll ? nil : profiles
         statsRefreshTask?.cancel()
         statsGeneration += 1
         let generation = statsGeneration
@@ -550,6 +566,7 @@ final class AgentDockModel: ObservableObject {
             }
             guard !Task.isCancelled, let self, self.statsGeneration == generation else { return }
             self.statsRefreshTask = nil
+            self.partialStatsProfiles = nil
             self.statsLoadingProfileIDs.subtract(profiles.map(\.id))
             if replaceAll {
                 self.officialStatsLoading = false
@@ -574,7 +591,13 @@ final class AgentDockModel: ObservableObject {
         replaceAll: Bool,
         allowCredentialInteraction: Bool = false
     ) {
-        let profiles = profiles.map(resolvedProfileForLaunch)
+        var requestedProfiles = profiles.map(resolvedProfileForLaunch)
+        if !replaceAll, rateLimitRefreshTask != nil {
+            guard let pending = partialRateLimitProfiles else { return }
+            requestedProfiles = Self.merging(pending, with: requestedProfiles)
+        }
+        let profiles = requestedProfiles
+        partialRateLimitProfiles = replaceAll ? nil : profiles
         rateLimitRefreshTask?.cancel()
         rateLimitGeneration += 1
         lastQuotaAttemptAt = Date()
@@ -669,6 +692,7 @@ final class AgentDockModel: ObservableObject {
 
             guard !Task.isCancelled, let self, self.rateLimitGeneration == generation else { return }
             self.rateLimitRefreshTask = nil
+            self.partialRateLimitProfiles = nil
             if replaceAll, results.values.allSatisfy({ $0.errorMessage == nil }),
                official?.errorMessage == nil, officialClaude?.errorMessage == nil {
                 self.lastQuotaRefreshAt = Date()
@@ -1847,6 +1871,8 @@ final class AgentDockModel: ObservableObject {
         rateLimitRefreshTask?.cancel()
         statsRefreshTask = nil
         rateLimitRefreshTask = nil
+        partialStatsProfiles = nil
+        partialRateLimitProfiles = nil
         statsLoadingProfileIDs.removeAll()
         officialStatsLoading = false
     }
