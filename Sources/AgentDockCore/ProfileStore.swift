@@ -1462,7 +1462,7 @@ public enum ProfileStoreError: Error, LocalizedError, Equatable {
         case let .invalidOwnershipMarker(path):
             "AgentDock could not verify ownership of the profile data at \(path)."
         case let .profileInUse(name):
-            "Quit every Codex window for \(name) before deleting its data."
+            "Quit every window for \(name) before deleting its data."
         case let .deletionCleanupIncomplete(paths):
             "Profile metadata was removed, but cleanup is incomplete at: \(paths.joined(separator: ", "))"
         case let .deletionRollbackIncomplete(paths):

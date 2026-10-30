@@ -2,8 +2,7 @@
 
 AgentDock product analytics remain off until the user explicitly allows them.
 The consent sheet appears only when delivery is configured and the installation
-is undecided. Analytics can be disabled immediately in **Settings → Data &
-Privacy** without changing any product feature. Explicit choices persist across
+is undecided. Analytics can be disabled immediately in **Settings → Privacy** without changing any product feature. Explicit choices persist across
 upgrades. Installations migrated from the former opt-out policy are returned to
 undecided, their old random identifier is deleted, and older app versions remain
 fail-closed.

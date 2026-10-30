@@ -32,7 +32,7 @@ at any time. Each check is a
 standard HTTPS request to GitHub's service and therefore exposes ordinary
 network metadata to that service; it does not include profile, account, chat,
 or analytics identifiers. Users can change the frequency or disable automatic
-checks in **Settings → General** and can still request a manual check.
+checks in **Settings → Updates** and can still request a manual check.
 
 See [Security and privacy](security.md), [Data flows](data-flows.md), and the
 [security policy](../SECURITY.md) for the remaining boundaries.

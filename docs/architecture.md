@@ -24,7 +24,7 @@ the built-in Stable appcast immediately.
 Users can change that cadence to every six hours, daily, or weekly in Settings;
 Sparkle persists the selected interval and resets its scheduled update cycle.
 Unless the user opts into automatic downloads, scheduled discoveries appear as
-a persistent sidebar pill. Selecting it accepts Sparkle's retained, signed
+a persistent Update button at the bottom of the sidebar. Selecting it accepts Sparkle's retained, signed
 update session directly: AgentDock shows download and installation progress in
 the sidebar while Sparkle performs verification, installation, and relaunch
 without first opening its update-choice window.
@@ -57,7 +57,7 @@ in `AgentDockCore`; the UI consumes only `ProfileRateLimits`.
 - shortcut creation and validation;
 - bounded subprocess execution;
 - provider-aware usage retrieval;
-- local activity scanning and shared bounded session/transcript readers;
+- local activity scanning, including bounded Claude session readers;
 - profile-specific MCP callback configuration.
 
 Core operations fail closed when a path, process, bundle, signature, ownership

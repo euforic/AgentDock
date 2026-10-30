@@ -19,4 +19,25 @@ final class GroupedSubprocessTests: XCTestCase {
         XCTAssertEqual(fcntl(process.standardInput.fileDescriptor, F_GETNOSIGPIPE), 1)
         XCTAssertThrowsError(try process.standardInput.write(contentsOf: Data("request\n".utf8)))
     }
+
+    func testConcurrentSessionDoesNotInheritAnotherSessionsPipes() throws {
+        let first = try GroupedSubprocess(
+            executableURL: URL(fileURLWithPath: "/bin/cat"),
+            arguments: [],
+            environment: [:]
+        )
+        defer { first.terminateAndWait() }
+        let probe = try GroupedSubprocess(
+            executableURL: URL(fileURLWithPath: "/bin/sh"),
+            arguments: [
+                "-c",
+                "test -e /dev/fd/\(first.standardInput.fileDescriptor) && printf leaked || printf closed"
+            ],
+            environment: [:]
+        )
+        defer { probe.terminateAndWait() }
+
+        let output = probe.standardOutput.readDataToEndOfFile()
+        XCTAssertEqual(String(decoding: output, as: UTF8.self), "closed")
+    }
 }

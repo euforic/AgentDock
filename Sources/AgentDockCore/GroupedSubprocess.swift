@@ -53,7 +53,8 @@ final class GroupedSubprocess {
         for descriptor in inputPipe + outputPipe {
             posix_spawn_file_actions_addclose(&actions, descriptor)
         }
-        posix_spawnattr_setflags(&attributes, Int16(POSIX_SPAWN_SETPGROUP))
+        // Keep this session's pipes, and those of concurrent sessions, out of other children.
+        posix_spawnattr_setflags(&attributes, Int16(POSIX_SPAWN_SETPGROUP | POSIX_SPAWN_CLOEXEC_DEFAULT))
         posix_spawnattr_setpgroup(&attributes, 0)
 
         let command = [executableURL.path] + arguments

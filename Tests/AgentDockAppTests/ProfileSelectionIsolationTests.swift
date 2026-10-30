@@ -156,16 +156,20 @@ final class ProfileSelectionIsolationTests: XCTestCase {
         XCTAssertEqual(try fixture.indexSnapshot(), remainingIndexes)
     }
 
-    func testProfileSectionControlFitsLabelsAndStaysInPlace() async throws {
+    func testToolbarSectionControlFitsLabelsAndStaysInPlace() async throws {
         let fixture = try SyntheticProfileFixture()
         defer { fixture.remove() }
         let view = NSHostingView(rootView: ContentView()
             .environmentObject(fixture.model)
             .environmentObject(AppUpdater()))
         view.sizingOptions = []
+        // The section picker lives in the window toolbar, which the hosting view
+        // bridges into its titled window.
+        view.sceneBridgingOptions = [.toolbars, .title]
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 900, height: 600),
-                              styleMask: [.borderless], backing: .buffered, defer: false)
+                              styleMask: [.titled, .resizable, .fullSizeContentView], backing: .buffered, defer: false)
         window.isReleasedWhenClosed = false
+        window.toolbarStyle = .unified
         window.contentView = view
         defer { window.close() }
         window.orderFrontRegardless()
@@ -183,8 +187,9 @@ final class ProfileSelectionIsolationTests: XCTestCase {
             fixture.model.detailTab = selection
             try await Task.sleep(for: .milliseconds(100))
             view.layoutSubtreeIfNeeded()
-            let control = try XCTUnwrap(findPicker(in: view))
-            let frame = control.convert(control.bounds, to: view)
+            let frameView = try XCTUnwrap(window.contentView?.superview)
+            let control = try XCTUnwrap(findPicker(in: frameView))
+            let frame = control.convert(control.bounds, to: nil)
             if let initialFrame { XCTAssertEqual(frame, initialFrame) }
             else { initialFrame = frame }
             for index in 0..<control.segmentCount {
@@ -220,12 +225,13 @@ final class ProfileSelectionIsolationTests: XCTestCase {
                     .environmentObject(model)
                     .environmentObject(updater))
                 view.sizingOptions = []
+                view.sceneBridgingOptions = [.toolbars, .title]
                 let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: size.width, height: size.height),
                                       styleMask: [.titled, .resizable, .fullSizeContentView], backing: .buffered, defer: false)
                 window.isReleasedWhenClosed = false
                 window.animationBehavior = .none
-                window.titleVisibility = .hidden
-                window.titlebarAppearsTransparent = true
+                window.toolbarStyle = .unified
+                window.appearance = appearance.nsAppearance
                 window.contentView = view
                 window.setContentSize(NSSize(width: size.width, height: size.height))
                 NSApplication.shared.setActivationPolicy(.regular)

@@ -9,45 +9,50 @@ struct AnalyticsConsentView: View {
     @EnvironmentObject private var model: AgentDockModel
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 18) {
+        VStack(alignment: .leading, spacing: 16) {
             Image(systemName: "chart.bar.xaxis")
-                .font(.system(size: 30))
-                .foregroundStyle(AgentDockPalette.blue)
-            Text("Help improve AgentDock?")
-                .font(.system(size: 22, weight: .semibold))
-            Text("Share optional, pseudonymous product analytics. AgentDock is fully functional if you say no, and nothing is sent until you choose Allow Analytics.")
-                .font(.system(size: 13))
+                .font(.system(size: 32))
+                .foregroundStyle(.tint)
+                .accessibilityHidden(true)
+            Text("Help Improve AgentDock?")
+                .font(.title2.weight(.semibold))
+            Text("Share optional, pseudonymous product analytics. AgentDock works the same if you don't, and nothing is sent unless you choose Allow.")
                 .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
 
-            VStack(alignment: .leading, spacing: 10) {
+            Grid(alignment: .topLeading, horizontalSpacing: 10, verticalSpacing: 12) {
                 consentLine("Shared", "Feature actions and outcomes, safe error codes, coarse counts and timing buckets, app version, macOS major version, and architecture.", "checkmark.shield")
-                consentLine("Never shared", "Names, accounts, paths, commands, prompts, chats, transcripts, session IDs, configuration values, logs, crashes, or precise location.", "hand.raised")
-                consentLine("Your control", "Turn this off at any time in Data & Privacy. Opting out immediately clears pending events and deletes the local analytics identifier.", "switch.2")
+                consentLine("Never shared", "Names, accounts, paths, commands, prompts, chats, transcripts, session IDs, configuration values, logs, crashes, or location.", "hand.raised")
+                consentLine("Your choice", "Change this anytime in Settings › Privacy. Opting out clears pending events and deletes the local analytics identifier.", "switch.2")
             }
             .padding(14)
-            .background(.white.opacity(0.04), in: RoundedRectangle(cornerRadius: 10))
+            .background(.quinary, in: .rect(cornerRadius: 10))
 
             HStack {
-                Button("No Thanks") { model.setAnalyticsConsent(granted: false, surface: .onboarding) }
-                    .keyboardShortcut(.cancelAction)
                 Spacer()
-                Button("Allow Analytics") { model.setAnalyticsConsent(granted: true, surface: .onboarding) }
-                    .buttonStyle(.borderedProminent)
+                Button("Don't Allow") { model.setAnalyticsConsent(granted: false, surface: .onboarding) }
+                    .keyboardShortcut(.cancelAction)
+                Button("Allow") { model.setAnalyticsConsent(granted: true, surface: .onboarding) }
                     .keyboardShortcut(.defaultAction)
             }
+            .controlSize(.large)
         }
-        .padding(26)
-        .frame(width: 540)
-        .background(AgentDockPalette.graphite)
+        .padding(24)
+        .frame(width: 500)
         .interactiveDismissDisabled()
     }
 
     private func consentLine(_ title: String, _ detail: String, _ icon: String) -> some View {
-        HStack(alignment: .top, spacing: 10) {
-            Image(systemName: icon).frame(width: 18).foregroundStyle(.secondary)
+        GridRow {
+            Image(systemName: icon)
+                .foregroundStyle(.secondary)
+                .frame(width: 18)
+                .accessibilityHidden(true)
             VStack(alignment: .leading, spacing: 2) {
-                Text(title).font(.system(size: 13, weight: .semibold))
-                Text(detail).font(.system(size: 12)).foregroundStyle(.secondary)
+                Text(title).fontWeight(.semibold)
+                Text(detail)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
             }
         }
     }

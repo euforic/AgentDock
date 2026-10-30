@@ -91,10 +91,10 @@ is not evidence of a supported isolation contract.
   `AgentDock.defaultView = "chats"` migrates to `"overview"` without changing
   other preferences.
 - Legacy chat indexes: versioned, bounded summary metadata with relative
-  source paths and a source-root fingerprint. Core readers reject a different
-  source root or duplicate cached paths. The app no longer creates these
-  indexes; explicit profile removal or deletion cleans up that profile's
-  legacy indexes. Claude activity summaries remain in memory.
+  source paths and a source-root fingerprint, left by older versions. AgentDock
+  no longer reads or writes these indexes; explicit profile removal or deletion
+  deletes that profile's legacy index files. Claude activity summaries remain
+  in memory.
 - Analytics state: `undecided`, `denied`, or `granted` in UserDefaults. The
   analytics boundary never promotes `undecided` without a user action. A random
   installation UUID exists only while granted and is deleted on opt-out;
