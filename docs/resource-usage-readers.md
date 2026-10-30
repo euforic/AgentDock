@@ -50,6 +50,14 @@ keep their 8 MiB budget, and activity keeps its configured byte budget plus a
 row limit equal to its `LIMIT`. Text that is not UTF-8, or a missing or mistyped
 required activity column, fails that source instead of being repaired.
 
+Subprocess waits are event driven. `BoundedSubprocess` watches root exit, pipe
+output, and its deadline with dispatch sources on a private queue, and its async
+overload suspends the calling task until they finish; the synchronous overload
+remains for synchronous callers. The Codex app-server quota read awaits its
+initialize, response, and exit milestones and its termination grace period, so
+neither holds a cooperative thread. Timeouts, process-group SIGTERM then
+SIGKILL, cancellation, and output limits are unchanged.
+
 Staleness checks schedule local stats and provider quotas independently. A quota
 retry does not rescan fresh local stats, and stale local stats do not bypass the
 one-minute quota retry backoff.

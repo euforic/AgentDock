@@ -124,7 +124,7 @@ final class LiveProfileIsolationTests: XCTestCase {
             let tree = try SystemProcessTreeSnapshotProvider().processTreeSnapshot()
             let descendants = SystemProcessTreeSnapshotProvider.descendants(of: processIDs, in: tree)
             let allIDs = processIDs.union(descendants.map(\.processID))
-            let result = try BoundedSubprocess.run(
+            let result = try await BoundedSubprocess.run(
                 executableURL: URL(fileURLWithPath: "/usr/sbin/lsof"),
                 arguments: ["-nP", "-a", "-p", allIDs.sorted().map(String.init).joined(separator: ","), "-Fn"],
                 timeout: 5,

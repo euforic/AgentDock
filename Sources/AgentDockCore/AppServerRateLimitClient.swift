@@ -24,24 +24,24 @@ public final class AppServerRateLimitClient: @unchecked Sendable {
             ?? "0.1.1"
     }
 
-    public func fetchRateLimits(for profile: CodexProfile, codexAppURL: URL) -> ProfileRateLimits {
-        fetchRateLimits(codexHomeURL: profile.codexHomePath, codexAppURL: codexAppURL)
+    public func fetchRateLimits(for profile: CodexProfile, codexAppURL: URL) async -> ProfileRateLimits {
+        await fetchRateLimits(codexHomeURL: profile.codexHomePath, codexAppURL: codexAppURL)
     }
 
-    public func fetchRateLimits(codexHomeURL: URL, codexAppURL: URL) -> ProfileRateLimits {
-        fetchRateLimits(codexHomeURL: codexHomeURL, codexAppURL: codexAppURL, includeAccountDetails: false)
+    public func fetchRateLimits(codexHomeURL: URL, codexAppURL: URL) async -> ProfileRateLimits {
+        await fetchRateLimits(codexHomeURL: codexHomeURL, codexAppURL: codexAppURL, includeAccountDetails: false)
     }
 
     public func fetchRateLimits(codexHomeURL: URL, codexAppURL: URL,
-                               includeAccountDetails: Bool) -> ProfileRateLimits {
-        fetchRateLimitsBatch(codexHomeURLs: [codexHomeURL], codexAppURL: codexAppURL,
+                               includeAccountDetails: Bool) async -> ProfileRateLimits {
+        await fetchRateLimitsBatch(codexHomeURLs: [codexHomeURL], codexAppURL: codexAppURL,
             includeAccountDetails: includeAccountDetails)[codexHomeURL]
             ?? ProfileRateLimits(errorMessage: "Usage-limit refresh was cancelled.")
     }
 
     /// The validated executable is scoped to this bounded batch, never cached as trust.
     public func fetchRateLimitsBatch(codexHomeURLs: [URL], codexAppURL: URL,
-                                    includeAccountDetails: Bool = true) -> [URL: ProfileRateLimits] {
+                                    includeAccountDetails: Bool = true) async -> [URL: ProfileRateLimits] {
         guard !Task.isCancelled else { return [:] }
         let homes = Array(Set(codexHomeURLs)).sorted { $0.path < $1.path }
         guard !homes.isEmpty else { return [:] }
@@ -72,7 +72,7 @@ public final class AppServerRateLimitClient: @unchecked Sendable {
                 results[home] = ProfileRateLimits(errorMessage: "The installed app changed during the refresh.")
                 continue
             }
-            let value = fetchValidatedRateLimits(codexHomeURL: home,
+            let value = await fetchValidatedRateLimits(codexHomeURL: home,
                 executable: executable, includeAccountDetails: includeAccountDetails)
             results[home] = Task.isCancelled || identity == nil || identity == batchIdentity(app: codexAppURL, executable: executable)
                 ? value : ProfileRateLimits(errorMessage: "The installed app changed during the refresh.")
@@ -100,46 +100,70 @@ public final class AppServerRateLimitClient: @unchecked Sendable {
     }
 
     private func fetchValidatedRateLimits(codexHomeURL: URL, executable codexExecutable: URL,
-                                         includeAccountDetails: Bool) -> ProfileRateLimits {
+                                         includeAccountDetails: Bool) async -> ProfileRateLimits {
         let environment = Self.launchEnvironment(
             codexHomeURL: codexHomeURL,
             codexExecutable: codexExecutable,
             inherited: ProcessInfo.processInfo.environment
         )
 
-        let initializeCompletion = DispatchSemaphore(value: 0)
-        let completion = DispatchSemaphore(value: 0)
-        let pipeFinished = DispatchSemaphore(value: 0)
+        let progress = AppServerProgress()
         let responseState = ResponseState(maximumBytes: maximumResponseBytes,
             includesAccountDetails: includeAccountDetails)
 
+        let process: GroupedSubprocess
         do {
-            let process = try GroupedSubprocess(
+            process = try GroupedSubprocess(
                 executableURL: codexExecutable,
                 arguments: ["app-server", "--listen", "stdio://"],
                 environment: environment
             )
-            process.standardOutput.readabilityHandler = { handle in
-                let data = handle.availableData
-                if data.isEmpty {
-                    pipeFinished.signal()
-                    return
-                }
-                responseState.consume(data)
-                if responseState.hasInitializeResponse || responseState.errorMessage != nil {
-                    initializeCompletion.signal()
-                }
-                if responseState.isComplete || responseState.errorMessage != nil {
-                    completion.signal()
-                }
+        } catch {
+            return ProfileRateLimits(errorMessage: (error as? LocalizedError)?.errorDescription ?? error.localizedDescription)
+        }
+        process.standardOutput.readabilityHandler = { handle in
+            let data = handle.availableData
+            if data.isEmpty {
+                progress.mark(.outputClosed)
+                return
             }
-            defer {
-                process.standardOutput.readabilityHandler = nil
-                process.terminateAndWait()
+            responseState.consume(data)
+            if responseState.hasInitializeResponse || responseState.errorMessage != nil {
+                progress.mark(.initialized)
             }
+            if responseState.isComplete || responseState.errorMessage != nil {
+                progress.mark(.completed)
+            }
+        }
+        let exitObservation = process.observeExit(on: .global(qos: .utility)) {
+            progress.mark(.processExited)
+        }
+        // The root may have exited before its source was registered.
+        if !process.isRunning {
+            progress.mark(.processExited)
+        }
 
+        let limits = await exchangeRequests(
+            with: process,
+            progress: progress,
+            responseState: responseState,
+            includeAccountDetails: includeAccountDetails
+        )
+        process.standardOutput.readabilityHandler = nil
+        exitObservation.cancel()
+        await process.terminate()
+        return limits
+    }
+
+    private func exchangeRequests(
+        with process: GroupedSubprocess,
+        progress: AppServerProgress,
+        responseState: ResponseState,
+        includeAccountDetails: Bool
+    ) async -> ProfileRateLimits {
+        do {
             try writeInitializeRequest(to: process.standardInput)
-            let initializeWait = waitForCompletion(initializeCompletion, process: process)
+            let initializeWait = await waitForCompletion(.initialized, progress: progress)
             if let errorMessage = responseState.errorMessage {
                 return ProfileRateLimits(errorMessage: errorMessage)
             }
@@ -155,15 +179,15 @@ public final class AppServerRateLimitClient: @unchecked Sendable {
 
             try writeRateLimitRequest(to: process.standardInput, includeAccountDetails: includeAccountDetails)
 
-            let waitResult = waitForCompletion(completion, process: process)
-            if !process.isRunning,
+            let waitResult = await waitForCompletion(.completed, progress: progress)
+            if progress.hasReached(.processExited) || !process.isRunning,
                responseState.responseData == nil,
                responseState.errorMessage == nil
             {
                 // Process termination can race the readability callback that
                 // delivers the final response. Give that bounded callback a
                 // chance to consume EOF before deciding the response is absent.
-                _ = pipeFinished.wait(timeout: .now() + 0.1)
+                _ = await progress.wait(forAnyOf: [.outputClosed], timeout: 0.1)
             }
             if let responseData = responseState.responseData {
                 var limits = try RateLimitParser.parseResponse(responseData)
@@ -208,20 +232,13 @@ public final class AppServerRateLimitClient: @unchecked Sendable {
         return environment
     }
 
+    /// Suspends until `milestone` or root exit, the timeout, or cancellation.
     private func waitForCompletion(
-        _ completion: DispatchSemaphore,
-        process: GroupedSubprocess
-    ) -> DispatchTimeoutResult {
-        let deadline = Date().addingTimeInterval(timeoutSeconds)
-        while !Task.isCancelled, Date() < deadline {
-            if completion.wait(timeout: .now() + 0.1) == .success {
-                return .success
-            }
-            if !process.isRunning {
-                return .success
-            }
-        }
-        return .timedOut
+        _ milestone: AppServerProgress.Milestone,
+        progress: AppServerProgress
+    ) async -> DispatchTimeoutResult {
+        await progress.wait(forAnyOf: [milestone, .processExited], timeout: timeoutSeconds)
+            ? .success : .timedOut
     }
 
     private func writeInitializeRequest(to fileHandle: FileHandle) throws {
@@ -260,6 +277,68 @@ public final class AppServerRateLimitClient: @unchecked Sendable {
         try fileHandle.write(contentsOf: Data(readRateLimits.utf8))
     }
 
+}
+
+/// Milestones reported by the readability and process-exit callbacks. Waiting
+/// suspends the task instead of holding a cooperative thread.
+private final class AppServerProgress: @unchecked Sendable {
+    enum Milestone: Hashable {
+        case initialized
+        case completed
+        case outputClosed
+        case processExited
+    }
+
+    private struct Waiter {
+        var milestones: Set<Milestone>
+        var continuation: CheckedContinuation<Bool, Never>
+    }
+
+    private let lock = NSLock()
+    private var reached: Set<Milestone> = []
+    private var waiters: [UUID: Waiter] = [:]
+
+    func mark(_ milestone: Milestone) {
+        let ready = lock.withLock {
+            reached.insert(milestone)
+            let identifiers = waiters.filter { $0.value.milestones.contains(milestone) }.map(\.key)
+            return identifiers.compactMap { waiters.removeValue(forKey: $0)?.continuation }
+        }
+        ready.forEach { $0.resume(returning: true) }
+    }
+
+    func hasReached(_ milestone: Milestone) -> Bool {
+        lock.withLock { reached.contains(milestone) }
+    }
+
+    /// Returns false on timeout or cancellation.
+    func wait(forAnyOf milestones: Set<Milestone>, timeout: TimeInterval) async -> Bool {
+        let identifier = UUID()
+        return await withTaskCancellationHandler {
+            await withCheckedContinuation { continuation in
+                let immediate: Bool? = lock.withLock {
+                    if !reached.isDisjoint(with: milestones) { return true }
+                    if Task.isCancelled { return false }
+                    waiters[identifier] = Waiter(milestones: milestones, continuation: continuation)
+                    return nil
+                }
+                if let immediate {
+                    continuation.resume(returning: immediate)
+                    return
+                }
+                DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + max(0, timeout)) {
+                    self.resume(identifier, returning: false)
+                }
+            }
+        } onCancel: {
+            resume(identifier, returning: false)
+        }
+    }
+
+    private func resume(_ identifier: UUID, returning value: Bool) {
+        lock.withLock { waiters.removeValue(forKey: identifier) }?
+            .continuation.resume(returning: value)
+    }
 }
 
 private final class ResponseState: @unchecked Sendable {

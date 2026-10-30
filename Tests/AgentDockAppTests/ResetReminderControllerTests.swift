@@ -59,7 +59,7 @@ final class ResetReminderControllerTests: XCTestCase {
                     try await Task.sleep(for: .milliseconds(800))
                     view.layoutSubtreeIfNeeded()
                     let file = directory.appendingPathComponent("\(settings ? "settings" : "resets")-\(dark ? "dark" : "light")-\(compact ? "compact" : "regular").png")
-                    let result = try BoundedSubprocess.run(executableURL: URL(fileURLWithPath: "/usr/sbin/screencapture"),
+                    let result = try await BoundedSubprocess.run(executableURL: URL(fileURLWithPath: "/usr/sbin/screencapture"),
                         arguments: ["-x", "-o", "-l", String(window.windowNumber), file.path], timeout: 5, maximumOutputBytes: 1024)
                     XCTAssertEqual(result.terminationStatus, 0)
                     window.close()

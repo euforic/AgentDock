@@ -90,7 +90,7 @@ func measure(_ name: String, operation: () async throws -> [String: Any]) async 
             ("state_5.sqlite", "CREATE TABLE threads(id TEXT,tokens_used INTEGER,updated_at INTEGER,archived INTEGER); WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i+1 FROM n WHERE i<50000) INSERT INTO threads SELECT 'session-'||i,i,\(timestamp),0 FROM n; CREATE TABLE agent_jobs(status TEXT); INSERT INTO agent_jobs VALUES('complete');"),
             ("logs_2.sqlite", "CREATE TABLE logs(ts INTEGER,level TEXT); WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i+1 FROM n WHERE i<2000000) INSERT INTO logs SELECT \(timestamp)-i,CASE WHEN i%100=0 THEN 'ERROR' ELSE 'INFO' END FROM n;")
         ] {
-            let created = try BoundedSubprocess.run(executableURL: URL(fileURLWithPath: "/usr/bin/sqlite3"),
+            let created = try await BoundedSubprocess.run(executableURL: URL(fileURLWithPath: "/usr/bin/sqlite3"),
                 arguments: [databaseHome.appendingPathComponent(name).path, sql], timeout: 30, maximumOutputBytes: 1024)
             precondition(created.terminationStatus == 0, "Synthetic database creation failed")
         }

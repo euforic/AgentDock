@@ -236,7 +236,7 @@ final class ProfileSelectionIsolationTests: XCTestCase {
                 // Capture WindowServer composition, including native glass controls.
                 let arguments = ["-x", "-o", "-l", String(window.windowNumber),
                                  directory.appendingPathComponent("\(size.name)-\(appearance.rawValue)-\(destination).png").path]
-                var capture = try BoundedSubprocess.run(
+                var capture = try await BoundedSubprocess.run(
                     executableURL: URL(fileURLWithPath: "/usr/sbin/screencapture"),
                     arguments: arguments,
                     timeout: 5,
@@ -251,7 +251,7 @@ final class ProfileSelectionIsolationTests: XCTestCase {
                     // Retry an incomplete WindowServer activation or animation frame.
                     window.orderFrontRegardless()
                     try await Task.sleep(for: .milliseconds(800))
-                    capture = try BoundedSubprocess.run(
+                    capture = try await BoundedSubprocess.run(
                         executableURL: URL(fileURLWithPath: "/usr/sbin/screencapture"),
                         arguments: arguments, timeout: 5, maximumOutputBytes: 1_024
                     )
