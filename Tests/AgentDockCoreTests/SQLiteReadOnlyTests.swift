@@ -214,6 +214,48 @@ final class SQLiteReadOnlyTests: XCTestCase {
         }
     }
 
+    func testScopedQueryRejectsSymlinkedParentFromAnotherProfile() throws {
+        let profile = root.appendingPathComponent("Profile", isDirectory: true)
+        let otherProfile = root.appendingPathComponent("OtherProfile", isDirectory: true)
+        try FileManager.default.createDirectory(at: profile, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: otherProfile, withIntermediateDirectories: true)
+        let database = try makeDatabase("""
+        create table items (id integer);
+        insert into items values (3);
+        """)
+        let otherDatabase = otherProfile.appendingPathComponent("Cookies")
+        try FileManager.default.moveItem(at: database, to: otherDatabase)
+        let network = profile.appendingPathComponent("Network", isDirectory: true)
+        try FileManager.default.createSymbolicLink(at: network, withDestinationURL: otherProfile)
+        let linked = network.appendingPathComponent("Cookies")
+        let sql = "select id from items;"
+
+        // Only the parent is resolved, so an unscoped query follows the link.
+        XCTAssertEqual(
+            try SQLiteReadOnly.query(database: linked, sql: sql, timeout: 2, maximumOutputBytes: 1_024),
+            [[.integer(3)]]
+        )
+        XCTAssertThrowsError(try SQLiteReadOnly.query(
+            database: linked,
+            under: profile,
+            sql: sql,
+            timeout: 2,
+            maximumOutputBytes: 1_024
+        )) { error in
+            XCTAssertEqual(error as? SQLiteReadOnlyError, .unsafeDatabase(linked.path))
+        }
+        XCTAssertEqual(
+            try SQLiteReadOnly.query(
+                database: otherDatabase,
+                under: otherProfile,
+                sql: sql,
+                timeout: 2,
+                maximumOutputBytes: 1_024
+            ),
+            [[.integer(3)]]
+        )
+    }
+
     func testQueryReadsCommittedWALContentWhileWriterIsOpen() throws {
         let database = root.appendingPathComponent("live.sqlite")
         var writer: OpaquePointer?

@@ -138,7 +138,8 @@ replace the displayed account. Desktop usage requires a valid
 account and organization identity, and responses are verified against that
 identity before display. An explicit identity mismatch clears the corresponding
 cached quota instead of showing stale data. Active-organization cookie database
-reads enforce the same root containment and symlink checks as other databases.
+reads run in process through the read-only database reader and enforce the same
+root containment and symlink checks as other databases.
 
 ## Repository and Release Hygiene
 

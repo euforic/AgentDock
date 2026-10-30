@@ -572,45 +572,34 @@ struct ClaudeCredentialReader {
         cache.keys.compactMap { desktopCacheMetadata($0)?.organization }
     }
 
-    private func activeOrganization(userDataURL: URL, key: Data) -> String? {
+    func activeOrganization(userDataURL: URL, key: Data) -> String? {
         let cookieURLs = [
             userDataURL.appendingPathComponent("Cookies"),
             userDataURL.appendingPathComponent("Network/Cookies")
         ]
+        // A non-empty plain value wins; otherwise the encrypted value is used.
         let query = """
-        SELECT host_key || '|' || CASE
-          WHEN length(value) > 0 THEN 'plain:' || hex(CAST(value AS BLOB))
-          ELSE 'encrypted:' || hex(encrypted_value)
-        END
+        SELECT host_key, CAST(value AS TEXT), CAST(encrypted_value AS BLOB)
         FROM cookies
         WHERE name = 'lastActiveOrg' AND host_key IN ('.claude.ai', 'claude.ai')
         ORDER BY last_update_utc DESC LIMIT 1;
         """
         for cookieURL in cookieURLs where FileManager.default.fileExists(atPath: cookieURL.path) {
-            guard let databaseArgument = try? SQLiteReadOnly.databaseArgument(
-                for: cookieURL,
-                under: userDataURL
-            ),
-                  let result = try? BoundedSubprocess.run(
-                executableURL: URL(fileURLWithPath: "/usr/bin/sqlite3"),
-                arguments: ["-nofollow", "-readonly", databaseArgument, query],
+            guard let row = (try? SQLiteReadOnly.query(
+                database: cookieURL,
+                under: userDataURL,
+                sql: query,
                 timeout: 2,
-                maximumOutputBytes: 4_096
-            ), result.terminationStatus == 0, !result.exceededOutputLimit,
-            let line = String(data: result.output, encoding: .utf8)?
-                .trimmingCharacters(in: .whitespacesAndNewlines),
-            let hostSeparator = line.firstIndex(of: "|")
+                maximumOutputBytes: 4_096,
+                maximumRows: 1
+            ))?.first,
+                  row.count == 3,
+                  case let .text(host) = row[0]
             else { continue }
-            let host = String(line[..<hostSeparator])
-            let encoded = String(line[line.index(after: hostSeparator)...])
-            guard let modeSeparator = encoded.firstIndex(of: ":"),
-                  let stored = Data(hexString: String(encoded[encoded.index(after: modeSeparator)...]))
-            else { continue }
-            let mode = encoded[..<modeSeparator]
             let value: Data
-            if mode == "plain" {
-                value = stored
-            } else if mode == "encrypted",
+            if case let .text(plain) = row[1], !plain.isEmpty {
+                value = Data(plain.utf8)
+            } else if case let .blob(stored) = row[2],
                       let decrypted = try? decrypt(stored, key: key)
             {
                 let hostHash = Data(SHA256.hash(data: Data(host.utf8)))
@@ -758,22 +747,6 @@ private enum ClaudeUsageClientError: Error {
     case identityMismatch
     case rateLimited(TimeInterval?)
     case requestFailed(Int)
-}
-
-private extension Data {
-    init?(hexString: String) {
-        guard hexString.count.isMultiple(of: 2) else { return nil }
-        var bytes: [UInt8] = []
-        bytes.reserveCapacity(hexString.count / 2)
-        var index = hexString.startIndex
-        while index < hexString.endIndex {
-            let next = hexString.index(index, offsetBy: 2)
-            guard let byte = UInt8(hexString[index..<next], radix: 16) else { return nil }
-            bytes.append(byte)
-            index = next
-        }
-        self.init(bytes)
-    }
 }
 
 // Claude uses the file-based login Keychain. LAContext only suppresses UI for
