@@ -2,9 +2,9 @@
 
 `ProfileStatsScanner` uses summary-only Claude scans. These retain source-backed
 session timestamps, model attribution, token totals, and local usage-limit
-signals while skipping presentation titles, previews, repository and branch
-details, and change-token construction. Public session and transcript APIs
-retain their supported behavior.
+signals. They do not read presentation titles, previews, repository or branch
+details, or build change tokens. The core package has no presentation scan or
+transcript API.
 
 The official Claude Code history index reads the newest 16 MiB by default.
 It drops an incomplete record at the beginning of that window, visits newest
@@ -14,7 +14,7 @@ cover only inspected records when those limits apply. Per-session model headers
 use a separate 16 MiB scan budget, with at most 256 KiB per session. Header
 budgets count bytes actually read, including buffered chunks.
 
-History summaries remain in memory for at most four history/mode combinations.
+History summaries remain in memory for at most four history files.
 An unchanged file reuses its summary without reading the history body. Device,
 inode, size, and nanosecond modification and change times invalidate cached
 summaries after append, replacement, or rewrite. Reads use the existing regular
