@@ -55,7 +55,9 @@ output, and its deadline with dispatch sources on a private queue, and its async
 overload suspends the calling task until they finish; the synchronous overload
 remains for synchronous callers. The Codex app-server quota read awaits its
 initialize, response, and exit milestones and its termination grace period, so
-neither holds a cooperative thread. Timeouts, process-group SIGTERM then
+neither holds a cooperative thread. Desktop instance status reads await their
+`ps` snapshot the same way; launch, close, and focus flows keep the synchronous
+overload (see [apis.md](apis.md)). Timeouts, process-group SIGTERM then
 SIGKILL, cancellation, and output limits are unchanged.
 
 Staleness checks schedule local stats and provider quotas independently. A quota

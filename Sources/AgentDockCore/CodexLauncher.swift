@@ -168,24 +168,59 @@ public struct OfficialCodexAppValidator: CodexAppValidating, @unchecked Sendable
 }
 
 public protocol CodexProcessSnapshotProviding: Sendable {
+    /// Launch, close, and focus flows read without suspending, so no other
+    /// actor work runs between the snapshot and the checks that act on it.
     func processSnapshot() throws -> String
+    /// Read-only status refreshes await this. The default runs the synchronous
+    /// snapshot; conformers that wait on a subprocess should suspend instead.
+    func suspendingProcessSnapshot() async throws -> String
+}
+
+extension CodexProcessSnapshotProviding {
+    public func suspendingProcessSnapshot() async throws -> String {
+        try processSnapshot()
+    }
 }
 
 public struct SystemCodexProcessSnapshotProvider: CodexProcessSnapshotProviding {
+    private static let executableURL = URL(fileURLWithPath: "/bin/ps")
+    private static let arguments = ["-ax", "-o", "pid=,command="]
+    private static let timeout: TimeInterval = 3
+    private static let maximumOutputBytes = 8 * 1_024 * 1_024
+
     public init() {}
 
     public func processSnapshot() throws -> String {
         let result: BoundedSubprocessResult
         do {
             result = try BoundedSubprocess.run(
-                executableURL: URL(fileURLWithPath: "/bin/ps"),
-                arguments: ["-ax", "-o", "pid=,command="],
-                timeout: 3,
-                maximumOutputBytes: 8 * 1_024 * 1_024
+                executableURL: Self.executableURL,
+                arguments: Self.arguments,
+                timeout: Self.timeout,
+                maximumOutputBytes: Self.maximumOutputBytes
             )
         } catch {
             throw CodexLauncherError.processInspectionUnavailable
         }
+        return try Self.snapshot(from: result)
+    }
+
+    public func suspendingProcessSnapshot() async throws -> String {
+        let result: BoundedSubprocessResult
+        do {
+            result = try await BoundedSubprocess.run(
+                executableURL: Self.executableURL,
+                arguments: Self.arguments,
+                timeout: Self.timeout,
+                maximumOutputBytes: Self.maximumOutputBytes
+            )
+        } catch {
+            throw CodexLauncherError.processInspectionUnavailable
+        }
+        return try Self.snapshot(from: result)
+    }
+
+    private static func snapshot(from result: BoundedSubprocessResult) throws -> String {
         guard !result.exceededOutputLimit else {
             throw CodexLauncherError.processInspectionUnavailable
         }
@@ -879,13 +914,18 @@ public actor CodexInstanceController {
         try status(configuration: IsolatedCodexLaunchConfiguration(profile: profile, codexAppURL: codexAppURL))
     }
 
+    // The read-only status reads below suspend on their snapshot, so other work
+    // on this actor may run meanwhile. They change no actor state, and derive
+    // statuses from the snapshot alone after resuming. Launch and close flows
+    // never take these paths; they read without suspending.
+
     public func statuses(
         for profiles: [CodexProfile],
         codexAppURL: URL
-    ) throws -> [CodexProfile.ID: CodexInstanceStatus] {
+    ) async throws -> [CodexProfile.ID: CodexInstanceStatus] {
         try Task.checkCancellation()
         guard !profiles.isEmpty else { return [:] }
-        let snapshot = try processSnapshotProvider.processSnapshot()
+        let snapshot = try await processSnapshotProvider.suspendingProcessSnapshot()
         try Task.checkCancellation()
         return statuses(for: profiles, codexAppURL: codexAppURL, snapshot: snapshot)
     }
@@ -893,7 +933,7 @@ public actor CodexInstanceController {
     func statusBatch(
         for profiles: [CodexProfile],
         codexAppURL: URL
-    ) throws -> ProviderInstanceStatusBatch {
+    ) async throws -> ProviderInstanceStatusBatch {
         try Task.checkCancellation()
         let executableURL = IsolatedCodexLaunchConfiguration.appExecutableURL(for: codexAppURL)
         var isDirectory: ObjCBool = false
@@ -908,7 +948,7 @@ public actor CodexInstanceController {
                 officialStatus: CodexInstanceStatus()
             )
         }
-        let snapshot = try processSnapshotProvider.processSnapshot()
+        let snapshot = try await processSnapshotProvider.suspendingProcessSnapshot()
         try Task.checkCancellation()
         return ProviderInstanceStatusBatch(
             managedStatuses: statuses(for: profiles, codexAppURL: codexAppURL, snapshot: snapshot),
@@ -942,7 +982,16 @@ public actor CodexInstanceController {
         })
     }
 
-    public func stockStatus(codexAppURL: URL) throws -> CodexInstanceStatus {
+    public func stockStatus(codexAppURL: URL) async throws -> CodexInstanceStatus {
+        try Task.checkCancellation()
+        let snapshot = try await processSnapshotProvider.suspendingProcessSnapshot()
+        try Task.checkCancellation()
+        return stockStatus(codexAppURL: codexAppURL, snapshot: snapshot)
+    }
+
+    /// Official open and close flows act on this status before their next
+    /// suspension point, so it reads without suspending.
+    private func lifecycleStockStatus(codexAppURL: URL) throws -> CodexInstanceStatus {
         try Task.checkCancellation()
         let snapshot = try processSnapshotProvider.processSnapshot()
         try Task.checkCancellation()
@@ -979,7 +1028,7 @@ public actor CodexInstanceController {
             try configProfile.validate(in: codexHomeURL)
         }
 
-        if let processID = try stockStatus(codexAppURL: codexAppURL).primaryProcessID {
+        if let processID = try lifecycleStockStatus(codexAppURL: codexAppURL).primaryProcessID {
             guard lifecycleController.focusStock(
                 processID: processID,
                 codexAppURL: codexAppURL
@@ -1031,7 +1080,7 @@ public actor CodexInstanceController {
 
     public func closeStock(codexAppURL: URL) async throws -> CodexCloseOutcome {
         try validator.validateCodexApp(at: codexAppURL)
-        let processIDs = try stockStatus(codexAppURL: codexAppURL).processIDs
+        let processIDs = try lifecycleStockStatus(codexAppURL: codexAppURL).processIDs
         guard !processIDs.isEmpty else { return .alreadyStopped }
         for processID in processIDs {
             guard lifecycleController.terminateStock(
@@ -1046,13 +1095,13 @@ public actor CodexInstanceController {
         let deadline = clock.now.advanced(by: closeTimeout)
         while clock.now < deadline {
             try Task.checkCancellation()
-            if try stockStatus(codexAppURL: codexAppURL).processIDs.isEmpty {
+            if try lifecycleStockStatus(codexAppURL: codexAppURL).processIDs.isEmpty {
                 return .closed(processIDs: processIDs)
             }
             try await clock.sleep(for: closePollInterval)
         }
         throw CodexLauncherError.closeTimedOut(
-            try stockStatus(codexAppURL: codexAppURL).processIDs
+            try lifecycleStockStatus(codexAppURL: codexAppURL).processIDs
         )
     }
 
