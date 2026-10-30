@@ -28,6 +28,21 @@ final class BoundedSubprocessTests: XCTestCase {
         XCTAssertEqual(result.terminationStatus, 7)
     }
 
+    func testChildDoesNotInheritUnrelatedDescriptors() throws {
+        var descriptors: [Int32] = [0, 0]
+        XCTAssertEqual(pipe(&descriptors), 0)
+        defer { descriptors.forEach { close($0) } }
+
+        let result = try BoundedSubprocess.run(
+            executableURL: URL(fileURLWithPath: "/bin/sh"),
+            arguments: ["-c", "test -e /dev/fd/\(descriptors[1]) && printf leaked || printf closed"],
+            timeout: 2,
+            maximumOutputBytes: 1_024
+        )
+
+        XCTAssertEqual(String(decoding: result.output, as: UTF8.self), "closed")
+    }
+
     func testOutputLimitIsFailClosed() throws {
         let result = try BoundedSubprocess.run(
             executableURL: URL(fileURLWithPath: "/bin/sh"),
