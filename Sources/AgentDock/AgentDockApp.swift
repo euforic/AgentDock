@@ -7,6 +7,11 @@ struct AgentDockApp: App {
     @StateObject private var model = AgentDockModel()
     @StateObject private var updater = AppUpdater()
 
+    init() {
+        // A single-window utility: no tab bar or tab commands in the View and Window menus.
+        NSWindow.allowsAutomaticWindowTabbing = false
+    }
+
     var body: some Scene {
         WindowGroup("AgentDock", id: "main") {
             ContentView()

@@ -10,6 +10,7 @@ struct ResetNotificationSettings: View {
                 Toggle("Notify me before banked Codex resets expire", isOn: Binding(
                     get: { controller.policy.enabled },
                     set: { enabled in
+                        guard enabled != controller.policy.enabled else { return }
                         if enabled { Task { await controller.enableNotifications() } }
                         else { controller.policy.enabled = false }
                     }
@@ -33,7 +34,10 @@ struct ResetNotificationSettings: View {
                 Text("Choose the Alerts style in macOS Notification Settings for persistent alerts. Alerts use the last checked availability; leave AgentDock running to detect redemptions and new resets.")
             }
 
-            ResetPolicyEditor(policy: Binding(get: { controller.policy }, set: { controller.policy = $0.validated }))
+            ResetPolicyEditor(policy: Binding(get: { controller.policy }, set: {
+                let policy = $0.validated
+                if policy != controller.policy { controller.policy = policy }
+            }))
                 .disabled(!controller.policy.enabled)
         }
         .formStyle(.grouped)

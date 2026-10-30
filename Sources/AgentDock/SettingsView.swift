@@ -92,6 +92,7 @@ private struct GeneralSettings: View {
 
     private var appearanceBinding: Binding<AgentDockAppearance> {
         Binding(get: { model.preferences.appearance }, set: {
+            guard $0 != model.preferences.appearance else { return }
             model.preferences.appearance = $0
             ProductAnalytics.shared.capture(AnalyticsEvent(
                 .preferenceChanged,
@@ -102,6 +103,7 @@ private struct GeneralSettings: View {
 
     private var defaultViewBinding: Binding<AgentDockDefaultView> {
         Binding(get: { model.preferences.defaultView }, set: {
+            guard $0 != model.preferences.defaultView else { return }
             model.preferences.defaultView = $0
             ProductAnalytics.shared.capture(AnalyticsEvent(
                 .preferenceChanged,
@@ -112,6 +114,7 @@ private struct GeneralSettings: View {
 
     private var refreshBinding: Binding<Bool> {
         Binding(get: { model.preferences.refreshProfileActivity }, set: {
+            guard $0 != model.preferences.refreshProfileActivity else { return }
             model.preferences.refreshProfileActivity = $0
             ProductAnalytics.shared.capture(AnalyticsEvent(
                 .preferenceChanged,
@@ -121,11 +124,14 @@ private struct GeneralSettings: View {
     }
 
     private var refreshIntervalBinding: Binding<Int> {
-        Binding(get: { model.preferences.refreshIntervalMinutes }, set: { model.preferences.refreshIntervalMinutes = $0 })
+        Binding(get: { model.preferences.refreshIntervalMinutes }, set: {
+            if $0 != model.preferences.refreshIntervalMinutes { model.preferences.refreshIntervalMinutes = $0 }
+        })
     }
 
     private var showStatusBinding: Binding<Bool> {
         Binding(get: { model.preferences.showStatusInProfileList }, set: {
+            guard $0 != model.preferences.showStatusInProfileList else { return }
             model.preferences.showStatusInProfileList = $0
             ProductAnalytics.shared.capture(AnalyticsEvent(
                 .preferenceChanged,
@@ -194,19 +200,25 @@ private struct UpdateSettings: View {
     }
 
     private var automaticChecksBinding: Binding<Bool> {
-        Binding(get: { updater.automaticallyChecksForUpdates }, set: { updater.setAutomaticallyChecksForUpdates($0) })
+        Binding(get: { updater.automaticallyChecksForUpdates }, set: {
+            if $0 != updater.automaticallyChecksForUpdates { updater.setAutomaticallyChecksForUpdates($0) }
+        })
     }
 
     private var updateChannelBinding: Binding<AppUpdateChannel> {
-        Binding(get: { updater.updateChannel }, set: { updater.setUpdateChannel($0) })
+        Binding(get: { updater.updateChannel }, set: { if $0 != updater.updateChannel { updater.setUpdateChannel($0) } })
     }
 
     private var automaticDownloadsBinding: Binding<Bool> {
-        Binding(get: { updater.automaticallyDownloadsUpdates }, set: { updater.setAutomaticallyDownloadsUpdates($0) })
+        Binding(get: { updater.automaticallyDownloadsUpdates }, set: {
+            if $0 != updater.automaticallyDownloadsUpdates { updater.setAutomaticallyDownloadsUpdates($0) }
+        })
     }
 
     private var updateCheckFrequencyBinding: Binding<AppUpdateCheckFrequency> {
-        Binding(get: { updater.updateCheckFrequency }, set: { updater.setUpdateCheckFrequency($0) })
+        Binding(get: { updater.updateCheckFrequency }, set: {
+            if $0 != updater.updateCheckFrequency { updater.setUpdateCheckFrequency($0) }
+        })
     }
 }
 
@@ -252,7 +264,10 @@ private struct PrivacySettings: View {
     private var analyticsBinding: Binding<Bool> {
         Binding(
             get: { model.analyticsConsent == .granted },
-            set: { model.setAnalyticsConsent(granted: $0, surface: .settingsPrivacy) }
+            set: {
+                guard $0 != (model.analyticsConsent == .granted) else { return }
+                model.setAnalyticsConsent(granted: $0, surface: .settingsPrivacy)
+            }
         )
     }
 }

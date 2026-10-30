@@ -96,28 +96,28 @@ struct ContentView: View {
     private var editingProfileBinding: Binding<CodexProfile?> {
         Binding(
             get: { model.showEditProfile ? model.selectedProfile : nil },
-            set: { if $0 == nil { model.showEditProfile = false } }
+            set: { if $0 == nil, model.showEditProfile { model.showEditProfile = false } }
         )
     }
 
     private var errorBinding: Binding<Bool> {
         Binding(
             get: { model.errorMessage != nil && !model.showAddProfile && !model.showEditProfile },
-            set: { if !$0 { model.errorMessage = nil } }
+            set: { if !$0, model.errorMessage != nil { model.errorMessage = nil } }
         )
     }
 
     private var removeBinding: Binding<Bool> {
         Binding(
             get: { model.pendingRemoveProfile != nil },
-            set: { if !$0 { model.pendingRemoveProfile = nil } }
+            set: { if !$0, model.pendingRemoveProfile != nil { model.pendingRemoveProfile = nil } }
         )
     }
 
     private var deleteBinding: Binding<Bool> {
         Binding(
             get: { model.pendingDeleteProfile != nil },
-            set: { if !$0 { model.pendingDeleteProfile = nil } }
+            set: { if !$0, model.pendingDeleteProfile != nil { model.pendingDeleteProfile = nil } }
         )
     }
 
@@ -214,18 +214,23 @@ private struct AgentDockSidebar: View {
         resetReminders.accounts.reduce(0) { $0 + $1.summary.availableCount }
     }
 
+    private var currentItem: SidebarItem? {
+        if resetReminders.showsAvailableResets { return .resets }
+        return switch model.sidebarSelection {
+        case .home: .home
+        case let .official(product): .official(product)
+        case let .profile(id): .profile(id)
+        case nil: nil
+        }
+    }
+
     private var selection: Binding<SidebarItem?> {
         Binding(
-            get: {
-                if resetReminders.showsAvailableResets { return .resets }
-                return switch model.sidebarSelection {
-                case .home: .home
-                case let .official(product): .official(product)
-                case let .profile(id): .profile(id)
-                case nil: nil
-                }
-            },
+            get: { currentItem },
             set: { item in
+                // The list re-applies the current selection while it updates.
+                // Republishing it then is a state change during a view update.
+                guard item != currentItem else { return }
                 switch item {
                 case .home, nil:
                     model.selectHome()
@@ -340,6 +345,7 @@ private struct OfficialSidebarRow: View {
             ProviderIconView(product: product, appURL: model.appURL(for: product), size: 24)
                 .runningBadge(model.preferences.showStatusInProfileList && running, diameter: 7)
         }
+        .accessibilityElement(children: .combine)
         .accessibilityValue(running ? "Running" : "Not running")
     }
 }
@@ -364,6 +370,7 @@ private struct ProfileSidebarRow: View {
                 .runningBadge(model.preferences.showStatusInProfileList && running, diameter: 7)
         }
         .help(profile.name)
+        .accessibilityElement(children: .combine)
         .accessibilityValue(running ? "Running" : "Not running")
     }
 
@@ -428,7 +435,7 @@ private struct AgentDockDetail: View {
             .toolbar {
                 if !resetReminders.showsAvailableResets, model.selectedProfile != nil {
                     ToolbarItem(placement: .principal) {
-                        Picker("Profile Section", selection: $model.detailTab) {
+                        Picker("Profile Section", selection: detailTabBinding) {
                             ForEach(AgentDockDetailTab.availableTabs(hasManagedProfile: true)) { tab in
                                 Text(tab.title).tag(tab)
                             }
@@ -450,6 +457,15 @@ private struct AgentDockDetail: View {
                     .help("Add a profile for another account")
                 }
             }
+    }
+
+    /// The toolbar re-applies its current selection while it updates; only real
+    /// changes may publish.
+    private var detailTabBinding: Binding<AgentDockDetailTab> {
+        Binding(
+            get: { model.detailTab },
+            set: { if $0 != model.detailTab { model.detailTab = $0 } }
+        )
     }
 
     @ViewBuilder

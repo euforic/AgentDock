@@ -304,10 +304,16 @@ private struct CodexProviderSection: View {
         }
     }
 
+    private var displayedSelection: CodexLaunchProfileSelection {
+        defaultProfile == nil && selection == .builtIn ? .useDefault : selection
+    }
+
     private var selectionBinding: Binding<CodexLaunchProfileSelection> {
         Binding(
-            get: { defaultProfile == nil && selection == .builtIn ? .useDefault : selection },
-            set: { onSelect($0) }
+            get: { displayedSelection },
+            // Without a named default, Built-in is shown as Default. Re-applying that
+            // displayed value must not rewrite (and restart) the account.
+            set: { if $0 != displayedSelection { onSelect($0) } }
         )
     }
 
