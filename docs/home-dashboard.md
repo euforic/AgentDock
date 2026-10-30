@@ -6,53 +6,49 @@ Chats startup preference migrates to Overview, preserving other preferences.
 Command-1 returns to Home. Profile and official-app overviews remain accessible
 through the sidebar, the source name, or the row's context menu.
 
-Home groups the official installation and managed profiles under their provider.
-Each row shows the source identity, observed running state, reported usage, and
-an Open or Focus action. Those actions reuse the existing validated launch and
-focus paths. Missing process status is shown as unavailable rather than stopped.
-A profile metadata reload leaves Home selected. AgentDock has no chat-browser
-destination or transcript-copying action.
+Home is a status dashboard. A summary strip shows how many accounts are running,
+the banked-reset count and next expiration, the account closest to a usage
+limit, and the next usage-window reset. Each tile opens the matching place.
+
+Below it, a native table lists every official installation and managed profile,
+grouped by provider. Columns show the account (with running state and plan),
+the session and weekly usage windows as inline meters with a reset countdown,
+banked resets for Codex accounts, and an Open or Focus action. Selecting a
+column header sorts within each provider; double-clicking a row opens its
+details, and the context menu offers Open or Focus and Show Details. Those
+actions reuse the existing validated launch and focus paths. Missing process
+status is shown as unavailable rather than stopped. A profile metadata reload
+leaves Home selected. AgentDock has no chat-browser destination or
+transcript-copying action.
 
 ## Data and reset counts
 
 Usage comes directly from the model's existing `ProfileRateLimits` snapshots.
-Home shows the first two reported windows with their actual duration and bucket
-name; additional windows remain available in Overview. No account quotas are
-added together. Missing snapshots and failed reads show explicit unavailable
-states. Each meter shows its reported usage reset date/time and time remaining,
-updated locally once per minute without additional provider reads. Unknown reset
-times stay explicit; elapsed dates show a reset-due prompt to refresh usage. These
-dates describe usage allowances, not banked-reset expiration. No checked-time
-timestamp is shown; snapshots older than ten minutes show a last-known qualifier,
-and provider warnings remain visible.
+The Session column shows the shortest reported window (under a day) and the
+Weekly column the longest; other windows remain available in Overview. No
+account quotas are added together. Meters turn orange at 75 percent and red at
+90 percent. Failed reads mark the account "Usage unavailable" with the reason
+in help, and unreported windows show a dash. Countdowns update locally once per
+minute without additional provider reads; elapsed reset times show "Reset due".
+These times describe usage allowances, not banked-reset expiration.
 
-Banked resets come from `ResetReminderController.accounts`. The top panel uses
-its verified account grouping and the provider's reported count. Each Codex row
-shows the count associated with its source ID. Aliases of one verified account
-show the same allowance; they do not create extra resets. An unknown inventory
-is distinct from a confirmed zero. Claude rows do not show Codex banked resets.
-
-The compact banner uses a title and one detail line, with a separate qualifier
-only for incomplete or stale inventory. The amber row icon marks a known available
-reset expiring within seven days. The banner and row icon turn red when a known
-available reset expires within the next 24 hours; the banner also states that
-urgency in text.
-Expired and used credits do not trigger the icon. Missing expiration details,
-unverified identities, old inventory, and source errors remain explicit. The
-count opens Available Resets through `showsAvailableResets`; if an expiring reset
-exists, its key is selected for the existing reset view. Home adds no polling,
-notification scheduling, reset consumption, or account persistence.
+Banked resets come from `ResetReminderController.accounts`. The summary uses
+its verified account grouping and the provider's reported count, and each Codex
+row shows the count associated with its source ID. Aliases of one verified
+account show the same allowance; they do not create extra resets. An unknown
+inventory (a dash) is distinct from a confirmed zero. Claude rows do not show
+Codex banked resets. A known available reset expiring within seven days shows
+an amber expiration time, red within 24 hours; expired and used credits do not.
+Selecting a count opens Available Resets with the expiring reset selected.
+Home adds no polling, notification scheduling, reset consumption, or account
+persistence.
 
 ## Design
 
-Home follows standard macOS conventions rather than a custom card layout: a
-grouped `Form` with one section for the banked-reset summary and one section per
-provider, inside a `NavigationSplitView` whose sidebar is a native source list
-and whose toolbar holds the window title, Refresh, and Add Profile. Text uses
-semantic system styles, surfaces use system materials, and usage meters keep a
-blue (Codex) or orange (Claude) tint that is distinct from the accent color.
-Long source names truncate with full names available in help and accessibility
-labels. Both appearances use the same layout.
+Home uses standard macOS components: a `Table` with provider sections and
+sortable columns, linear capacity gauges, semantic text styles, and system
+colors. Long account names truncate with the full name in help and
+accessibility labels. Both appearances use the same layout.
 
 ## Validation
 

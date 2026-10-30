@@ -1,74 +1,490 @@
 import AgentDockCore
 import SwiftUI
 
-/// A compact view of provider snapshots, with no separate polling or quota estimates.
+/// Every source's status in one sortable table, built from existing snapshots with no extra polling.
 struct HomeView: View {
     @EnvironmentObject private var model: AgentDockModel
     @ObservedObject var resetReminders: ResetReminderController
+    @State private var selection: Set<DashboardSource.ID> = []
+    @State private var sortOrder: [KeyPathComparator<DashboardSource>] = []
 
     var body: some View {
-        Form {
-            Section {
-                HomeResetSummary(controller: resetReminders)
-            }
-            ForEach(DesktopProduct.allCases) { product in
-                providerSection(product)
+        TimelineView(.periodic(from: .now, by: 60)) { context in
+            let sources = DashboardSource.all(in: model, resets: resetReminders, now: context.date)
+            VStack(spacing: 0) {
+                DashboardSummary(sources: sources, controller: resetReminders, now: context.date)
+                    .padding(.horizontal, 20)
+                    .padding(.vertical, 14)
+                Divider()
+                table(sources, now: context.date)
             }
         }
-        .formStyle(.grouped)
     }
 
-    private func providerSection(_ product: DesktopProduct) -> some View {
-        let profiles = model.profiles.filter { $0.product == product }
-        return Section {
-            HomeSourceRow(
+    private func table(_ sources: [DashboardSource], now: Date) -> some View {
+        Table(of: DashboardSource.self, selection: $selection, sortOrder: $sortOrder) {
+            TableColumn("Account", value: \.name) { source in
+                AccountCell(source: source)
+            }
+            .width(min: 220, ideal: 300)
+            TableColumn("Session", value: \.sessionSortValue) { source in
+                UsageMeterCell(window: source.sessionWindow, accent: source.product.usageTint, now: now)
+            }
+            .width(min: 150, ideal: 190)
+            TableColumn("Weekly", value: \.weeklySortValue) { source in
+                UsageMeterCell(window: source.weeklyWindow, accent: source.product.usageTint, now: now)
+            }
+            .width(min: 150, ideal: 190)
+            TableColumn("Banked Resets", value: \.resetSortValue) { source in
+                ResetCell(source: source, controller: resetReminders)
+            }
+            .width(min: 110, ideal: 160)
+            TableColumn("") { source in
+                OpenButton(source: source)
+            }
+            .width(min: 64, ideal: 72, max: 90)
+        } rows: {
+            ForEach(DesktopProduct.allCases) { product in
+                Section {
+                    ForEach(sorted(sources.filter { $0.product == product })) { source in
+                        TableRow(source)
+                    }
+                } header: {
+                    Text(header(for: product, in: sources))
+                }
+            }
+        }
+        .tableStyle(.inset(alternatesRowBackgrounds: false))
+        .contextMenu(forSelectionType: DashboardSource.ID.self) { ids in
+            if let source = sources.first(where: { ids.count == 1 && ids.contains($0.id) }) {
+                Button(source.running == true ? "Focus" : "Open") { open(source) }
+                    .disabled(source.busy)
+                Button("Show Details") { showDetails(source) }
+            }
+        } primaryAction: { ids in
+            if let source = sources.first(where: { ids.count == 1 && ids.contains($0.id) }) {
+                showDetails(source)
+            }
+        }
+    }
+
+    /// Provider order is fixed; a chosen column sorts rows within each provider.
+    private func sorted(_ sources: [DashboardSource]) -> [DashboardSource] {
+        sortOrder.isEmpty ? sources : sources.sorted(using: sortOrder)
+    }
+
+    private func header(for product: DesktopProduct, in sources: [DashboardSource]) -> String {
+        let accounts = sources.filter { $0.product == product }
+        let running = accounts.filter { $0.running == true }.count
+        let count = "\(accounts.count) \(accounts.count == 1 ? "account" : "accounts")"
+        return running > 0 ? "\(product.displayName) · \(count) · \(running) running" : "\(product.displayName) · \(count)"
+    }
+
+    private func open(_ source: DashboardSource) {
+        switch source.kind {
+        case .official: model.openStock(source.product)
+        case let .profile(profile): model.launch(profile)
+        }
+    }
+
+    private func showDetails(_ source: DashboardSource) {
+        switch source.kind {
+        case .official: model.selectOfficial(source.product)
+        case let .profile(profile): model.selectProfile(profile.id)
+        }
+        model.detailTab = .overview
+    }
+}
+
+/// One official installation or managed profile, as the dashboard shows it.
+struct DashboardSource: Identifiable {
+    enum Kind: Equatable {
+        case official
+        case profile(CodexProfile)
+    }
+
+    let product: DesktopProduct
+    let kind: Kind
+    let name: String
+    let limits: ProfileRateLimits?
+    let running: Bool?
+    let busy: Bool
+    /// Banked-reset inventory for Codex sources; nil for Claude.
+    let resets: HomeResetDigest?
+
+    var id: String {
+        switch kind {
+        case .official: "official.\(product.rawValue)"
+        case let .profile(profile): profile.id.uuidString
+        }
+    }
+
+    var windows: [HomeUsageWindow] {
+        guard let limits, limits.errorMessage == nil else { return [] }
+        return HomeUsageWindow.windows(in: limits)
+    }
+
+    /// The shortest reported allowance window, such as the 5-hour session.
+    var sessionWindow: HomeUsageWindow? {
+        windows.first { (1..<1440).contains($0.usage.windowDurationMins ?? 0) }
+            ?? (weeklyWindow == nil ? windows.first : nil)
+    }
+
+    var weeklyWindow: HomeUsageWindow? {
+        windows.first { ($0.usage.windowDurationMins ?? 0) >= 1440 }
+    }
+
+    // Unavailable values sort below every reported value.
+    var sessionSortValue: Double { sessionWindow?.usage.usedPercent ?? -1 }
+    var weeklySortValue: Double { weeklyWindow?.usage.usedPercent ?? -1 }
+    var resetSortValue: Int { resets?.reportedCount ?? -1 }
+
+    @MainActor
+    static func all(in model: AgentDockModel, resets controller: ResetReminderController, now: Date) -> [DashboardSource] {
+        func digest(_ sourceID: String) -> HomeResetDigest {
+            HomeResetDigest(accounts: controller.accounts, sourceErrors: controller.sourceErrors, now: now, sourceID: sourceID)
+        }
+        return DesktopProduct.allCases.flatMap { product in
+            [DashboardSource(
+                product: product,
+                kind: .official,
                 name: "Official \(product.displayName)",
-                subtitle: "Default installation",
                 limits: product == .codex ? model.officialCodexRateLimits : model.officialClaudeRateLimits,
                 running: model.stockInstanceStatuses[product]?.isRunning,
                 busy: model.busyStockProducts.contains(product),
-                accent: product.usageTint,
-                resetController: resetReminders,
-                resetSourceID: product == .codex ? "official" : nil,
-                open: { model.openStock(product) },
-                overview: {
-                    model.selectOfficial(product)
-                    model.detailTab = .overview
-                }
-            ) {
-                ProviderIconView(product: product, appURL: model.appURL(for: product), size: 36)
-            }
-            ForEach(profiles) { profile in
-                HomeSourceRow(
+                resets: product == .codex ? digest("official") : nil
+            )] + model.profiles.filter { $0.product == product }.map { profile in
+                DashboardSource(
+                    product: product,
+                    kind: .profile(profile),
                     name: profile.name,
-                    subtitle: "Managed profile",
                     limits: model.rateLimits(for: profile),
                     running: model.profileInstanceStatuses[profile.id]?.isRunning,
                     busy: model.isBusy(profile) || model.storeMutationInProgress,
-                    accent: product.usageTint,
-                    resetController: resetReminders,
-                    resetSourceID: product == .codex ? profile.id.uuidString : nil,
-                    open: { model.launch(profile) },
-                    overview: {
-                        model.selectProfile(profile.id)
-                        model.detailTab = .overview
-                    }
-                ) {
-                    ProfileIconView(profile: profile, size: 36)
-                }
-            }
-        } header: {
-            Text(product.displayName)
-        } footer: {
-            if product == DesktopProduct.allCases.last {
-                Text(model.profiles.isEmpty
-                    ? "Add a profile for another account, then sign in inside its provider app. Usage is shown per source; profiles can share an account."
-                    : "Usage is shown per source; profiles can share an account. Open a source for all limits and local activity.")
-                    .foregroundStyle(.secondary)
+                    resets: product == .codex ? digest(profile.id.uuidString) : nil
+                )
             }
         }
     }
 }
+
+// MARK: - Cells
+
+private struct AccountCell: View {
+    @EnvironmentObject private var model: AgentDockModel
+    let source: DashboardSource
+
+    var body: some View {
+        HStack(spacing: 10) {
+            icon.runningBadge(source.running == true, diameter: 7)
+            VStack(alignment: .leading, spacing: 1) {
+                Text(source.name)
+                    .fontWeight(.medium)
+                    .lineLimit(1)
+                if let error = source.limits?.errorMessage {
+                    Label("Usage unavailable", systemImage: "exclamationmark.triangle.fill")
+                        .labelStyle(CompactLabelStyle())
+                        .font(.subheadline)
+                        .foregroundStyle(.orange)
+                        .help(error)
+                } else {
+                    Text(subtitle)
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
+            }
+        }
+        .padding(.vertical, 3)
+        .help(source.name)
+        .accessibilityElement(children: .combine)
+        .accessibilityValue(source.running == true ? "Running" : "Not running")
+    }
+
+    @ViewBuilder
+    private var icon: some View {
+        switch source.kind {
+        case .official:
+            ProviderIconView(product: source.product, appURL: model.appURL(for: source.product), size: 24)
+        case let .profile(profile):
+            ProfileIconView(profile: profile, size: 24)
+        }
+    }
+
+    private var subtitle: String {
+        var parts: [String] = [source.kind == .official ? "Official app" : "Profile"]
+        if let plan = source.limits?.planType, !plan.isEmpty {
+            parts.append(plan.replacingOccurrences(of: "_", with: " ").capitalized)
+        }
+        switch source.running {
+        case true?: parts.append("Running")
+        case false?: break
+        case nil: parts.append("Status unavailable")
+        }
+        if source.limits == nil { parts.append("Checking usage…") }
+        return parts.joined(separator: " · ")
+    }
+}
+
+/// An inline meter: bar, percent, and time until the window resets.
+struct UsageMeterCell: View {
+    let window: HomeUsageWindow?
+    let accent: Color
+    let now: Date
+
+    var body: some View {
+        if let window {
+            let percent = min(max(window.usage.usedPercent, 0), 100)
+            let tint = UsageTint.color(for: percent, base: accent)
+            HStack(spacing: 8) {
+                Gauge(value: percent, in: 0...100) { EmptyView() }
+                    .gaugeStyle(.accessoryLinearCapacity)
+                    .tint(tint)
+                    .frame(width: 56)
+                Text("\(Int(percent.rounded()))%")
+                    .monospacedDigit()
+                    .foregroundStyle(percent >= 75 ? tint : .primary)
+                    .frame(minWidth: 34, alignment: .trailing)
+                Text(window.shortCountdown(at: now))
+                    .font(.subheadline)
+                    .monospacedDigit()
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            }
+            .help("\(window.title) · \(window.usage.resetsAt.map { "resets \($0.formatted(date: .abbreviated, time: .shortened))" } ?? "reset time unavailable")")
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel("\(window.title) usage")
+            .accessibilityValue("\(Int(percent.rounded())) percent, \(window.timeRemaining(at: now))")
+        } else {
+            Text("—")
+                .foregroundStyle(.tertiary)
+                .accessibilityLabel("Not reported")
+        }
+    }
+}
+
+private struct ResetCell: View {
+    let source: DashboardSource
+    @ObservedObject var controller: ResetReminderController
+
+    var body: some View {
+        if let digest = source.resets {
+            let tint: Color = digest.hasExpirationWithin24Hours ? .red : .orange
+            Button {
+                controller.selectedResetKey = digest.expirations.first?.id
+                controller.showsAvailableResets = true
+            } label: {
+                HStack(spacing: 6) {
+                    Text(digest.reportedCount.map { $0.formatted() } ?? "—")
+                        .monospacedDigit()
+                        .foregroundStyle(digest.reportedCount == nil ? .tertiary : .primary)
+                    if let expiry = digest.expirations.first?.credit.expiresAt {
+                        Label(expiry.formatted(.relative(presentation: .named)), systemImage: "clock.badge.exclamationmark.fill")
+                            .labelStyle(CompactLabelStyle())
+                            .font(.subheadline)
+                            .foregroundStyle(tint)
+                            .lineLimit(1)
+                    } else if digest.lastKnown, digest.reportedCount != nil {
+                        Text("Last known")
+                            .font(.subheadline)
+                            .foregroundStyle(.tertiary)
+                    }
+                }
+                .contentShape(.rect)
+            }
+            .buttonStyle(.plain)
+            .help(digest.expirations.first?.credit.expiresAt.map {
+                "\(digest.expirations.count) expire within 7 days. Next: \($0.formatted(date: .abbreviated, time: .shortened))."
+            } ?? "Show banked resets for this account")
+        } else {
+            Text("—")
+                .foregroundStyle(.tertiary)
+                .help("Banked resets apply to Codex accounts")
+        }
+    }
+}
+
+private struct OpenButton: View {
+    @EnvironmentObject private var model: AgentDockModel
+    let source: DashboardSource
+
+    var body: some View {
+        let title = source.running == true ? "Focus" : "Open"
+        Button(source.busy ? "…" : title) {
+            switch source.kind {
+            case .official: model.openStock(source.product)
+            case let .profile(profile): model.launch(profile)
+            }
+        }
+        .buttonStyle(.bordered)
+        .controlSize(.small)
+        .disabled(source.busy)
+        .accessibilityLabel("\(title) \(source.name)")
+    }
+}
+
+private struct CompactLabelStyle: LabelStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        HStack(spacing: 4) {
+            configuration.icon
+            configuration.title
+        }
+    }
+}
+
+// MARK: - Summary
+
+private struct DashboardSummary: View {
+    @EnvironmentObject private var model: AgentDockModel
+    let sources: [DashboardSource]
+    @ObservedObject var controller: ResetReminderController
+    let now: Date
+
+    var body: some View {
+        LazyVGrid(columns: [GridItem(.adaptive(minimum: 190), spacing: 12)], spacing: 12) {
+            runningTile
+            resetsTile
+            closestToLimitTile
+            nextResetTile
+        }
+    }
+
+    private var runningTile: some View {
+        let running = sources.filter { $0.running == true }.count
+        return DashboardTile(
+            title: "Running",
+            systemImage: "play.circle.fill",
+            tint: running > 0 ? .green : .secondary,
+            value: "\(running) of \(sources.count)",
+            detail: running == 1 ? "account open" : "accounts open"
+        )
+    }
+
+    private var resetsTile: some View {
+        let digest = HomeResetDigest(accounts: controller.accounts, sourceErrors: controller.sourceErrors, now: now)
+        let tint: Color = digest.hasExpirationWithin24Hours ? .red : (digest.expirations.isEmpty ? .secondary : .orange)
+        let detail: String
+        if let expiry = digest.expirations.first?.credit.expiresAt {
+            detail = digest.hasExpirationWithin24Hours
+                ? "One expires within 24 hours"
+                : "Next expires \(expiry.formatted(.relative(presentation: .named)))"
+        } else if digest.reportedCount == nil {
+            detail = controller.isRefreshing ? "Checking accounts…" : "Inventory unavailable"
+        } else {
+            detail = "None expire this week"
+        }
+        return DashboardTile(
+            title: "Banked Resets",
+            systemImage: "clock.arrow.circlepath",
+            tint: tint,
+            value: digest.reportedCount.map { $0.formatted() } ?? "—",
+            detail: detail,
+            action: { controller.showsAvailableResets = true }
+        )
+    }
+
+    private var closestToLimitTile: some View {
+        let candidates = sources.flatMap { source in source.windows.map { (source, $0) } }
+        let closest = candidates.max { $0.1.usage.usedPercent < $1.1.usage.usedPercent }
+        let percent = closest?.1.usage.usedPercent ?? 0
+        return DashboardTile(
+            title: "Closest to Limit",
+            systemImage: "gauge.with.dots.needle.67percent",
+            tint: closest == nil ? .secondary : UsageTint.color(for: percent, base: closest?.0.product.usageTint ?? .blue),
+            value: closest.map { "\(Int($0.1.usage.usedPercent.rounded()))%" } ?? "—",
+            detail: closest.map { "\($0.0.name) · \($0.1.title)" } ?? "No usage reported yet",
+            action: closest.map { pair in { select(pair.0) } }
+        )
+    }
+
+    private var nextResetTile: some View {
+        let upcoming = sources.flatMap { source in
+            source.windows.compactMap { window -> (DashboardSource, HomeUsageWindow, Date)? in
+                guard window.usage.usedPercent >= 1, let date = window.usage.resetsAt, date > now else { return nil }
+                return (source, window, date)
+            }
+        }
+        let next = upcoming.min { $0.2 < $1.2 }
+        return DashboardTile(
+            title: "Next Usage Reset",
+            systemImage: "arrow.counterclockwise",
+            tint: next == nil ? .secondary : .accentColor,
+            value: next.map { $0.1.shortCountdown(at: now) } ?? "—",
+            detail: next.map { "\($0.0.name) · \($0.1.title)" } ?? "No windows in use",
+            action: next.map { item in { select(item.0) } }
+        )
+    }
+
+    private func select(_ source: DashboardSource) {
+        switch source.kind {
+        case .official: model.selectOfficial(source.product)
+        case let .profile(profile): model.selectProfile(profile.id)
+        }
+        model.detailTab = .overview
+    }
+}
+
+private struct DashboardTile: View {
+    let title: String
+    let systemImage: String
+    let tint: Color
+    let value: String
+    let detail: String
+    var action: (() -> Void)?
+
+    var body: some View {
+        let content = HStack(alignment: .center, spacing: 12) {
+            Image(systemName: systemImage)
+                .font(.title2)
+                .symbolRenderingMode(.hierarchical)
+                .foregroundStyle(tint)
+                .frame(width: 28)
+            VStack(alignment: .leading, spacing: 1) {
+                Text(title)
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+                Text(value)
+                    .font(.system(.title3, design: .rounded).weight(.semibold))
+                    .monospacedDigit()
+                    .contentTransition(.numericText())
+                    .lineLimit(1)
+                Text(detail)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .help(detail)
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 10)
+        .background(Color(nsColor: .controlBackgroundColor), in: .rect(cornerRadius: 12, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .strokeBorder(.separator.opacity(0.6), lineWidth: 0.5)
+        }
+        .accessibilityElement(children: .combine)
+
+        if let action {
+            Button(action: action) { content.contentShape(.rect) }
+                .buttonStyle(.plain)
+                .accessibilityAddTraits(.isButton)
+        } else {
+            content
+        }
+    }
+}
+
+/// Shared thresholds so a window reads the same everywhere.
+enum UsageTint {
+    static func color(for percent: Double, base: Color) -> Color {
+        if percent >= 90 { return .red }
+        if percent >= 75 { return .orange }
+        return base
+    }
+}
+
+// MARK: - Shared types
 
 struct HomeResetDigest {
     struct Expiration: Identifiable {
@@ -109,167 +525,6 @@ struct HomeResetDigest {
     }
 }
 
-private struct HomeResetSummary: View {
-    @ObservedObject var controller: ResetReminderController
-
-    var body: some View {
-        TimelineView(.periodic(from: .now, by: 60)) { context in
-            let digest = HomeResetDigest(accounts: controller.accounts,
-                                         sourceErrors: controller.sourceErrors, now: context.date)
-            let accent: Color = digest.hasExpirationWithin24Hours ? .red : .orange
-            HStack(spacing: 12) {
-                Image(systemName: digest.expirations.isEmpty ? "clock.arrow.circlepath" : "clock.badge.exclamationmark.fill")
-                    .font(.title2)
-                    .symbolRenderingMode(.hierarchical)
-                    .foregroundStyle(digest.expirations.isEmpty ? Color.secondary : accent)
-                    .frame(width: 32)
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(digest.reportedCount.map { "\($0) Banked \($0 == 1 ? "Reset" : "Resets") Available" } ?? "Banked Resets")
-                        .font(.headline)
-                        .lineLimit(1)
-                    Text(detail(digest))
-                        .foregroundStyle(digest.hasExpirationWithin24Hours ? accent : .secondary)
-                        .lineLimit(1)
-                        .help(detail(digest))
-                    if digest.lastKnown || digest.hasUnknownExpirations || digest.hasUnverifiedIdentity {
-                        Text(qualifiers(digest))
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                            .lineLimit(1)
-                            .help(qualifiers(digest))
-                    }
-                }
-                .frame(maxWidth: .infinity, alignment: .leading)
-                Button("View All") { controller.showsAvailableResets = true }
-                    .fixedSize()
-            }
-            .padding(.vertical, 2)
-            .accessibilityElement(children: .combine)
-        }
-    }
-
-    private func detail(_ digest: HomeResetDigest) -> String {
-        guard digest.reportedCount != nil else {
-            return controller.isRefreshing ? "Checking accounts…" : "Reset inventory unavailable"
-        }
-        if let next = digest.expirations.first, let expiry = next.credit.expiresAt {
-            let summary = digest.hasExpirationWithin24Hours
-                ? "Expires within 24 hours"
-                : "\(digest.expirations.count) \(digest.expirations.count == 1 ? "expires" : "expire") within 7 days"
-            return "\(summary) · \(expiry.formatted(date: .abbreviated, time: .shortened)) · \(next.account.displayName)"
-        }
-        return "No known available resets expire within 7 days"
-    }
-
-    private func qualifiers(_ digest: HomeResetDigest) -> String {
-        [digest.lastKnown ? "Last known data; refresh to confirm" : nil,
-         digest.hasUnknownExpirations ? "Some expiration details unavailable" : nil,
-         digest.hasUnverifiedIdentity ? "Unverified accounts may duplicate" : nil]
-            .compactMap { $0 }.joined(separator: " · ")
-    }
-}
-
-private struct HomeSourceRow<Icon: View>: View {
-    let name: String
-    let subtitle: String
-    let limits: ProfileRateLimits?
-    let running: Bool?
-    let busy: Bool
-    let accent: Color
-    let resetController: ResetReminderController
-    let resetSourceID: String?
-    let open: () -> Void
-    let overview: () -> Void
-    @ViewBuilder let icon: Icon
-
-    var body: some View {
-        HStack(alignment: .center, spacing: 16) {
-            identity.frame(minWidth: 150, maxWidth: .infinity, alignment: .leading)
-            VStack(alignment: .leading, spacing: 6) {
-                if let resetSourceID {
-                    HomeProfileResets(controller: resetController, sourceID: resetSourceID)
-                }
-                HomeUsageSummary(limits: limits, accent: accent)
-            }
-            .frame(width: 230)
-            Button(busy ? "Working…" : running == true ? "Focus" : "Open", action: open)
-                .frame(minWidth: 60)
-                .disabled(busy)
-                .accessibilityLabel("\(running == true ? "Focus" : "Open") \(name)")
-        }
-        .padding(.vertical, 4)
-        .contextMenu {
-            Button(running == true ? "Focus" : "Open", action: open).disabled(busy)
-            Button("Show Details", action: overview)
-        }
-    }
-
-    private var identity: some View {
-        Button(action: overview) {
-            HStack(spacing: 10) {
-                icon.runningBadge(running == true)
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(name).font(.headline).lineLimit(1).help(name)
-                    Text([subtitle, limits?.planType?.replacingOccurrences(of: "_", with: " ").capitalized]
-                        .compactMap { $0 }.joined(separator: " · "))
-                        .foregroundStyle(.secondary).lineLimit(1)
-                    RunningStatusLabel(isRunning: running)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-            }
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .contentShape(.rect)
-        }
-        .buttonStyle(.plain)
-        .accessibilityElement(children: .combine)
-        .accessibilityHint("Shows \(name) details")
-    }
-}
-
-private struct HomeProfileResets: View {
-    @ObservedObject var controller: ResetReminderController
-    let sourceID: String
-
-    var body: some View {
-        TimelineView(.periodic(from: .now, by: 60)) { context in
-            let digest = HomeResetDigest(accounts: controller.accounts,
-                sourceErrors: controller.sourceErrors, now: context.date, sourceID: sourceID)
-            Button {
-                if let next = digest.expirations.first {
-                    controller.selectedResetKey = next.id
-                } else { controller.selectedResetKey = nil }
-                controller.showsAvailableResets = true
-            } label: {
-                HStack(spacing: 5) {
-                    Text(digest.reportedCount.map { "\($0) available \($0 == 1 ? "reset" : "resets")" } ?? "Resets unavailable")
-                    if !digest.expirations.isEmpty {
-                        Image(systemName: "exclamationmark.triangle.fill")
-                            .foregroundStyle(digest.hasExpirationWithin24Hours ? Color.red : .orange)
-                    }
-                    if digest.lastKnown {
-                        Text("· Last known").foregroundStyle(.secondary)
-                    }
-                }
-                .font(.subheadline.weight(.medium))
-                .foregroundStyle(.secondary)
-            }
-            .buttonStyle(.plain)
-            .help(help(digest))
-            .accessibilityHint(help(digest))
-        }
-    }
-
-    private func help(_ digest: HomeResetDigest) -> String {
-        if let expiry = digest.expirations.first?.credit.expiresAt {
-            return "\(digest.expirations.count) expire within 7 days. Next expiration: \(expiry.formatted(date: .abbreviated, time: .shortened)). Show Available Resets."
-        }
-        if digest.reportedCount == nil { return "No reset inventory for this source. Show Available Resets to refresh." }
-        if digest.hasUnknownExpirations { return "Some expiration details are unavailable. Show Available Resets." }
-        return "Show banked resets for this account. Profiles sharing an account show the same allowance."
-    }
-}
-
 struct HomeUsageWindow: Identifiable {
     let id: String
     let title: String
@@ -284,6 +539,13 @@ struct HomeUsageWindow: Identifiable {
         if minutes < 60 { return "\(minutes)m left" }
         if minutes < 1440 { return "\(minutes / 60)h \(minutes % 60)m left" }
         return "\(minutes / 1440)d \(minutes % 1440 / 60)h left"
+    }
+
+    /// A compact countdown for gauges and tiles, such as "3h 15m" or "2d 4h".
+    func shortCountdown(at now: Date) -> String {
+        guard let resetsAt = usage.resetsAt else { return "No reset time" }
+        guard resetsAt > now else { return "Reset due" }
+        return timeRemaining(at: now).replacingOccurrences(of: " left", with: "")
     }
 
     /// The display name of a reported allowance window, such as "5-hour" or "Weekly".
@@ -309,64 +571,3 @@ struct HomeUsageWindow: Identifiable {
     }
 }
 
-struct HomeUsageSummary: View {
-    let limits: ProfileRateLimits?
-    let accent: Color
-
-    var body: some View {
-        TimelineView(.periodic(from: .now, by: 60)) { context in
-            VStack(alignment: .leading, spacing: 5) {
-                if let limits {
-                    if let error = limits.errorMessage {
-                        Label("Usage unavailable", systemImage: "exclamationmark.triangle")
-                            .foregroundStyle(.secondary).help(error)
-                        Text(error).font(.caption).foregroundStyle(.secondary).lineLimit(2)
-                    } else {
-                        let windows = HomeUsageWindow.windows(in: limits)
-                        ForEach(windows.prefix(2)) { window in
-                            VStack(alignment: .leading, spacing: 3) {
-                                HStack {
-                                    Text(window.title).lineLimit(1).help(window.title)
-                                    Spacer(minLength: 8)
-                                    Text("\(window.usage.usedPercent.formatted(.number.precision(.fractionLength(0))))% used")
-                                        .monospacedDigit()
-                                }
-                                ProgressView(value: min(max(window.usage.usedPercent, 0), 100), total: 100)
-                                    .tint(window.usage.usedPercent >= 90 ? .red : accent)
-                                    .accessibilityLabel(window.title)
-                                VStack(alignment: .leading, spacing: 1) {
-                                    if let date = window.usage.resetsAt {
-                                        Text("Resets \(date.formatted(.dateTime.month(.abbreviated).day().hour().minute()))")
-                                            .help("Resets \(date.formatted(date: .complete, time: .shortened))")
-                                        Text(window.timeRemaining(at: context.date))
-                                            .fontWeight(.medium)
-                                            .monospacedDigit()
-                                    } else {
-                                        Text("Reset time unavailable")
-                                    }
-                                }
-                                .font(.footnote)
-                                .foregroundStyle(.secondary)
-                                .fixedSize(horizontal: false, vertical: true)
-                                .accessibilityElement(children: .combine)
-                            }
-                        }
-                        if windows.count > 2 { Text("+\(windows.count - 2) more in Overview").foregroundStyle(.secondary) }
-                        if windows.isEmpty { Text("No usage windows reported").foregroundStyle(.secondary) }
-                        if let warning = limits.warningMessage {
-                            Label(warning, systemImage: "exclamationmark.triangle").foregroundStyle(.orange).lineLimit(2).help(warning)
-                        }
-                    }
-                    if limits.errorMessage == nil && context.date.timeIntervalSince(limits.fetchedAt) > 600 {
-                        Text("Last known usage").foregroundStyle(.secondary)
-                    }
-                } else {
-                    Text("Usage not loaded").foregroundStyle(.secondary)
-                    Text("Refresh to check this source.").foregroundStyle(.secondary)
-                }
-            }
-            .font(.subheadline)
-            .frame(maxWidth: .infinity, alignment: .leading)
-        }
-    }
-}

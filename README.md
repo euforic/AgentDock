@@ -103,10 +103,11 @@ permanent deletion is a separate confirmed action.
 
 Home is the default startup screen. Last Opened Profile and Overview remain
 available in Settings; a legacy Chats startup choice migrates to Overview.
-Selecting a source shows its details; managed profiles switch between Overview
-and Advanced from the toolbar. Codex rows show reported available resets for
-that account, with an amber icon for a known expiration within seven days.
-Select the count to view the reset inventory.
+Home summarizes every account in one sortable table: running state, session and
+weekly usage with reset countdowns, and banked Codex resets, with an amber or red
+expiration time when a reset expires within seven days or 24 hours. Selecting a
+source shows its details; managed profiles switch between Overview and Advanced
+from the toolbar.
 
 | Shortcut | Action |
 | --- | --- |

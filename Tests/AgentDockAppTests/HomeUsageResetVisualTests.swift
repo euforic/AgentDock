@@ -31,7 +31,9 @@ final class HomeUsageResetVisualTests: XCTestCase {
                 ForEach(snapshots.indices, id: \.self) { index in
                     VStack(alignment: .leading, spacing: 12) {
                         Text(snapshots[index].0).font(.headline)
-                        HomeUsageSummary(limits: snapshots[index].1, accent: .blue)
+                        ForEach(HomeUsageWindow.windows(in: snapshots[index].1)) { window in
+                            UsageMeterCell(window: window, accent: .blue, now: now)
+                        }
                     }
                     .frame(width: 220, alignment: .leading)
                 }
