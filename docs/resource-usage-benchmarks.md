@@ -96,6 +96,31 @@ finish in one round instead of serializing.
 The runner counts `sqlite3` launches only in revisions whose stats reader still
 starts one.
 
+## Suspending status snapshots, October 30, 2026
+
+Desktop instance status reads now await their `ps` snapshot (see
+[apis.md](apis.md)). Both revisions ran the same `statusBatch` call:
+
+```bash
+AGENTDOCK_BENCHMARK_BASELINE_DEFINE=CANDIDATE ./script/benchmark_resources.sh df0ad30 /tmp/agentdock-resource-results
+```
+
+Nine installed-status samples per revision, against the signed installed
+providers:
+
+| Scenario | Wall time, baseline → candidate | CPU, baseline → candidate | Observed result |
+| --- | --- | --- | --- |
+| Installed managed + official statuses | 515.56 ms → 492.81 ms | parent 349.53 → 340.32 ms; child 219.98 → 220.91 ms | `ps` launches 2 → 2; full validator entries 1 → 1; same managed and official result counts. |
+
+Wall ranges overlapped: baseline 407.9–584.2 ms, candidate 464.3–564.9 ms.
+An earlier run with the same flags on a less loaded machine gave 421.81 →
+334.47 ms. The measurement shows no regression in sequential status latency.
+It claims no latency improvement. The concurrency benefit is covered by
+`DesktopInstanceControllerTests`: more concurrent status batches than
+cooperative threads finish in one round. On a blocking snapshot the same test
+takes three rounds. History, storage, and SQLite readers are unchanged here.
+Their rows overlapped across revisions.
+
 ## Native lifecycle evidence
 
 The bundled [self-contained probe](../script/probe_application_lifecycle.swift)

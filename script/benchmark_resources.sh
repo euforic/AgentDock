@@ -43,7 +43,9 @@ for variant in ['baseline', 'candidate']:
 PY
 for variant in baseline candidate; do
     sources=("$benchmark_tmp/$variant/Sources/AgentDockCore/"*.swift)
-    flags=(-D BASELINE)
+    # A baseline that already has the candidate's scenario APIs can set
+    # AGENTDOCK_BENCHMARK_BASELINE_DEFINE=CANDIDATE to run the same calls.
+    flags=(-D "${AGENTDOCK_BENCHMARK_BASELINE_DEFINE:-BASELINE}")
     if [[ "$variant" == candidate ]]; then flags=(-D CANDIDATE); fi
     swiftc -O -whole-module-optimization -parse-as-library -module-name AgentDockCore "${flags[@]}" "${sources[@]}" script/benchmark_resources.swift -o "$benchmark_tmp/$variant/benchmark"
 done

@@ -199,6 +199,10 @@ output outside the repository:
 AGENTDOCK_BENCHMARK_LIVE_QUOTA=1 ./script/benchmark_resources.sh 0acab4c /tmp/agentdock-resource-live-results
 ```
 
+By default the baseline runs older per-provider status calls. A baseline that
+already has `statusBatch` can set `AGENTDOCK_BENCHMARK_BASELINE_DEFINE=CANDIDATE`
+to run the candidate's calls instead, so status rows compare like with like.
+
 The opt-in command reads the official signed-in native account but prints only
 success counts and resource counters. It never records account identity, quota
 amounts, credentials, or provider content. Both runs use the same installed
