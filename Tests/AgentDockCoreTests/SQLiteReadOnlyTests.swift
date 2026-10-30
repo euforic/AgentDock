@@ -134,12 +134,13 @@ final class SQLiteReadOnlyTests: XCTestCase {
 
     func testQueryIsInterruptedWhenTaskIsCancelled() async throws {
         let database = try makeDatabase("create table items (id integer);")
+        let sql = Self.endlessQuery
         let start = Date()
 
         let task = Task.detached {
             try SQLiteReadOnly.query(
                 database: database,
-                sql: Self.endlessQuery,
+                sql: sql,
                 timeout: 30,
                 maximumOutputBytes: 1_024
             )
