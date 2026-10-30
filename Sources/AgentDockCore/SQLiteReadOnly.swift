@@ -94,15 +94,17 @@ extension SQLiteReadOnly {
     /// Runs each statement in `sql` in process and returns every result row in
     /// order. The connection is read-only, refuses symlinked paths, and stops at
     /// the deadline, on task cancellation, or when the output budget is spent.
+    /// A `root` additionally requires the resolved database to stay inside it.
     static func query(
         database: URL,
+        under root: URL? = nil,
         sql: String,
         timeout: TimeInterval,
         maximumOutputBytes: Int,
         maximumRows: Int = .max
     ) throws -> [[SQLiteValue]] {
         guard !Task.isCancelled else { throw SQLiteReadOnlyError.cancelled }
-        let filename = try databaseArgument(for: database)
+        let filename = try databaseArgument(for: database, under: root)
         let interruption = SQLiteInterruption(timeout: timeout)
 
         var openedConnection: OpaquePointer?
