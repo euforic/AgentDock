@@ -63,13 +63,14 @@ macOS asks for notification permission. Defaults are:
 Choose multiple warning times in **Settings → Notifications**. Presets include
 seven days, three days, one day, six hours, one hour, and fifteen minutes.
 Custom warnings accept minutes, hours, or days. An optional repeat interval
-adds reminders between the earliest selected warning and expiration; zero
-uses only the selected warning times. Settings apply equally to every account
+(every hour up to every day) adds reminders between the earliest selected
+warning and expiration; **Only at selected times** uses just those times. Settings apply equally to every account
 and reset, with no per-account or per-reset configuration overrides.
-Quiet hours use the current local timezone; reminders move before quiet hours
-when postponing would pass expiration.
+Quiet hours start and end on the hour in the current local timezone; reminders
+move before quiet hours when postponing would pass expiration. Reminder options
+are editable once expiration notifications are on.
 
-**Notification Settings** opens the native settings pane. Choose **Alerts**
+**Open Notification Settings** opens the native settings pane. Choose **Alerts**
 there for persistent alerts; macOS controls banner style, sound, previews, and
 Focus suppression. **Send Test Notification** verifies native presentation
 without creating a reset or using account data.

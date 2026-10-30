@@ -4,7 +4,7 @@ Home is the primary sidebar destination and the default startup choice. Existing
 persisted Last Opened Profile and Overview preferences remain supported. A legacy
 Chats startup preference migrates to Overview, preserving other preferences.
 Command-1 returns to Home. Profile and official-app overviews remain accessible
-through the sidebar, the source name, or the row's chevron.
+through the sidebar, the source name, or the row's context menu.
 
 Home groups the official installation and managed profiles under their provider.
 Each row shows the source identity, observed running state, reported usage, and
@@ -43,27 +43,16 @@ count opens Available Resets through `showsAvailableResets`; if an expiring rese
 exists, its key is selected for the existing reset view. Home adds no polling,
 notification scheduling, reset consumption, or account persistence.
 
-## Design reference
+## Design
 
-[Native light reference](design/home-reference-light.png) was generated with the
-built-in image generation tool. The reference uses a native sidebar and toolbar,
-a single compact reset panel, and flat provider groups separated by hairlines.
-There is no large page heading or aggregate metric strip. The implementation
-uses system typography, 22-point content gutters, 14-point row padding, 8-point
-corners, semantic macOS surfaces, and blue/orange usage accents. Long source names
-truncate with full names available in help and accessibility labels. Both native
-appearances use the same layout.
-
-The image's example values are synthetic. Generated decorative bars and action
-labels do not override actual source availability or lifecycle state.
-
-Generation brief: native macOS AgentDock Home, light appearance, compact sidebar
-and toolbar; banked reset panel followed by Codex and Claude source rows; per-Codex
-available reset counts and expiration icons (amber within seven days, red within
-24 hours); source usage meters; native
-Open/Focus and Overview actions; no large heading, summary metrics, or checked
-timestamps; flat surfaces, SF typography, 22-point gutters, 8-point corners, and
-synthetic data only.
+Home follows standard macOS conventions rather than a custom card layout: a
+grouped `Form` with one section for the banked-reset summary and one section per
+provider, inside a `NavigationSplitView` whose sidebar is a native source list
+and whose toolbar holds the window title, Refresh, and Add Profile. Text uses
+semantic system styles, surfaces use system materials, and usage meters keep a
+blue (Codex) or orange (Claude) tint that is distinct from the accent color.
+Long source names truncate with full names available in help and accessibility
+labels. Both appearances use the same layout.
 
 ## Validation
 
