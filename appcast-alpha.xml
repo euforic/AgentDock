@@ -4,15 +4,15 @@ IMPORTANT: This file was signed by Sparkle. Any modifications to this file requi
     <channel>
         <title>AgentDock</title>
         <item>
-            <title>0.1.31-alpha.84</title>
-            <pubDate>Fri, 30 Oct 2026 07:55:04 +0000</pubDate>
+            <title>0.1.31-alpha.85</title>
+            <pubDate>Fri, 30 Oct 2026 08:14:33 +0000</pubDate>
             <link>https://github.com/euforic/AgentDock</link>
             <sparkle:channel>alpha</sparkle:channel>
-            <sparkle:version>1000084</sparkle:version>
-            <sparkle:shortVersionString>0.1.31-alpha.84</sparkle:shortVersionString>
+            <sparkle:version>1000085</sparkle:version>
+            <sparkle:shortVersionString>0.1.31-alpha.85</sparkle:shortVersionString>
             <sparkle:minimumSystemVersion>26.0</sparkle:minimumSystemVersion>
             <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
-            <enclosure url="https://github.com/euforic/AgentDock/releases/download/alpha-20261030075008-7ac15012a5bc/AgentDock-0.1.31-alpha.84.zip" length="6020090" type="application/octet-stream" sparkle:edSignature="mIEIiFAeo0RjZjT+WfPaLG3Dcidrbjw7T0D/dS5BbpsdcBmPXATEh2kqU8jKkQXiX8DXiK0I34PFc6voJbSrBw=="></enclosure>
+            <enclosure url="https://github.com/euforic/AgentDock/releases/download/alpha-20261030080921-9cdb58b7b9e0/AgentDock-0.1.31-alpha.85.zip" length="5759328" type="application/octet-stream" sparkle:edSignature="9eVItdalK1bbpLP0H2A/CL/5z7z9ofFBRfszSnnNRhSaFDFlrALaTjm5+3iAnEsKIZg9bOhWlSSppAAGv7D6Cw=="></enclosure>
         </item>
         <item>
             <title>0.1.30</title>
@@ -26,6 +26,6 @@ IMPORTANT: This file was signed by Sparkle. Any modifications to this file requi
         </item>
     </channel>
 </rss><!-- sparkle-signatures:
-edSignature: RThBUQuNNDlG3l3os/GRRJFEVKQKTlGwt7Vg2YvX89AzcM0QIDBp5CTEn4ZEbGTlFhsPmtm9ycIY+EJE0kt9CQ==
+edSignature: I+aUFbHZr3n9eIotnvLHr7WBwqCBiksJPKOYLxWCsnp4LOb/IHll55VUWlUQhIlu4ODVJ+Vm+/H2ZA+4JLXmAA==
 length: 2081
 -->
