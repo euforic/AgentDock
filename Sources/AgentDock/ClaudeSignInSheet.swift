@@ -1,8 +1,9 @@
 import AppKit
 import SwiftUI
 
-/// Guides AgentDock's own Claude sign-in: the browser step, an optional pasted
-/// code, the token exchange, and a retry after a failure.
+/// Guides adding a Claude account with AgentDock's own sign-in: the browser
+/// step, an optional pasted code, the token exchange, and a retry after a
+/// failure. Signing in to an account already listed replaces its sign-in.
 struct ClaudeSignInSheet: View {
     @EnvironmentObject private var model: AgentDockModel
     @State private var code = ""
@@ -18,7 +19,7 @@ struct ClaudeSignInSheet: View {
                     .foregroundStyle(.primary)
                     .textCase(nil)
             } footer: {
-                Text("AgentDock keeps this sign-in in its own Keychain item and uses it only to read your profile and Claude Code usage limits.")
+                Text("AgentDock keeps each account's sign-in in its own Keychain item and uses it only to read that account's profile and Claude Code usage limits. Sign in with the account you want to add.")
             }
         }
         .formStyle(.grouped)
@@ -35,7 +36,7 @@ struct ClaudeSignInSheet: View {
 
     @ViewBuilder
     private var content: some View {
-        switch model.claudeCodeLoginState {
+        switch model.claudeSignInState {
         case .signingIn(.starting):
             progressRow("Opening your browser…")
         case let .signingIn(.waitingForBrowser(url)):
@@ -51,21 +52,21 @@ struct ClaudeSignInSheet: View {
             }
         case .signingIn(.exchanging):
             progressRow("Finishing sign-in…")
-        case let .signInFailed(message):
+        case let .failed(message):
             Label(message, systemImage: "exclamationmark.triangle.fill")
                 .foregroundStyle(.orange)
-        default:
+        case .idle:
             EmptyView()
         }
     }
 
     @ViewBuilder
     private var confirmationButton: some View {
-        switch model.claudeCodeLoginState {
+        switch model.claudeSignInState {
         case .signingIn(.waitingForBrowser):
             Button("Continue", action: submit)
                 .disabled(trimmedCode.isEmpty)
-        case .signInFailed:
+        case .failed:
             Button("Try Again") {
                 code = ""
                 model.signInToClaude()

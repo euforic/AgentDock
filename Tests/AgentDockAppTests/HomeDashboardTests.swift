@@ -142,4 +142,32 @@ final class HomeDashboardTests: XCTestCase {
         XCTAssertEqual(source.sessionWindow?.title, "5-hour")
         XCTAssertEqual(source.weeklyWindow?.title, "Weekly")
     }
+
+    func testEachClaudeCodeAccountHasItsOwnRow() {
+        let limits = ProfileRateLimits(buckets: [
+            RateLimitBucket(
+                id: "claude",
+                name: "Claude",
+                primary: RateLimitWindowUsage(usedPercent: 5, windowDurationMins: 300, resetsAt: nil),
+                secondary: nil
+            )
+        ])
+        let keys = [String(repeating: "a", count: 32), String(repeating: "b", count: 32)]
+        let rows = keys.map { accountKey in
+            DashboardSource(
+                product: .claude,
+                kind: .claudeCode,
+                name: "Account \(accountKey.prefix(1))",
+                limits: limits,
+                running: nil,
+                busy: false,
+                resets: nil,
+                claudeCodeAccountKey: accountKey
+            )
+        }
+
+        XCTAssertEqual(rows.map(\.id), keys.map { "official.claude.code.\($0)" })
+        XCTAssertEqual(Set(rows.map(\.id)).count, 2)
+        XCTAssertTrue(rows.allSatisfy { !$0.countsAsAccount })
+    }
 }

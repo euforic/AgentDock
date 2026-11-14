@@ -143,32 +143,48 @@ root containment and symlink checks as other databases.
 
 ## Claude Sign-In for Claude Code Limits
 
-The separate Claude Code section uses AgentDock's own Claude sign-in, not
-Claude Code's login. **Sign In to Claude…** runs a one-time OAuth authorization
-code flow with PKCE (S256) through `claude.ai/oauth/authorize`, using Claude
-Code's public client ID and the scopes `user:profile user:inference`. The code
-is exchanged at `platform.claude.com/v1/oauth/token`, and the account is read
-once from `api.anthropic.com/api/oauth/profile`.
+The separate Claude Code section uses AgentDock's own Claude sign-ins, not
+Claude Code's login. **Sign In to Claude…** (or **Add Claude Account…** once one
+account is signed in) runs a one-time OAuth authorization code flow with PKCE
+(S256) through `claude.ai/oauth/authorize`, using Claude Code's public client
+ID and the scopes `user:profile user:inference`. The code is exchanged at
+`platform.claude.com/v1/oauth/token`, and the account is read once from
+`api.anthropic.com/api/oauth/profile`. Accounts are added only this way, by the
+user; AgentDock never discovers or imports accounts from other apps.
 
 - `user:inference` lets the token run Claude on the user's plan. AgentDock
   only ever calls the OAuth profile and usage endpoints with it.
 - The callback listener binds to 127.0.0.1 on a system-assigned port and
   ignores requests whose `state` does not match. A pasted `code#state` or
   callback URL is checked against the same `state`.
-- Tokens, the account and organization UUIDs, the email label, and the plan
-  are stored only in AgentDock's own Keychain item (service
-  `dev.euforic.agentdock.claude-login`, account `claude-code`) in the login
-  Keychain. The item is not synchronizable.
-- Background reads and writes forbid Keychain interaction. Only Sign In, Sign
-  Out, and a manual refresh can prompt, and a manual refresh prompts only when
-  an ad-hoc rebuild changed the code signature.
-- Tokens are renewed five minutes before expiry and written back to the item.
-  Only one renewal runs at a time.
+- Each account's tokens, account and organization UUIDs, email label, plan,
+  optional user-chosen name, and added date are stored only in that account's
+  own AgentDock Keychain item in the login Keychain: service
+  `dev.euforic.agentdock.claude-login`, account `claude-code:<account key>`,
+  where the key is a truncated SHA-256 digest of the account and organization
+  UUIDs, so item names never carry raw identifiers or the email. Items are not
+  synchronizable. An item only loads or saves the account its key names.
+  Nothing about these accounts is kept in preferences.
+- Signing in to an account that is already listed replaces its item and keeps
+  its name; no duplicate is created.
+- Listing reads only the attributes of items under AgentDock's own service.
+- Background reads and writes forbid Keychain interaction. Only Sign In,
+  Rename, Sign Out, and a manual refresh can prompt, and a manual refresh
+  prompts only when an ad-hoc rebuild changed the code signature.
+- Tokens are renewed five minutes before expiry and written back to that
+  account's item only. Only one renewal per account runs at a time.
 - A 401 renews the token once and retries once. A second 401, or a renewal
-  Claude refuses (`invalid_grant` or a refresh-token refusal), signs out and
-  deletes the item. An outage or a rate limit keeps the current token and
-  retries on the next refresh.
-- **Sign Out** deletes the item.
+  Claude refuses (`invalid_grant` or a refresh-token refusal), signs that
+  account out and deletes its item; its card stays to ask for a new sign-in
+  until it is removed. An outage or a rate limit keeps the current token and
+  retries on the next refresh. Other accounts are never affected.
+- **Sign Out** (or **Remove**) deletes only that account's item.
+- The single item written by earlier versions (account `claude-code`) is moved
+  automatically on first launch: its stored account identity names the new
+  item, which is written and read back before the old item is deleted. A
+  failed write, read-back, or delete keeps the old item and retries on the
+  next refresh, so the user never has to sign in again. An unreadable old item
+  is left untouched.
 - Tokens, authorization codes, and the PKCE verifier are never logged or sent
   to analytics, and Claude Code results are not sent to analytics.
 - For limits, AgentDock never reads Claude Code's `Claude Code-credentials`
@@ -180,7 +196,10 @@ digests of the projection plus the account and organization identity (the
 token digest when there is no identity), mapped to expiry timestamps. They hold
 at most 32 entries and 16 KiB and are capped at one hour. They never contain
 tokens, raw identifiers, or paths, and restoring default preferences does not
-clear them.
+clear them. Because the digest depends only on the account identity, each
+Claude Code account has its own cooldown, and a cooldown saved before multiple
+accounts were supported still applies to the migrated account. The per-account
+hourly budget of 30 Claude Code usage fetches is kept in memory only.
 
 ## Repository and Release Hygiene
 

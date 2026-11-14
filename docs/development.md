@@ -163,12 +163,17 @@ The live usage check reads the signed-in Claude Desktop login without Keychain
 interaction, sends one usage request, and asserts only that windows were
 returned.
 
-AgentDock's own Claude sign-in for Claude Code limits is never run in tests.
-Its tests use a scripted in-process transport, a real listener on 127.0.0.1,
-in-memory token stores, and temporary keychains created with
+AgentDock's own Claude sign-in for Claude Code limits never reaches Claude in
+tests. Its tests run the sign-in flow with a pasted synthetic code against a
+scripted in-process transport, a real listener on 127.0.0.1, in-memory
+multi-account token stores, and temporary keychains created with
 `SecKeychainCreate`; they never read the login Keychain or reach the internet.
-Check the browser sign-in, the pasted-code path, relaunch without a prompt,
-and Sign Out manually in a built app.
+They cover adding, replacing, renaming, and signing out accounts, migrating the
+legacy single item (including idempotence and failed writes, read-backs, and
+deletes), per-account cooldowns and budgets, staggered starts, and the
+one-per-account and two-overall concurrency limits. Check the browser sign-in,
+the pasted-code path, adding a second account, migration of an existing
+sign-in, relaunch without a prompt, and Sign Out manually in a built app.
 
 The installed Codex configuration check validates the signed app and runs its
 bundled CLI against a temporary managed MCP configuration without account data.

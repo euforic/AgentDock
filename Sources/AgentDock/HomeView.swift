@@ -104,7 +104,8 @@ struct HomeView: View {
 struct DashboardSource: Identifiable {
     enum Kind: Equatable {
         case official
-        /// The Claude Code CLI login's live limits; not an app or a separate account row.
+        /// Live limits of a Claude account signed in to AgentDock for Claude Code;
+        /// not an app, so it is not counted as an app account.
         case claudeCode
         case profile(CodexProfile)
     }
@@ -117,16 +118,18 @@ struct DashboardSource: Identifiable {
     let busy: Bool
     /// Banked-reset inventory for Codex sources; nil for Claude.
     let resets: HomeResetDigest?
+    /// The Claude Code account this row shows; one row per signed-in account.
+    var claudeCodeAccountKey: String? = nil
 
     var id: String {
         switch kind {
         case .official: "official.\(product.rawValue)"
-        case .claudeCode: "official.claude.code"
+        case .claudeCode: claudeCodeAccountKey.map { "official.claude.code.\($0)" } ?? "official.claude.code"
         case let .profile(profile): profile.id.uuidString
         }
     }
 
-    /// Claude Code shares the official Claude account context, so it is not counted.
+    /// Claude Code sign-ins are not app accounts, so they are not counted.
     var countsAsAccount: Bool { kind != .claudeCode }
 
     var windows: [HomeUsageWindow] {
@@ -164,21 +167,23 @@ struct DashboardSource: Identifiable {
                 busy: model.busyStockProducts.contains(product),
                 resets: product == .codex ? digest("official") : nil
             )
-            // Shown only once Claude Code reports windows, so there is no dead row without it.
+            // One row per signed-in account, shown only once it reports windows,
+            // so there is no dead row without them.
             var claudeCode: [DashboardSource] = []
-            if product == .claude,
-               let limits = model.officialClaudeCodeRateLimits,
-               !limits.buckets.isEmpty
-            {
-                claudeCode.append(DashboardSource(
-                    product: .claude,
-                    kind: .claudeCode,
-                    name: "Claude Code",
-                    limits: limits,
-                    running: nil,
-                    busy: false,
-                    resets: nil
-                ))
+            if product == .claude {
+                for account in model.claudeCodeAccounts where account.status.isSignedIn {
+                    guard let limits = account.limits, !limits.buckets.isEmpty else { continue }
+                    claudeCode.append(DashboardSource(
+                        product: .claude,
+                        kind: .claudeCode,
+                        name: account.title,
+                        limits: limits,
+                        running: nil,
+                        busy: false,
+                        resets: nil,
+                        claudeCodeAccountKey: account.key
+                    ))
+                }
             }
             let profiles: [DashboardSource] = model.profiles.filter { $0.product == product }.map { profile in
                 DashboardSource(
@@ -247,7 +252,7 @@ private struct AccountCell: View {
 
     private var subtitle: String {
         if source.kind == .claudeCode {
-            var parts = ["Claude Code login"]
+            var parts = ["Claude Code"]
             if let plan = source.limits?.planType, !plan.isEmpty {
                 parts.append(plan.replacingOccurrences(of: "_", with: " ").capitalized)
             }

@@ -46,10 +46,16 @@ view and account identity (the token digest when there is no identity), so
 they survive relaunch and token renewal. Account identity is verified once per
 credential rather than before every usage request. The Official Claude overview
 shows Claude Desktop and Claude Code limits as separate sections; each refresh
-runs at most one Desktop and one Claude Code request alongside the
-managed-profile requests. The Claude Code section uses AgentDock's own Claude
-sign-in (`ClaudeCodeLogin`), whose tokens live in AgentDock's Keychain item and
-are renewed by AgentDock.
+runs at most one Desktop request alongside the managed-profile requests. The
+Claude Code section shows one card per Claude account signed in to AgentDock.
+`ClaudeCodeAccounts` lists those accounts, adds them through the one-time
+sign-in, renames them, signs them out one at a time, and migrates the single
+pre-multi-account Keychain item. Each account has its own `ClaudeCodeLogin`,
+which owns that account's Keychain item and renews only its tokens. Claude Code
+accounts share no gate state: each has its own freshness cache, failure
+backoff, 429 cooldown, and a budget of 30 usage fetches per rolling hour. At
+most one fetch per account and two across all accounts run at once, and fetch
+starts are spaced one second apart so accounts are not polled together.
 
 Codex usage refresh is provider-aware. The built-in OpenAI provider uses the
 bundled Codex app-server, while a selected custom provider uses its configured

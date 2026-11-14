@@ -30,19 +30,19 @@ enum AgentDockDetailTab: String, CaseIterable, Identifiable {
     }
 }
 
-/// AgentDock's own Claude sign-in, which drives the Claude Code limits section.
-enum ClaudeCodeLoginState: Equatable {
+/// Whether AgentDock has listed its own Claude sign-ins for the Claude Code section.
+enum ClaudeCodeAccountsState: Equatable {
     case checking
-    case signedOut(notice: String?)
+    /// Listing or migrating the sign-ins needs a Keychain prompt; a manual refresh can show it.
     case needsKeychainAccess
-    case signingIn(ClaudeSignInStage)
-    case signInFailed(String)
-    case signedIn(accountLabel: String)
+    case ready
+}
 
-    var isSignedIn: Bool {
-        if case .signedIn = self { return true }
-        return false
-    }
+/// The "Add Claude Account" sheet.
+enum ClaudeSignInState: Equatable {
+    case idle
+    case signingIn(ClaudeSignInStage)
+    case failed(String)
 }
 
 enum ClaudeSignInStage: Equatable {
@@ -98,9 +98,11 @@ final class AgentDockModel: ObservableObject {
     @Published private(set) var officialStatsLoading = false
     @Published private(set) var officialCodexRateLimits: ProfileRateLimits?
     @Published private(set) var officialClaudeRateLimits: ProfileRateLimits?
-    /// Live limits for the Claude account signed in to AgentDock, shown separately from Desktop.
-    @Published private(set) var officialClaudeCodeRateLimits: ProfileRateLimits?
-    @Published private(set) var claudeCodeLoginState: ClaudeCodeLoginState = .checking
+    /// Every Claude account signed in to AgentDock, each with its own live
+    /// limits, shown separately from Desktop in the order they were added.
+    @Published private(set) var claudeCodeAccounts: [ClaudeCodeAccountUsage] = []
+    @Published private(set) var claudeCodeAccountsState: ClaudeCodeAccountsState = .checking
+    @Published private(set) var claudeSignInState: ClaudeSignInState = .idle
     @Published private(set) var profileInstanceStatuses: [CodexProfile.ID: CodexInstanceStatus] = [:]
     @Published private(set) var stockInstanceStatuses: [DesktopProduct: CodexInstanceStatus] = [:]
     @Published private(set) var installedShortcutProfileIDs: Set<CodexProfile.ID> = []
@@ -114,13 +116,17 @@ final class AgentDockModel: ObservableObject {
     private let statsScanner: any ProfileStatsScanning
     private let rateLimitClient: any ProfileRateLimitFetching
     private let claudeUsageClient: any ClaudeUsageFetching
-    private let claudeCodeLogin: ClaudeCodeLogin
+    private let claudeCodeAccountRegistry: ClaudeCodeAccounts
     private var claudeSignInTask: Task<Void, Never>?
     private var claudeSignInCodes: AsyncStream<String>.Continuation?
     /// Identifies the current sign-in so a cancelled one cannot overwrite a newer one.
     private var claudeSignInAttempt = 0
-    /// Bumped by sign-in and sign-out; older Claude Code results are discarded.
-    private var claudeCodeLimitsGeneration = 0
+    /// Bumped when an account is added or removed; an older pass may then only
+    /// update accounts that are still listed.
+    private var claudeCodeMembershipGeneration = 0
+    /// Bumped per account by sign-in, rename, and sign-out; an older result
+    /// for that account is discarded.
+    private var claudeCodeAccountGenerations: [String: Int] = [:]
     private let preferencesStore: AgentDockPreferencesStore
     private let legacyChatIndexRootURL: URL?
     private let appPathKeyPrefix = "AgentDock.desktopAppPath"
@@ -175,9 +181,9 @@ final class AgentDockModel: ObservableObject {
         shortcutInstaller = ShortcutInstaller()
         statsScanner = ProfileStatsScanner()
         rateLimitClient = CodexRateLimitClient()
-        let login = ClaudeCodeLogin(store: ClaudeLoginKeychainStore())
-        claudeCodeLogin = login
-        claudeUsageClient = ClaudeUsageClient(claudeCodeLogin: login)
+        let accounts = ClaudeCodeAccounts(store: ClaudeLoginKeychainAccounts())
+        claudeCodeAccountRegistry = accounts
+        claudeUsageClient = ClaudeUsageClient(claudeCodeAccounts: accounts)
         allowsAutomaticRefresh = true
         let storedPaths: [DesktopProduct: String?] = [
             .codex: UserDefaults.standard.string(
@@ -195,7 +201,7 @@ final class AgentDockModel: ObservableObject {
                 ?? DesktopAppRegistry.claude.defaultAppURL
         ]
         startInstanceMonitoring()
-        loadClaudeCodeLoginStatus()
+        loadClaudeCodeAccounts()
         ProductAnalytics.shared.capture(AnalyticsEvent(
             .appLifecycle,
             [.action(.launched), .trigger(.user)]
@@ -262,7 +268,7 @@ final class AgentDockModel: ObservableObject {
         statsScanner: any ProfileStatsScanning = ProfileStatsScanner(),
         rateLimitClient: any ProfileRateLimitFetching = CodexRateLimitClient(),
         claudeUsageClient: (any ClaudeUsageFetching)? = nil,
-        claudeCodeLogin: ClaudeCodeLogin,
+        claudeCodeAccounts: ClaudeCodeAccounts,
         preferencesStore: AgentDockPreferencesStore = AgentDockPreferencesStore(),
         startMonitoring: Bool = false,
         loadActivityOnInit: Bool = true,
@@ -274,7 +280,7 @@ final class AgentDockModel: ObservableObject {
         officialClaudeUserDataURL = officialDataRootURL.appendingPathComponent("Claude", isDirectory: true)
         officialClaudeCodeHomeURL = officialDataRootURL.appendingPathComponent(".claude", isDirectory: true)
         // The caller supplies the sign-in store, so test models never touch the developer's Keychain.
-        self.claudeCodeLogin = claudeCodeLogin
+        claudeCodeAccountRegistry = claudeCodeAccounts
         self.preferencesStore = preferencesStore
         preferences = preferencesStore.load()
         officialCodexProfileSettings = preferencesStore.loadOfficialCodexProfileSettings()
@@ -284,14 +290,14 @@ final class AgentDockModel: ObservableObject {
         self.shortcutInstaller = shortcutInstaller
         self.statsScanner = statsScanner
         self.rateLimitClient = rateLimitClient
-        self.claudeUsageClient = claudeUsageClient ?? ClaudeUsageClient(claudeCodeLogin: claudeCodeLogin)
+        self.claudeUsageClient = claudeUsageClient ?? ClaudeUsageClient(claudeCodeAccounts: claudeCodeAccounts)
         allowsAutomaticRefresh = startMonitoring
         reload(refreshData: loadActivityOnInit)
         if startMonitoring {
             startInstanceMonitoring()
         }
         configureProfileActivityRefresh()
-        loadClaudeCodeLoginStatus()
+        loadClaudeCodeAccounts()
     }
 
     deinit {
@@ -684,8 +690,8 @@ final class AgentDockModel: ObservableObject {
         let appURL = codexAppURL
         let officialHomeURL = officialCodexHomeURL
         let officialClaudeUserDataURL = officialClaudeUserDataURL
-        let claudeCodeLogin = claudeCodeLogin
-        let codeGeneration = claudeCodeLimitsGeneration
+        let codeMembership = claudeCodeMembershipGeneration
+        let codeAccountGenerations = claudeCodeAccountGenerations
         let officialConfigProfile = effectiveOfficialCodexConfigProfile
 
         rateLimitRefreshTask = Task { [weak self] in
@@ -711,13 +717,12 @@ final class AgentDockModel: ObservableObject {
             }
             let officialClaudeCodeWorker = Task.detached(
                 priority: .utility
-            ) { () async -> (ProfileRateLimits, ClaudeCodeLoginStatus)? in
+            ) { () async -> ClaudeCodeUsageReport? in
                 guard replaceAll else { return nil }
-                let limits = await claudeClient.fetchClaudeCodeUsage(
+                return await claudeClient.fetchClaudeCodeUsage(
                     allowKeychainInteraction: allowCredentialInteraction,
                     forceRefresh: allowCredentialInteraction
                 )
-                return (limits, await claudeCodeLogin.status())
             }
             async let officialResult = withTaskCancellationHandler {
                 await officialWorker.value
@@ -800,9 +805,14 @@ final class AgentDockModel: ObservableObject {
                 if self.profileRateLimits != results { self.profileRateLimits = results }
                 if self.officialCodexRateLimits != official { self.officialCodexRateLimits = official }
                 if self.officialClaudeRateLimits != officialClaude { self.officialClaudeRateLimits = officialClaude }
-                // A sign-in or sign-out since this pass started supersedes its result.
-                if let officialClaudeCode, self.claudeCodeLimitsGeneration == codeGeneration {
-                    self.applyClaudeCodeResult(limits: officialClaudeCode.0, status: officialClaudeCode.1)
+                // A sign-in, rename, or sign-out since this pass started supersedes
+                // its result for that account only.
+                if let officialClaudeCode {
+                    self.applyClaudeCodeReport(
+                        officialClaudeCode,
+                        membership: codeMembership,
+                        accountGenerations: codeAccountGenerations
+                    )
                 }
             } else {
                 self.profileRateLimits.merge(results) { _, new in new }
@@ -820,16 +830,15 @@ final class AgentDockModel: ObservableObject {
     // MARK: - Claude sign-in for Claude Code limits
 
     var isClaudeSignInSheetPresented: Bool {
-        switch claudeCodeLoginState {
-        case .signingIn, .signInFailed: true
-        default: false
-        }
+        claudeSignInState != .idle
     }
 
+    /// Adds a Claude account with a one-time sign-in. Signing in to an account
+    /// that is already listed replaces its sign-in rather than adding a row.
     func signInToClaude() {
-        switch claudeCodeLoginState {
-        case .signedOut, .needsKeychainAccess, .signInFailed: break
-        default: return
+        switch claudeSignInState {
+        case .idle, .failed: break
+        case .signingIn: return
         }
         claudeSignInTask?.cancel()
         claudeSignInCodes?.finish()
@@ -837,17 +846,17 @@ final class AgentDockModel: ObservableObject {
         let attempt = claudeSignInAttempt
         let (stream, continuation) = AsyncStream<String>.makeStream(bufferingPolicy: .bufferingNewest(1))
         claudeSignInCodes = continuation
-        claudeCodeLoginState = .signingIn(.starting)
-        let login = claudeCodeLogin
+        claudeSignInState = .signingIn(.starting)
+        let registry = claudeCodeAccountRegistry
         claudeSignInTask = Task { [weak self] in
             do {
-                let account = try await login.signIn(
+                let added = try await registry.addAccount(
                     progress: { [weak self] progress in
                         await self?.applySignInProgress(progress, attempt: attempt)
                     },
                     pastedCodes: stream
                 )
-                self?.completeClaudeSignIn(account, attempt: attempt)
+                self?.completeClaudeSignIn(added, attempt: attempt)
             } catch {
                 let failure = (error as Any as? ClaudeSignInError) ?? .cancelled
                 self?.failClaudeSignIn(failure, attempt: attempt)
@@ -856,7 +865,7 @@ final class AgentDockModel: ObservableObject {
     }
 
     func submitClaudeSignInCode(_ code: String) {
-        guard case .signingIn(.waitingForBrowser) = claudeCodeLoginState else { return }
+        guard case .signingIn(.waitingForBrowser) = claudeSignInState else { return }
         claudeSignInCodes?.yield(code)
     }
 
@@ -867,23 +876,23 @@ final class AgentDockModel: ObservableObject {
         claudeSignInTask = nil
         claudeSignInCodes?.finish()
         claudeSignInCodes = nil
-        claudeCodeLoginState = .signedOut(notice: nil)
+        claudeSignInState = .idle
     }
 
-    func signOutOfClaude() {
-        guard claudeCodeLoginState.isSignedIn else { return }
-        claudeCodeLimitsGeneration += 1
-        let login = claudeCodeLogin
+    /// Signs out of one account and deletes only its Keychain item.
+    func signOutOfClaude(accountKey: String) {
+        guard claudeCodeAccounts.contains(where: { $0.key == accountKey }) else { return }
+        bumpClaudeCodeGeneration(for: accountKey)
+        let registry = claudeCodeAccountRegistry
         let client = claudeUsageClient
         Task { [weak self] in
             do {
-                try await login.signOut()
-                await client.forgetClaudeCodeUsage()
+                try await registry.signOut(accountKey: accountKey)
+                await client.forgetClaudeCodeUsage(accountKey: accountKey)
                 guard let self else { return }
-                // Discard any pass that read the sign-in before it was deleted.
-                self.claudeCodeLimitsGeneration += 1
-                self.officialClaudeCodeRateLimits = nil
-                self.claudeCodeLoginState = .signedOut(notice: nil)
+                // Discard any pass that read this sign-in before it was deleted.
+                self.bumpClaudeCodeGeneration(for: accountKey)
+                self.claudeCodeAccounts.removeAll { $0.key == accountKey }
             } catch {
                 let failure = (error as Any as? ClaudeSignInError) ?? .keychain(.unreadable)
                 self?.errorMessage = failure.message
@@ -891,35 +900,65 @@ final class AgentDockModel: ObservableObject {
         }
     }
 
-    private func loadClaudeCodeLoginStatus() {
-        let login = claudeCodeLogin
-        let generation = claudeCodeLimitsGeneration
+    /// Names one account; an empty name shows its email again.
+    func renameClaudeAccount(accountKey: String, to name: String) {
+        guard claudeCodeAccounts.contains(where: { $0.key == accountKey }) else { return }
+        let registry = claudeCodeAccountRegistry
         Task { [weak self] in
-            let status = await login.status()
-            guard let self, self.claudeCodeLimitsGeneration == generation else { return }
-            self.applyClaudeCodeLoginStatus(status)
+            do {
+                let account = try await registry.rename(accountKey: accountKey, to: name)
+                guard let self else { return }
+                // A pass that started before the rename must not restore the old name.
+                self.claudeCodeAccountGenerations[accountKey, default: 0] += 1
+                guard let index = self.claudeCodeAccounts.firstIndex(where: { $0.key == accountKey }) else {
+                    return
+                }
+                self.claudeCodeAccounts[index].account = account
+                if case .signedIn = self.claudeCodeAccounts[index].status {
+                    self.claudeCodeAccounts[index].status = .signedIn(account)
+                }
+            } catch {
+                let failure = (error as Any as? ClaudeSignInError) ?? .keychain(.unreadable)
+                self?.errorMessage = failure.message
+            }
+        }
+    }
+
+    private func loadClaudeCodeAccounts() {
+        let registry = claudeCodeAccountRegistry
+        let membership = claudeCodeMembershipGeneration
+        let generations = claudeCodeAccountGenerations
+        Task { [weak self] in
+            let report = await registry.list()
+            self?.applyClaudeCodeReport(report, membership: membership, accountGenerations: generations)
         }
     }
 
     private func applySignInProgress(_ progress: ClaudeSignInProgress, attempt: Int) {
-        guard attempt == claudeSignInAttempt, case .signingIn = claudeCodeLoginState else { return }
+        guard attempt == claudeSignInAttempt, case .signingIn = claudeSignInState else { return }
         switch progress {
         case let .waitingForBrowser(url):
             NSWorkspace.shared.open(url)
-            claudeCodeLoginState = .signingIn(.waitingForBrowser(url))
+            claudeSignInState = .signingIn(.waitingForBrowser(url))
         case .exchangingCode:
-            claudeCodeLoginState = .signingIn(.exchanging)
+            claudeSignInState = .signingIn(.exchanging)
         }
     }
 
-    private func completeClaudeSignIn(_ account: ClaudeLoginAccount, attempt: Int) {
+    private func completeClaudeSignIn(_ added: ClaudeCodeAccountUsage, attempt: Int) {
         guard attempt == claudeSignInAttempt else { return }
         claudeSignInTask = nil
         claudeSignInCodes?.finish()
         claudeSignInCodes = nil
-        claudeCodeLimitsGeneration += 1
-        claudeCodeLoginState = .signedIn(accountLabel: account.label)
-        refreshClaudeCodeLimits(force: true, forgettingCache: true)
+        claudeSignInState = .idle
+        bumpClaudeCodeGeneration(for: added.key)
+        if let index = claudeCodeAccounts.firstIndex(where: { $0.key == added.key }) {
+            claudeCodeAccounts[index] = added
+        } else {
+            claudeCodeAccounts.append(added)
+        }
+        if claudeCodeAccountsState == .checking { claudeCodeAccountsState = .ready }
+        refreshClaudeCodeAccount(added.key, force: true, forgettingCache: true)
     }
 
     private func failClaudeSignIn(_ error: ClaudeSignInError, attempt: Int) {
@@ -927,54 +966,84 @@ final class AgentDockModel: ObservableObject {
         claudeSignInTask = nil
         claudeSignInCodes?.finish()
         claudeSignInCodes = nil
-        guard case .signingIn = claudeCodeLoginState else { return }
-        claudeCodeLoginState = error == .cancelled
-            ? .signedOut(notice: nil)
-            : .signInFailed(error.message)
+        guard case .signingIn = claudeSignInState else { return }
+        claudeSignInState = error == .cancelled ? .idle : .failed(error.message)
     }
 
-    /// One Claude Code fetch outside the regular pass; only sign-in uses it.
-    private func refreshClaudeCodeLimits(force: Bool, forgettingCache: Bool) {
-        let generation = claudeCodeLimitsGeneration
+    /// One account's fetch outside the regular pass; only sign-in uses it.
+    private func refreshClaudeCodeAccount(_ accountKey: String, force: Bool, forgettingCache: Bool) {
+        let generation = claudeCodeAccountGenerations[accountKey]
         let client = claudeUsageClient
-        let login = claudeCodeLogin
         Task { [weak self] in
             let result = await Task.detached(
                 priority: .utility
-            ) { () async -> (ProfileRateLimits, ClaudeCodeLoginStatus) in
-                if forgettingCache { await client.forgetClaudeCodeUsage() }
-                let limits = await client.fetchClaudeCodeUsage(
+            ) { () async -> ClaudeCodeAccountUsage? in
+                if forgettingCache { await client.forgetClaudeCodeUsage(accountKey: accountKey) }
+                return await client.fetchClaudeCodeUsage(
+                    accountKey: accountKey,
                     allowKeychainInteraction: false,
                     forceRefresh: force
                 )
-                return (limits, await login.status())
             }.value
-            guard let self, self.claudeCodeLimitsGeneration == generation else { return }
-            self.applyClaudeCodeResult(limits: result.0, status: result.1)
+            guard let self, let result,
+                  self.claudeCodeAccountGenerations[accountKey] == generation,
+                  let index = self.claudeCodeAccounts.firstIndex(where: { $0.key == accountKey }),
+                  self.claudeCodeAccounts[index] != result
+            else { return }
+            self.claudeCodeAccounts[index] = result
         }
     }
 
-    private func applyClaudeCodeResult(limits: ProfileRateLimits, status: ClaudeCodeLoginStatus) {
-        applyClaudeCodeLoginStatus(status)
-        var shown: ProfileRateLimits?
-        if case .signedIn = status { shown = limits }
-        if officialClaudeCodeRateLimits != shown { officialClaudeCodeRateLimits = shown }
+    private func bumpClaudeCodeGeneration(for accountKey: String) {
+        claudeCodeMembershipGeneration += 1
+        claudeCodeAccountGenerations[accountKey, default: 0] += 1
     }
 
-    /// Maps the Core status; an open sign-in sheet keeps its own state.
-    private func applyClaudeCodeLoginStatus(_ status: ClaudeCodeLoginStatus) {
-        switch claudeCodeLoginState {
-        case .signingIn, .signInFailed: return
-        default: break
+    /// Applies a listing or a full pass. Accounts changed since it started keep
+    /// their current card; when accounts were added or removed meanwhile, only
+    /// accounts still listed are updated.
+    private func applyClaudeCodeReport(
+        _ report: ClaudeCodeUsageReport,
+        membership: Int,
+        accountGenerations: [String: Int]
+    ) {
+        let current = claudeCodeAccounts
+        func isCurrent(_ key: String) -> Bool {
+            accountGenerations[key] == claudeCodeAccountGenerations[key]
         }
-        let next: ClaudeCodeLoginState = switch status {
-        case .unknown: .checking
-        case let .signedIn(account): .signedIn(accountLabel: account.label)
-        case let .signedOut(expired):
-            .signedOut(notice: expired ? ClaudeCodeUsageMessage.signInExpired : nil)
-        case .keychainAccessRequired: .needsKeychainAccess
+        func merged(_ incoming: ClaudeCodeAccountUsage) -> ClaudeCodeAccountUsage {
+            // A listing carries no limits; keep the ones already shown.
+            guard incoming.limits == nil,
+                  let existing = current.first(where: { $0.key == incoming.key })
+            else { return incoming }
+            var result = incoming
+            result.limits = existing.limits
+            result.rateLimitedUntil = existing.rateLimitedUntil
+            return result
         }
-        if claudeCodeLoginState != next { claudeCodeLoginState = next }
+
+        let next: [ClaudeCodeAccountUsage]
+        if membership == claudeCodeMembershipGeneration {
+            next = report.accounts.map { (incoming: ClaudeCodeAccountUsage) -> ClaudeCodeAccountUsage in
+                if !isCurrent(incoming.key),
+                   let existing = current.first(where: { $0.key == incoming.key })
+                {
+                    return existing
+                }
+                return merged(incoming)
+            }
+            let state: ClaudeCodeAccountsState = report.keychainAccessRequired ? .needsKeychainAccess : .ready
+            if claudeCodeAccountsState != state { claudeCodeAccountsState = state }
+        } else {
+            next = current.map { (existing: ClaudeCodeAccountUsage) -> ClaudeCodeAccountUsage in
+                guard isCurrent(existing.key),
+                      let incoming = report.accounts.first(where: { $0.key == existing.key })
+                else { return existing }
+                return merged(incoming)
+            }
+            if claudeCodeAccountsState == .checking { claudeCodeAccountsState = .ready }
+        }
+        if claudeCodeAccounts != next { claudeCodeAccounts = next }
     }
 
     private func captureRateLimitAnalytics(

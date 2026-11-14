@@ -184,6 +184,107 @@ final class ClaudeUsageRateLimitGateTests: XCTestCase {
         XCTAssertTrue(ledger.isVerified("synthetic-key-overflow"))
     }
 
+    // MARK: - Multiple accounts
+
+    func testRequestBudgetIsThirtyPerAccountPerRollingHour() {
+        var budget = ClaudeUsageRequestBudget()
+        let first = ClaudeUsageCredential.digest("synthetic-account-one")
+        let second = ClaudeUsageCredential.digest("synthetic-account-two")
+
+        for index in 0..<ClaudeUsageRequestBudget.limit {
+            XCTAssertTrue(budget.reserve(key: first, now: now.addingTimeInterval(Double(index))))
+        }
+        XCTAssertEqual(ClaudeUsageRequestBudget.limit, 30)
+        XCTAssertFalse(budget.reserve(key: first, now: now.addingTimeInterval(60)))
+        XCTAssertEqual(budget.used(key: first, now: now.addingTimeInterval(60)), 30)
+        XCTAssertEqual(
+            budget.nextAvailable(key: first, now: now.addingTimeInterval(60)),
+            now.addingTimeInterval(ClaudeUsageRequestBudget.window)
+        )
+
+        // Another account is unaffected.
+        XCTAssertNil(budget.nextAvailable(key: second, now: now.addingTimeInterval(60)))
+        XCTAssertTrue(budget.reserve(key: second, now: now.addingTimeInterval(60)))
+
+        // The window rolls: the oldest request ages out after an hour.
+        let later = now.addingTimeInterval(ClaudeUsageRequestBudget.window)
+        XCTAssertNil(budget.nextAvailable(key: first, now: later))
+        XCTAssertTrue(budget.reserve(key: first, now: later))
+        XCTAssertFalse(budget.reserve(key: first, now: later))
+    }
+
+    func testCooldownKeyDependsOnlyOnAccountIdentity() {
+        let identity = ClaudeAccountIdentity(
+            accountUUID: "00000000-0000-0000-0000-000000000001",
+            organizationUUID: "00000000-0000-0000-0000-000000000002"
+        )
+        let other = ClaudeAccountIdentity(
+            accountUUID: "00000000-0000-0000-0000-000000000003",
+            organizationUUID: "00000000-0000-0000-0000-000000000004"
+        )
+        let credential = ClaudeUsageCredential(
+            accessToken: "synthetic-token",
+            scopes: ["user:profile"],
+            identity: identity
+        )
+
+        // The digest saved before multiple accounts is the one used per account now.
+        XCTAssertEqual(
+            credential.cooldownKey(for: .claudeCode),
+            ClaudeUsageCredential.cooldownKey(identity: identity, projection: .claudeCode)
+        )
+        XCTAssertNotEqual(
+            ClaudeUsageCredential.cooldownKey(identity: identity, projection: .claudeCode),
+            ClaudeUsageCredential.cooldownKey(identity: other, projection: .claudeCode)
+        )
+        XCTAssertEqual(
+            identity.accountKey,
+            ClaudeLoginAccountKey.make(accountUUID: identity.accountUUID, organizationUUID: identity.organizationUUID)
+        )
+    }
+
+    func testThrottleAllowsTwoAtOnceAndSpacesStarts() async throws {
+        let throttle = ClaudeRequestThrottle(maximumConcurrent: 2, spacing: .milliseconds(100))
+
+        await throttle.acquire()
+        let firstStart = ContinuousClock.now
+        await throttle.acquire()
+        let secondStart = ContinuousClock.now
+        XCTAssertGreaterThanOrEqual(secondStart - firstStart, .milliseconds(90))
+
+        let third = Task { () -> ContinuousClock.Instant in
+            await throttle.acquire()
+            return ContinuousClock.now
+        }
+        try await Task.sleep(for: .milliseconds(250))
+        let releasedAt = ContinuousClock.now
+        throttle.release()
+        let thirdStart = await third.value
+        // The third start waited for a free slot, not just its spacing turn.
+        XCTAssertGreaterThanOrEqual(thirdStart, releasedAt)
+        throttle.release()
+        throttle.release()
+    }
+
+    func testKeyedExclusionAllowsOneHolderPerKey() async throws {
+        let exclusion = ClaudeKeyedExclusion<String>()
+        await exclusion.acquire("first")
+        // Another key is not blocked.
+        await exclusion.acquire("second")
+
+        let waiter = Task { () -> ContinuousClock.Instant in
+            await exclusion.acquire("first")
+            return ContinuousClock.now
+        }
+        try await Task.sleep(for: .milliseconds(150))
+        let releasedAt = ContinuousClock.now
+        exclusion.release("first")
+        let acquiredAt = await waiter.value
+        XCTAssertGreaterThanOrEqual(acquiredAt, releasedAt, "a second holder of the same key must wait")
+        exclusion.release("first")
+        exclusion.release("second")
+    }
+
     private func makeDefaults() throws -> UserDefaults {
         let suiteName = "AgentDockTests.\(UUID().uuidString)"
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
