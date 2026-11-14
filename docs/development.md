@@ -157,17 +157,18 @@ AGENTDOCK_CLAUDE_LIVE_LIFECYCLE=1 swift test \
 
 AGENTDOCK_LIVE_CLAUDE_USAGE_TEST=1 swift test \
   --filter ClaudeUsageClientTests/testInstalledOfficialUsageWhenEnabled
-
-AGENTDOCK_LIVE_CLAUDE_CODE_USAGE_TEST=1 swift test \
-  --filter ClaudeUsageClientTests/testInstalledClaudeCodeUsageWhenEnabled
 ```
 
-The live usage checks read the signed-in Claude Desktop or Claude Code login
-without Keychain interaction, send one usage request, and assert only that
-windows were returned. The Claude Code check honors an absolute
-`CLAUDE_CONFIG_DIR` and expects only the 5-hour, weekly, and Fable windows. It
-needs a readable `.credentials.json` or a Keychain item the test runner may
-read without a prompt.
+The live usage check reads the signed-in Claude Desktop login without Keychain
+interaction, sends one usage request, and asserts only that windows were
+returned.
+
+AgentDock's own Claude sign-in for Claude Code limits is never run in tests.
+Its tests use a scripted in-process transport, a real listener on 127.0.0.1,
+in-memory token stores, and temporary keychains created with
+`SecKeychainCreate`; they never read the login Keychain or reach the internet.
+Check the browser sign-in, the pasted-code path, relaunch without a prompt,
+and Sign Out manually in a built app.
 
 The installed Codex configuration check validates the signed app and runs its
 bundled CLI against a temporary managed MCP configuration without account data.

@@ -11,17 +11,17 @@ final class ClaudeUsageRateLimitGateTests: XCTestCase {
         let second = ClaudeUsageCredential.digest("synthetic-token-two")
 
         ClaudeUsageCooldownStore(defaults: defaults).record(
-            tokenDigest: first,
+            key: first,
             until: now.addingTimeInterval(600),
             now: now
         )
 
         let reopened = ClaudeUsageCooldownStore(defaults: defaults)
-        XCTAssertEqual(reopened.blockedUntil(tokenDigest: first, now: now), now.addingTimeInterval(600))
-        XCTAssertNil(reopened.blockedUntil(tokenDigest: second, now: now))
+        XCTAssertEqual(reopened.blockedUntil(key: first, now: now), now.addingTimeInterval(600))
+        XCTAssertNil(reopened.blockedUntil(key: second, now: now))
 
-        reopened.clear(tokenDigest: first)
-        XCTAssertNil(ClaudeUsageCooldownStore(defaults: defaults).blockedUntil(tokenDigest: first, now: now))
+        reopened.clear(key: first)
+        XCTAssertNil(ClaudeUsageCooldownStore(defaults: defaults).blockedUntil(key: first, now: now))
 
         // Only digests and timestamps are stored.
         let stored = String(describing: defaults.dictionaryRepresentation())
@@ -33,34 +33,34 @@ final class ClaudeUsageRateLimitGateTests: XCTestCase {
         let store = ClaudeUsageCooldownStore(defaults: defaults)
         let digest = ClaudeUsageCredential.digest("synthetic-token")
 
-        store.record(tokenDigest: digest, until: now.addingTimeInterval(600), now: now)
-        store.record(tokenDigest: digest, until: now.addingTimeInterval(100), now: now)
-        XCTAssertEqual(store.blockedUntil(tokenDigest: digest, now: now), now.addingTimeInterval(600))
+        store.record(key: digest, until: now.addingTimeInterval(600), now: now)
+        store.record(key: digest, until: now.addingTimeInterval(100), now: now)
+        XCTAssertEqual(store.blockedUntil(key: digest, now: now), now.addingTimeInterval(600))
 
         // Reading after expiry removes the entry from storage.
-        XCTAssertNil(store.blockedUntil(tokenDigest: digest, now: now.addingTimeInterval(601)))
-        XCTAssertNil(store.blockedUntil(tokenDigest: digest, now: now))
+        XCTAssertNil(store.blockedUntil(key: digest, now: now.addingTimeInterval(601)))
+        XCTAssertNil(store.blockedUntil(key: digest, now: now))
 
         // A deadline already in the past is not recorded.
-        store.record(tokenDigest: digest, until: now.addingTimeInterval(-1), now: now)
-        XCTAssertNil(store.blockedUntil(tokenDigest: digest, now: now))
+        store.record(key: digest, until: now.addingTimeInterval(-1), now: now)
+        XCTAssertNil(store.blockedUntil(key: digest, now: now))
 
         // The store is bounded; the newest deadline is always kept.
         for index in 0..<40 {
             store.record(
-                tokenDigest: ClaudeUsageCredential.digest("synthetic-token-\(index)"),
+                key: ClaudeUsageCredential.digest("synthetic-token-\(index)"),
                 until: now.addingTimeInterval(1_000 + Double(index)),
                 now: now
             )
         }
-        store.record(tokenDigest: digest, until: now.addingTimeInterval(500), now: now)
-        XCTAssertEqual(store.blockedUntil(tokenDigest: digest, now: now), now.addingTimeInterval(500))
+        store.record(key: digest, until: now.addingTimeInterval(500), now: now)
+        XCTAssertEqual(store.blockedUntil(key: digest, now: now), now.addingTimeInterval(500))
         XCTAssertNil(store.blockedUntil(
-            tokenDigest: ClaudeUsageCredential.digest("synthetic-token-0"),
+            key: ClaudeUsageCredential.digest("synthetic-token-0"),
             now: now
         ))
         XCTAssertNotNil(store.blockedUntil(
-            tokenDigest: ClaudeUsageCredential.digest("synthetic-token-39"),
+            key: ClaudeUsageCredential.digest("synthetic-token-39"),
             now: now
         ))
     }
@@ -72,8 +72,8 @@ final class ClaudeUsageRateLimitGateTests: XCTestCase {
         let digest = ClaudeUsageCredential.digest("synthetic-token")
         let ceiling = now.addingTimeInterval(ClaudeUsageRefreshPolicy.maximumRateLimitCooldown)
 
-        store.record(tokenDigest: digest, until: now.addingTimeInterval(30 * 86_400), now: now)
-        XCTAssertEqual(store.blockedUntil(tokenDigest: digest, now: now), ceiling)
+        store.record(key: digest, until: now.addingTimeInterval(30 * 86_400), now: now)
+        XCTAssertEqual(store.blockedUntil(key: digest, now: now), ceiling)
 
         // A stored value from a skewed clock is clamped on read.
         let skewed = ClaudeUsageCredential.digest("synthetic-skewed-token")
@@ -85,17 +85,66 @@ final class ClaudeUsageRateLimitGateTests: XCTestCase {
             ]),
             forKey: key
         )
-        XCTAssertEqual(store.blockedUntil(tokenDigest: skewed, now: now), ceiling)
-        XCTAssertNil(store.blockedUntil(tokenDigest: "synthetic-token", now: now))
-        XCTAssertNil(store.blockedUntil(tokenDigest: digest.uppercased(), now: now))
+        XCTAssertEqual(store.blockedUntil(key: skewed, now: now), ceiling)
+        XCTAssertNil(store.blockedUntil(key: "synthetic-token", now: now))
+        XCTAssertNil(store.blockedUntil(key: digest.uppercased(), now: now))
 
         // Non-digest keys are never written.
-        store.record(tokenDigest: "synthetic-token", until: now.addingTimeInterval(600), now: now)
-        store.record(tokenDigest: String(digest.dropLast()), until: now.addingTimeInterval(600), now: now)
+        store.record(key: "synthetic-token", until: now.addingTimeInterval(600), now: now)
+        store.record(key: String(digest.dropLast()), until: now.addingTimeInterval(600), now: now)
         let data = try XCTUnwrap(defaults.data(forKey: key))
         let stored = try JSONDecoder().decode([String: Double].self, from: data)
         XCTAssertEqual(Set(stored.keys), [skewed])
         XCTAssertTrue(stored.keys.allSatisfy(ClaudeUsageCooldownStore.isDigest))
+    }
+
+    func testCooldownKeyUsesAccountIdentityPerProjection() {
+        let account = "00000000-0000-0000-0000-000000000001"
+        let organization = "00000000-0000-0000-0000-000000000002"
+        let identity = ClaudeAccountIdentity(accountUUID: account, organizationUUID: organization)
+        let first = ClaudeUsageCredential(
+            accessToken: "synthetic-token-a",
+            scopes: ["user:profile"],
+            identity: identity
+        )
+        var renewed = first
+        renewed.accessToken = "synthetic-token-b"
+
+        let key = first.cooldownKey(for: .claudeCode)
+        XCTAssertEqual(key, renewed.cooldownKey(for: .claudeCode))
+        XCTAssertNotEqual(key, first.tokenDigest)
+        XCTAssertNotEqual(key, renewed.tokenDigest)
+        XCTAssertNotEqual(key, first.cooldownKey(for: .desktop))
+        XCTAssertTrue(ClaudeUsageCooldownStore.isDigest(key))
+        XCTAssertTrue(ClaudeUsageCooldownStore.isDigest(first.cooldownKey(for: .desktop)))
+        XCTAssertFalse(key.contains(account))
+        XCTAssertFalse(key.contains(organization))
+
+        var anonymous = first
+        anonymous.identity = nil
+        XCTAssertEqual(anonymous.cooldownKey(for: .claudeCode), anonymous.tokenDigest)
+        XCTAssertEqual(anonymous.cooldownKey(for: .desktop), anonymous.tokenDigest)
+    }
+
+    func testRateLimitCooldownCapsAtOneHour() throws {
+        XCTAssertEqual(ClaudeUsageRefreshPolicy.rateLimitCooldown(retryAfter: 7_200), 3_600)
+
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.timeZone = TimeZone(identifier: "GMT")
+        formatter.dateFormat = "EEE, dd MMM yyyy HH:mm:ss zzz"
+        let header = formatter.string(from: now.addingTimeInterval(7_200))
+        XCTAssertEqual(
+            ClaudeUsageRefreshPolicy.rateLimitCooldown(
+                retryAfter: ClaudeUsageRefreshPolicy.retryAfter(header, now: now)
+            ),
+            3_600
+        )
+
+        let store = ClaudeUsageCooldownStore(defaults: try makeDefaults())
+        let digest = ClaudeUsageCredential.digest("synthetic-token")
+        store.record(key: digest, until: now.addingTimeInterval(7_200), now: now)
+        XCTAssertEqual(store.blockedUntil(key: digest, now: now), now.addingTimeInterval(3_600))
     }
 
     func testIdentityLedgerVerifiesOncePerCredentialAndInvalidates() {

@@ -319,7 +319,7 @@ final class ClaudeUsageClientTests: XCTestCase {
         XCTAssertNil(ClaudeUsageRefreshPolicy.retryAfter("soon", now: target))
         XCTAssertNil(ClaudeUsageRefreshPolicy.retryAfter("", now: target))
         XCTAssertNil(ClaudeUsageRefreshPolicy.retryAfter(nil, now: target))
-        XCTAssertEqual(ClaudeUsageRefreshPolicy.rateLimitCooldown(retryAfter: 86_400), 21_600)
+        XCTAssertEqual(ClaudeUsageRefreshPolicy.rateLimitCooldown(retryAfter: 86_400), 3_600)
     }
 
     func testManualRefreshBypassesFreshnessButNotRateLimitCooldown() {
@@ -354,91 +354,207 @@ final class ClaudeUsageClientTests: XCTestCase {
 
     // MARK: - Claude Code client
 
-    func testPersistedCooldownIsHonoredByNewClientAndManualRefresh() async throws {
-        let suiteName = "AgentDockTests.\(UUID().uuidString)"
-        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
-        defer { defaults.removePersistentDomain(forName: suiteName) }
-        let token = "synthetic-claude-code-token"
-        let location = try makeClaudeCodeLocation(credentials: #"""
-        {"claudeAiOauth":{"accessToken":"\#(token)","expiresAt":\#(Self.millisecondsFromNow(3_600)),
-         "scopes":["user:profile"],"subscriptionType":"max"}}
-        """#)
+    private typealias Fixture = ClaudeLoginFixture
+    private let tokenPath = ScriptedClaudeTransport.tokenPath
+    private let profilePath = ScriptedClaudeTransport.profilePath
+    private let usagePath = ScriptedClaudeTransport.usagePath
 
-        let now = Date()
-        ClaudeUsageCooldownStore(defaults: defaults).record(
-            tokenDigest: ClaudeUsageCredential.digest(token),
-            until: now.addingTimeInterval(600),
-            now: now
+    func testUnauthorizedUsageRenewsOnceAndRetries() async throws {
+        let store = InMemoryClaudeLoginStore(Fixture.tokens())
+        let transport = ScriptedClaudeTransport()
+        await transport.enqueue(profilePath, Fixture.profileReply, Fixture.profileReply)
+        await transport.enqueue(usagePath, .json(401, "{}"), Fixture.usageReply)
+        await transport.enqueue(
+            tokenPath,
+            Fixture.tokenReply(access: "synthetic-access-b", refresh: "synthetic-refresh-b")
         )
+        let client = try makeClient(store: store, transport: transport)
 
-        // A new client (as after relaunch) honors the saved cooldown even when forced.
-        let client = ClaudeUsageClient(cooldowns: ClaudeUsageCooldownStore(defaults: defaults))
-        let limits = await client.fetchClaudeCodeUsage(
-            location: location,
-            allowKeychainInteraction: false,
-            forceRefresh: true
+        let limits = await client.fetchClaudeCodeUsage(allowKeychainInteraction: false, forceRefresh: true)
+
+        XCTAssertNil(limits.errorMessage)
+        XCTAssertEqual(limits.buckets.map(\.id), ["claude"])
+        let paths = await transport.paths
+        XCTAssertEqual(paths, [profilePath, usagePath, tokenPath, profilePath, usagePath])
+        let authorizations = await transport.requests
+            .filter { $0.url?.path == usagePath }
+            .map { $0.value(forHTTPHeaderField: "Authorization") }
+        XCTAssertEqual(authorizations, ["Bearer synthetic-access-a", "Bearer synthetic-access-b"])
+        XCTAssertEqual(store.tokens?.accessToken, "synthetic-access-b")
+        XCTAssertEqual(store.tokens?.refreshToken, "synthetic-refresh-b")
+    }
+
+    func testSecondUnauthorizedSignsOut() async throws {
+        let store = InMemoryClaudeLoginStore(Fixture.tokens())
+        let transport = ScriptedClaudeTransport()
+        await transport.enqueue(profilePath, Fixture.profileReply, Fixture.profileReply)
+        await transport.enqueue(usagePath, .json(401, "{}"), .json(401, "{}"))
+        await transport.enqueue(tokenPath, Fixture.tokenReply(access: "synthetic-access-b"))
+        let login = ClaudeCodeLogin(store: store, transport: transport)
+        let client = try makeClient(login: login, transport: transport)
+
+        let limits = await client.fetchClaudeCodeUsage(allowKeychainInteraction: false, forceRefresh: true)
+
+        XCTAssertEqual(limits.errorMessage, ClaudeCodeUsageMessage.signInExpired)
+        XCTAssertTrue(limits.buckets.isEmpty)
+        let tokenRequests = await transport.count(tokenPath)
+        XCTAssertEqual(tokenRequests, 1)
+        XCTAssertNil(store.tokens)
+        let status = await login.status()
+        XCTAssertEqual(status, .signedOut(expired: true))
+    }
+
+    func testRefusedRenewalAfterUnauthorizedSignsOut() async throws {
+        let store = InMemoryClaudeLoginStore(Fixture.tokens())
+        let transport = ScriptedClaudeTransport()
+        await transport.enqueue(profilePath, Fixture.profileReply)
+        await transport.enqueue(usagePath, .json(401, "{}"))
+        await transport.enqueue(tokenPath, Fixture.errorReply(400, "invalid_grant"))
+        let login = ClaudeCodeLogin(store: store, transport: transport)
+        let client = try makeClient(login: login, transport: transport)
+
+        let limits = await client.fetchClaudeCodeUsage(allowKeychainInteraction: false, forceRefresh: true)
+
+        XCTAssertEqual(limits.errorMessage, ClaudeCodeUsageMessage.signInExpired)
+        XCTAssertNil(store.tokens)
+        let status = await login.status()
+        XCTAssertEqual(status, .signedOut(expired: true))
+
+        // Signed out: the next pass sends nothing.
+        let next = await client.fetchClaudeCodeUsage(allowKeychainInteraction: false, forceRefresh: true)
+        XCTAssertEqual(next.errorMessage, ClaudeCodeUsageMessage.signInExpired)
+        let requests = await transport.requests.count
+        XCTAssertEqual(requests, 3)
+    }
+
+    func testTokenEndpointOutageAfterUnauthorizedKeepsLogin() async throws {
+        let original = Fixture.tokens()
+        let store = InMemoryClaudeLoginStore(original)
+        let transport = ScriptedClaudeTransport()
+        await transport.enqueue(profilePath, Fixture.profileReply)
+        await transport.enqueue(usagePath, .json(401, "{}"))
+        await transport.enqueue(tokenPath, .json(503, ""))
+        let client = try makeClient(store: store, transport: transport)
+
+        let limits = await client.fetchClaudeCodeUsage(allowKeychainInteraction: false, forceRefresh: true)
+
+        XCTAssertEqual(limits.errorMessage, ClaudeCodeUsageMessage.renewalUnavailable)
+        XCTAssertEqual(store.tokens, original)
+
+        // A manual refresh skips the 60-second backoff and renews again.
+        await transport.enqueue(profilePath, Fixture.profileReply, Fixture.profileReply)
+        await transport.enqueue(usagePath, .json(401, "{}"), Fixture.usageReply)
+        await transport.enqueue(tokenPath, Fixture.tokenReply(access: "synthetic-access-b"))
+        let retried = await client.fetchClaudeCodeUsage(allowKeychainInteraction: false, forceRefresh: true)
+
+        XCTAssertNil(retried.errorMessage)
+        XCTAssertEqual(retried.buckets.map(\.id), ["claude"])
+        let tokenRequests = await transport.count(tokenPath)
+        XCTAssertEqual(tokenRequests, 2)
+        XCTAssertEqual(store.tokens?.accessToken, "synthetic-access-b")
+    }
+
+    func testAccountKeyedCooldownSurvivesTokenChangeAndNewClient() async throws {
+        let defaults = try makeDefaults()
+        let store = InMemoryClaudeLoginStore(Fixture.tokens(access: "synthetic-access-a"))
+        let firstTransport = ScriptedClaudeTransport()
+        await firstTransport.enqueue(profilePath, Fixture.profileReply)
+        await firstTransport.enqueue(usagePath, .json(429, "{}", headers: ["Retry-After": "600"]))
+        let first = ClaudeUsageClient(
+            cooldowns: ClaudeUsageCooldownStore(defaults: defaults),
+            transport: firstTransport,
+            claudeCodeLogin: ClaudeCodeLogin(store: store, transport: firstTransport)
         )
+        let limited = await first.fetchClaudeCodeUsage(allowKeychainInteraction: false, forceRefresh: true)
+        XCTAssertEqual(limited.errorMessage, "Live usage is rate limited. Try again later.")
+
+        // A renewed token for the same account, read by a new client (as after relaunch).
+        store.replace(Fixture.tokens(access: "synthetic-access-b", refresh: "synthetic-refresh-b"))
+        let secondTransport = ScriptedClaudeTransport()
+        let second = ClaudeUsageClient(
+            cooldowns: ClaudeUsageCooldownStore(defaults: defaults),
+            transport: secondTransport,
+            claudeCodeLogin: ClaudeCodeLogin(store: store, transport: secondTransport)
+        )
+        let limits = await second.fetchClaudeCodeUsage(allowKeychainInteraction: false, forceRefresh: true)
 
         XCTAssertEqual(limits.errorMessage, "Live usage is rate limited. Try again later.")
         XCTAssertEqual(limits.planType, "max")
         XCTAssertTrue(limits.buckets.isEmpty)
+        let requests = await secondTransport.requests.count
+        XCTAssertEqual(requests, 0)
+
         let stored = String(describing: defaults.dictionaryRepresentation())
-        XCTAssertFalse(stored.contains(token))
+        for secret in ["synthetic-access-a", "synthetic-access-b", Fixture.account, Fixture.organization] {
+            XCTAssertFalse(stored.contains(secret))
+        }
+        let data = try XCTUnwrap(defaults.data(forKey: "AgentDock.claudeUsage.rateLimitCooldowns"))
+        let keys = try JSONDecoder().decode([String: Double].self, from: data).keys
+        XCTAssertFalse(keys.isEmpty)
+        XCTAssertTrue(keys.allSatisfy(ClaudeUsageCooldownStore.isDigest))
     }
 
-    func testClaudeCodeExpiredCredentialShowsGuidance() async throws {
+    func testNotSignedInSendsNoRequest() async throws {
+        let transport = ScriptedClaudeTransport()
+        let client = try makeClient(store: InMemoryClaudeLoginStore(), transport: transport)
+
+        let limits = await client.fetchClaudeCodeUsage(allowKeychainInteraction: false, forceRefresh: true)
+
+        XCTAssertEqual(limits.errorMessage, ClaudeCodeUsageMessage.notSignedIn)
+        let requests = await transport.requests.count
+        XCTAssertEqual(requests, 0)
+
+        // Without a login at all, the section also reports signed out.
+        let withoutLogin = ClaudeUsageClient(
+            cooldowns: ClaudeUsageCooldownStore(defaults: try makeDefaults()),
+            transport: transport
+        )
+        let none = await withoutLogin.fetchClaudeCodeUsage(allowKeychainInteraction: false, forceRefresh: true)
+        XCTAssertEqual(none.errorMessage, ClaudeCodeUsageMessage.notSignedIn)
+    }
+
+    func testForgetClaudeCodeUsageDropsCache() async throws {
+        let transport = ScriptedClaudeTransport()
+        await transport.enqueue(profilePath, Fixture.profileReply)
+        await transport.enqueue(usagePath, Fixture.usageReply, Fixture.usageReply)
+        let client = try makeClient(store: InMemoryClaudeLoginStore(Fixture.tokens()), transport: transport)
+
+        let first = await client.fetchClaudeCodeUsage(allowKeychainInteraction: false, forceRefresh: false)
+        XCTAssertFalse(first.buckets.isEmpty)
+        _ = await client.fetchClaudeCodeUsage(allowKeychainInteraction: false, forceRefresh: false)
+        let cachedCount = await transport.count(usagePath)
+        XCTAssertEqual(cachedCount, 1)
+
+        await client.forgetClaudeCodeUsage()
+        let refetched = await client.fetchClaudeCodeUsage(allowKeychainInteraction: false, forceRefresh: false)
+        XCTAssertFalse(refetched.buckets.isEmpty)
+        let usageCount = await transport.count(usagePath)
+        XCTAssertEqual(usageCount, 2)
+    }
+
+    private func makeClient(
+        store: InMemoryClaudeLoginStore,
+        transport: ScriptedClaudeTransport
+    ) throws -> ClaudeUsageClient {
+        try makeClient(login: ClaudeCodeLogin(store: store, transport: transport), transport: transport)
+    }
+
+    private func makeClient(
+        login: ClaudeCodeLogin,
+        transport: ScriptedClaudeTransport
+    ) throws -> ClaudeUsageClient {
+        ClaudeUsageClient(
+            cooldowns: ClaudeUsageCooldownStore(defaults: try makeDefaults()),
+            transport: transport,
+            claudeCodeLogin: login
+        )
+    }
+
+    private func makeDefaults() throws -> UserDefaults {
         let suiteName = "AgentDockTests.\(UUID().uuidString)"
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
-        defer { defaults.removePersistentDomain(forName: suiteName) }
-        let location = try makeClaudeCodeLocation(credentials: #"""
-        {"claudeAiOauth":{"accessToken":"synthetic-claude-code-token","expiresAt":\#(Self.millisecondsFromNow(60)),
-         "scopes":["user:profile"],"subscriptionType":"pro"}}
-        """#)
-
-        let limits = await ClaudeUsageClient(cooldowns: ClaudeUsageCooldownStore(defaults: defaults))
-            .fetchClaudeCodeUsage(location: location, allowKeychainInteraction: false, forceRefresh: true)
-
-        XCTAssertEqual(limits.errorMessage, ClaudeCodeUsageMessage.expired)
-        XCTAssertEqual(limits.planType, "pro")
-        XCTAssertTrue(limits.buckets.isEmpty)
-    }
-
-    func testInstalledClaudeCodeUsageWhenEnabled() async throws {
-        guard ProcessInfo.processInfo.environment["AGENTDOCK_LIVE_CLAUDE_CODE_USAGE_TEST"] == "1" else {
-            throw XCTSkip("Set AGENTDOCK_LIVE_CLAUDE_CODE_USAGE_TEST=1 to validate the signed-in Claude Code login.")
-        }
-        let location = ClaudeCodeLocation.resolve(
-            environment: ProcessInfo.processInfo.environment,
-            homeDirectory: FileManager.default.homeDirectoryForCurrentUser
-        )
-        let limits = await ClaudeUsageClient().fetchClaudeCodeUsage(
-            location: location,
-            allowKeychainInteraction: false,
-            forceRefresh: true
-        )
-
-        XCTAssertNil(limits.errorMessage)
-        XCTAssertFalse(limits.buckets.isEmpty)
-        XCTAssertTrue(Set(limits.buckets.map(\.id)).isSubset(of: ["claude", "model-fable"]))
-        XCTAssertNil(limits.credits)
-    }
-
-    private func makeClaudeCodeLocation(credentials: String) throws -> ClaudeCodeLocation {
-        let directory = FileManager.default.temporaryDirectory
-            .appendingPathComponent(UUID().uuidString, isDirectory: true)
-        let home = directory.appendingPathComponent(".claude", isDirectory: true)
-        try FileManager.default.createDirectory(at: home, withIntermediateDirectories: true)
-        addTeardownBlock { try? FileManager.default.removeItem(at: directory) }
-        try Data(credentials.utf8).write(to: home.appendingPathComponent(".credentials.json"))
-        return ClaudeCodeLocation(
-            homeURL: home,
-            globalConfigURL: directory.appendingPathComponent(".claude.json"),
-            keychainService: nil
-        )
-    }
-
-    private static func millisecondsFromNow(_ seconds: TimeInterval) -> Int {
-        Int((Date().timeIntervalSince1970 + seconds) * 1_000)
+        addTeardownBlock { UserDefaults(suiteName: suiteName)?.removePersistentDomain(forName: suiteName) }
+        return defaults
     }
 
     private static func date(_ text: String) throws -> Date {

@@ -8,9 +8,11 @@ enum ClaudeUsageGate: Equatable, Sendable {
     case rateLimited(until: Date)
 }
 
-/// Provider 429 cooldowns that survive relaunch. Only SHA-256 token digests and
-/// expiry timestamps are stored; tokens, identities, and paths never are. This is
-/// operational state rather than a preference, so restoring defaults keeps it.
+/// Provider 429 cooldowns that survive relaunch. Keys are SHA-256 digests of
+/// account identity, or of the token when there is no identity; never raw
+/// identifiers. Only those digests and expiry timestamps are stored; tokens,
+/// identities, and paths never are. This is operational state rather than a
+/// preference, so restoring defaults keeps it.
 struct ClaudeUsageCooldownStore: @unchecked Sendable {
     static let maximumEntries = 32
     static let maximumBytes = 16 * 1_024
@@ -26,37 +28,37 @@ struct ClaudeUsageCooldownStore: @unchecked Sendable {
         self.key = key
     }
 
-    func blockedUntil(tokenDigest: String, now: Date) -> Date? {
-        guard Self.isDigest(tokenDigest) else { return nil }
+    func blockedUntil(key digest: String, now: Date) -> Date? {
+        guard Self.isDigest(digest) else { return nil }
         let (entries, changed) = load(now: now)
         if changed { save(entries) }
-        return entries[tokenDigest].map(Date.init(timeIntervalSince1970:))
+        return entries[digest].map(Date.init(timeIntervalSince1970:))
     }
 
-    func record(tokenDigest: String, until: Date, now: Date) {
-        guard Self.isDigest(tokenDigest) else { return }
+    func record(key digest: String, until: Date, now: Date) {
+        guard Self.isDigest(digest) else { return }
         let ceiling = now.addingTimeInterval(ClaudeUsageRefreshPolicy.maximumRateLimitCooldown)
         let deadline = min(until, ceiling).timeIntervalSince1970
         guard deadline.isFinite, deadline > now.timeIntervalSince1970 else { return }
         var entries = load(now: now).entries
-        let value = max(entries[tokenDigest] ?? 0, deadline)
-        entries[tokenDigest] = value
+        let value = max(entries[digest] ?? 0, deadline)
+        entries[digest] = value
         if entries.count > Self.maximumEntries {
             // Keep the new deadline and drop the soonest-expiring others.
             let others = entries
-                .filter { $0.key != tokenDigest }
+                .filter { $0.key != digest }
                 .sorted { $0.value == $1.value ? $0.key < $1.key : $0.value > $1.value }
                 .prefix(Self.maximumEntries - 1)
             entries = Dictionary(uniqueKeysWithValues: others.map { ($0.key, $0.value) })
-            entries[tokenDigest] = value
+            entries[digest] = value
         }
         save(entries)
     }
 
-    func clear(tokenDigest: String) {
-        guard Self.isDigest(tokenDigest) else { return }
+    func clear(key digest: String) {
+        guard Self.isDigest(digest) else { return }
         var entries = load(now: Date()).entries
-        guard entries.removeValue(forKey: tokenDigest) != nil else { return }
+        guard entries.removeValue(forKey: digest) != nil else { return }
         save(entries)
     }
 

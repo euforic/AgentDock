@@ -30,6 +30,27 @@ enum AgentDockDetailTab: String, CaseIterable, Identifiable {
     }
 }
 
+/// AgentDock's own Claude sign-in, which drives the Claude Code limits section.
+enum ClaudeCodeLoginState: Equatable {
+    case checking
+    case signedOut(notice: String?)
+    case needsKeychainAccess
+    case signingIn(ClaudeSignInStage)
+    case signInFailed(String)
+    case signedIn(accountLabel: String)
+
+    var isSignedIn: Bool {
+        if case .signedIn = self { return true }
+        return false
+    }
+}
+
+enum ClaudeSignInStage: Equatable {
+    case starting
+    case waitingForBrowser(URL)
+    case exchanging
+}
+
 @MainActor
 final class AgentDockModel: ObservableObject {
     let resetReminders: ResetReminderController
@@ -77,8 +98,9 @@ final class AgentDockModel: ObservableObject {
     @Published private(set) var officialStatsLoading = false
     @Published private(set) var officialCodexRateLimits: ProfileRateLimits?
     @Published private(set) var officialClaudeRateLimits: ProfileRateLimits?
-    /// Live limits for the Claude Code CLI login, shown separately from Desktop.
+    /// Live limits for the Claude account signed in to AgentDock, shown separately from Desktop.
     @Published private(set) var officialClaudeCodeRateLimits: ProfileRateLimits?
+    @Published private(set) var claudeCodeLoginState: ClaudeCodeLoginState = .checking
     @Published private(set) var profileInstanceStatuses: [CodexProfile.ID: CodexInstanceStatus] = [:]
     @Published private(set) var stockInstanceStatuses: [DesktopProduct: CodexInstanceStatus] = [:]
     @Published private(set) var installedShortcutProfileIDs: Set<CodexProfile.ID> = []
@@ -92,6 +114,13 @@ final class AgentDockModel: ObservableObject {
     private let statsScanner: any ProfileStatsScanning
     private let rateLimitClient: any ProfileRateLimitFetching
     private let claudeUsageClient: any ClaudeUsageFetching
+    private let claudeCodeLogin: ClaudeCodeLogin
+    private var claudeSignInTask: Task<Void, Never>?
+    private var claudeSignInCodes: AsyncStream<String>.Continuation?
+    /// Identifies the current sign-in so a cancelled one cannot overwrite a newer one.
+    private var claudeSignInAttempt = 0
+    /// Bumped by sign-in and sign-out; older Claude Code results are discarded.
+    private var claudeCodeLimitsGeneration = 0
     private let preferencesStore: AgentDockPreferencesStore
     private let legacyChatIndexRootURL: URL?
     private let appPathKeyPrefix = "AgentDock.desktopAppPath"
@@ -125,8 +154,7 @@ final class AgentDockModel: ObservableObject {
     private var appliedInitialDefaultView = false
     private let officialCodexHomeURL: URL
     private let officialClaudeUserDataURL: URL
-    private let officialClaudeCodeLocation: ClaudeCodeLocation
-    private var officialClaudeCodeHomeURL: URL { officialClaudeCodeLocation.homeURL }
+    private let officialClaudeCodeHomeURL: URL
 
     init() {
         resetReminders = ResetReminderController()
@@ -137,10 +165,8 @@ final class AgentDockModel: ObservableObject {
             for: .applicationSupportDirectory,
             in: .userDomainMask
         )[0].appendingPathComponent("Claude", isDirectory: true)
-        officialClaudeCodeLocation = ClaudeCodeLocation.resolve(
-            environment: ProcessInfo.processInfo.environment,
-            homeDirectory: FileManager.default.homeDirectoryForCurrentUser
-        )
+        officialClaudeCodeHomeURL = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent(".claude", isDirectory: true)
         let preferencesStore = AgentDockPreferencesStore()
         self.preferencesStore = preferencesStore
         preferences = preferencesStore.load()
@@ -149,7 +175,9 @@ final class AgentDockModel: ObservableObject {
         shortcutInstaller = ShortcutInstaller()
         statsScanner = ProfileStatsScanner()
         rateLimitClient = CodexRateLimitClient()
-        claudeUsageClient = ClaudeUsageClient()
+        let login = ClaudeCodeLogin(store: ClaudeLoginKeychainStore())
+        claudeCodeLogin = login
+        claudeUsageClient = ClaudeUsageClient(claudeCodeLogin: login)
         allowsAutomaticRefresh = true
         let storedPaths: [DesktopProduct: String?] = [
             .codex: UserDefaults.standard.string(
@@ -167,6 +195,7 @@ final class AgentDockModel: ObservableObject {
                 ?? DesktopAppRegistry.claude.defaultAppURL
         ]
         startInstanceMonitoring()
+        loadClaudeCodeLoginStatus()
         ProductAnalytics.shared.capture(AnalyticsEvent(
             .appLifecycle,
             [.action(.launched), .trigger(.user)]
@@ -232,7 +261,8 @@ final class AgentDockModel: ObservableObject {
         shortcutInstaller: any ShortcutManaging = ShortcutInstaller(),
         statsScanner: any ProfileStatsScanning = ProfileStatsScanner(),
         rateLimitClient: any ProfileRateLimitFetching = CodexRateLimitClient(),
-        claudeUsageClient: any ClaudeUsageFetching = ClaudeUsageClient(),
+        claudeUsageClient: (any ClaudeUsageFetching)? = nil,
+        claudeCodeLogin: ClaudeCodeLogin,
         preferencesStore: AgentDockPreferencesStore = AgentDockPreferencesStore(),
         startMonitoring: Bool = false,
         loadActivityOnInit: Bool = true,
@@ -242,12 +272,9 @@ final class AgentDockModel: ObservableObject {
         legacyChatIndexRootURL = officialDataRootURL.appendingPathComponent("ChatIndexes", isDirectory: true)
         officialCodexHomeURL = officialDataRootURL.appendingPathComponent(".codex", isDirectory: true)
         officialClaudeUserDataURL = officialDataRootURL.appendingPathComponent("Claude", isDirectory: true)
-        // File-only: test roots never read the developer's Keychain.
-        officialClaudeCodeLocation = ClaudeCodeLocation(
-            homeURL: officialDataRootURL.appendingPathComponent(".claude", isDirectory: true),
-            globalConfigURL: officialDataRootURL.appendingPathComponent(".claude.json", isDirectory: false),
-            keychainService: nil
-        )
+        officialClaudeCodeHomeURL = officialDataRootURL.appendingPathComponent(".claude", isDirectory: true)
+        // The caller supplies the sign-in store, so test models never touch the developer's Keychain.
+        self.claudeCodeLogin = claudeCodeLogin
         self.preferencesStore = preferencesStore
         preferences = preferencesStore.load()
         officialCodexProfileSettings = preferencesStore.loadOfficialCodexProfileSettings()
@@ -257,16 +284,19 @@ final class AgentDockModel: ObservableObject {
         self.shortcutInstaller = shortcutInstaller
         self.statsScanner = statsScanner
         self.rateLimitClient = rateLimitClient
-        self.claudeUsageClient = claudeUsageClient
+        self.claudeUsageClient = claudeUsageClient ?? ClaudeUsageClient(claudeCodeLogin: claudeCodeLogin)
         allowsAutomaticRefresh = startMonitoring
         reload(refreshData: loadActivityOnInit)
         if startMonitoring {
             startInstanceMonitoring()
         }
         configureProfileActivityRefresh()
+        loadClaudeCodeLoginStatus()
     }
 
     deinit {
+        claudeSignInTask?.cancel()
+        claudeSignInCodes?.finish()
         statsRefreshTask?.cancel()
         rateLimitRefreshTask?.cancel()
         instanceMonitorTask?.cancel()
@@ -654,7 +684,8 @@ final class AgentDockModel: ObservableObject {
         let appURL = codexAppURL
         let officialHomeURL = officialCodexHomeURL
         let officialClaudeUserDataURL = officialClaudeUserDataURL
-        let officialClaudeCodeLocation = officialClaudeCodeLocation
+        let claudeCodeLogin = claudeCodeLogin
+        let codeGeneration = claudeCodeLimitsGeneration
         let officialConfigProfile = effectiveOfficialCodexConfigProfile
 
         rateLimitRefreshTask = Task { [weak self] in
@@ -678,14 +709,15 @@ final class AgentDockModel: ObservableObject {
                     )
                     : nil
             }
-            let officialClaudeCodeWorker = Task.detached(priority: .utility) {
-                replaceAll
-                    ? await claudeClient.fetchClaudeCodeUsage(
-                        location: officialClaudeCodeLocation,
-                        allowKeychainInteraction: allowCredentialInteraction,
-                        forceRefresh: allowCredentialInteraction
-                    )
-                    : nil
+            let officialClaudeCodeWorker = Task.detached(
+                priority: .utility
+            ) { () async -> (ProfileRateLimits, ClaudeCodeLoginStatus)? in
+                guard replaceAll else { return nil }
+                let limits = await claudeClient.fetchClaudeCodeUsage(
+                    allowKeychainInteraction: allowCredentialInteraction,
+                    forceRefresh: allowCredentialInteraction
+                )
+                return (limits, await claudeCodeLogin.status())
             }
             async let officialResult = withTaskCancellationHandler {
                 await officialWorker.value
@@ -768,8 +800,9 @@ final class AgentDockModel: ObservableObject {
                 if self.profileRateLimits != results { self.profileRateLimits = results }
                 if self.officialCodexRateLimits != official { self.officialCodexRateLimits = official }
                 if self.officialClaudeRateLimits != officialClaude { self.officialClaudeRateLimits = officialClaude }
-                if self.officialClaudeCodeRateLimits != officialClaudeCode {
-                    self.officialClaudeCodeRateLimits = officialClaudeCode
+                // A sign-in or sign-out since this pass started supersedes its result.
+                if let officialClaudeCode, self.claudeCodeLimitsGeneration == codeGeneration {
+                    self.applyClaudeCodeResult(limits: officialClaudeCode.0, status: officialClaudeCode.1)
                 }
             } else {
                 self.profileRateLimits.merge(results) { _, new in new }
@@ -782,6 +815,166 @@ final class AgentDockModel: ObservableObject {
                 includeInventory: replaceAll
             )
         }
+    }
+
+    // MARK: - Claude sign-in for Claude Code limits
+
+    var isClaudeSignInSheetPresented: Bool {
+        switch claudeCodeLoginState {
+        case .signingIn, .signInFailed: true
+        default: false
+        }
+    }
+
+    func signInToClaude() {
+        switch claudeCodeLoginState {
+        case .signedOut, .needsKeychainAccess, .signInFailed: break
+        default: return
+        }
+        claudeSignInTask?.cancel()
+        claudeSignInCodes?.finish()
+        claudeSignInAttempt += 1
+        let attempt = claudeSignInAttempt
+        let (stream, continuation) = AsyncStream<String>.makeStream(bufferingPolicy: .bufferingNewest(1))
+        claudeSignInCodes = continuation
+        claudeCodeLoginState = .signingIn(.starting)
+        let login = claudeCodeLogin
+        claudeSignInTask = Task { [weak self] in
+            do {
+                let account = try await login.signIn(
+                    progress: { [weak self] progress in
+                        await self?.applySignInProgress(progress, attempt: attempt)
+                    },
+                    pastedCodes: stream
+                )
+                self?.completeClaudeSignIn(account, attempt: attempt)
+            } catch {
+                let failure = (error as Any as? ClaudeSignInError) ?? .cancelled
+                self?.failClaudeSignIn(failure, attempt: attempt)
+            }
+        }
+    }
+
+    func submitClaudeSignInCode(_ code: String) {
+        guard case .signingIn(.waitingForBrowser) = claudeCodeLoginState else { return }
+        claudeSignInCodes?.yield(code)
+    }
+
+    func cancelClaudeCodeSignIn() {
+        guard isClaudeSignInSheetPresented else { return }
+        claudeSignInAttempt += 1
+        claudeSignInTask?.cancel()
+        claudeSignInTask = nil
+        claudeSignInCodes?.finish()
+        claudeSignInCodes = nil
+        claudeCodeLoginState = .signedOut(notice: nil)
+    }
+
+    func signOutOfClaude() {
+        guard claudeCodeLoginState.isSignedIn else { return }
+        claudeCodeLimitsGeneration += 1
+        let login = claudeCodeLogin
+        let client = claudeUsageClient
+        Task { [weak self] in
+            do {
+                try await login.signOut()
+                await client.forgetClaudeCodeUsage()
+                guard let self else { return }
+                // Discard any pass that read the sign-in before it was deleted.
+                self.claudeCodeLimitsGeneration += 1
+                self.officialClaudeCodeRateLimits = nil
+                self.claudeCodeLoginState = .signedOut(notice: nil)
+            } catch {
+                let failure = (error as Any as? ClaudeSignInError) ?? .keychain(.unreadable)
+                self?.errorMessage = failure.message
+            }
+        }
+    }
+
+    private func loadClaudeCodeLoginStatus() {
+        let login = claudeCodeLogin
+        let generation = claudeCodeLimitsGeneration
+        Task { [weak self] in
+            let status = await login.status()
+            guard let self, self.claudeCodeLimitsGeneration == generation else { return }
+            self.applyClaudeCodeLoginStatus(status)
+        }
+    }
+
+    private func applySignInProgress(_ progress: ClaudeSignInProgress, attempt: Int) {
+        guard attempt == claudeSignInAttempt, case .signingIn = claudeCodeLoginState else { return }
+        switch progress {
+        case let .waitingForBrowser(url):
+            NSWorkspace.shared.open(url)
+            claudeCodeLoginState = .signingIn(.waitingForBrowser(url))
+        case .exchangingCode:
+            claudeCodeLoginState = .signingIn(.exchanging)
+        }
+    }
+
+    private func completeClaudeSignIn(_ account: ClaudeLoginAccount, attempt: Int) {
+        guard attempt == claudeSignInAttempt else { return }
+        claudeSignInTask = nil
+        claudeSignInCodes?.finish()
+        claudeSignInCodes = nil
+        claudeCodeLimitsGeneration += 1
+        claudeCodeLoginState = .signedIn(accountLabel: account.label)
+        refreshClaudeCodeLimits(force: true, forgettingCache: true)
+    }
+
+    private func failClaudeSignIn(_ error: ClaudeSignInError, attempt: Int) {
+        guard attempt == claudeSignInAttempt else { return }
+        claudeSignInTask = nil
+        claudeSignInCodes?.finish()
+        claudeSignInCodes = nil
+        guard case .signingIn = claudeCodeLoginState else { return }
+        claudeCodeLoginState = error == .cancelled
+            ? .signedOut(notice: nil)
+            : .signInFailed(error.message)
+    }
+
+    /// One Claude Code fetch outside the regular pass; only sign-in uses it.
+    private func refreshClaudeCodeLimits(force: Bool, forgettingCache: Bool) {
+        let generation = claudeCodeLimitsGeneration
+        let client = claudeUsageClient
+        let login = claudeCodeLogin
+        Task { [weak self] in
+            let result = await Task.detached(
+                priority: .utility
+            ) { () async -> (ProfileRateLimits, ClaudeCodeLoginStatus) in
+                if forgettingCache { await client.forgetClaudeCodeUsage() }
+                let limits = await client.fetchClaudeCodeUsage(
+                    allowKeychainInteraction: false,
+                    forceRefresh: force
+                )
+                return (limits, await login.status())
+            }.value
+            guard let self, self.claudeCodeLimitsGeneration == generation else { return }
+            self.applyClaudeCodeResult(limits: result.0, status: result.1)
+        }
+    }
+
+    private func applyClaudeCodeResult(limits: ProfileRateLimits, status: ClaudeCodeLoginStatus) {
+        applyClaudeCodeLoginStatus(status)
+        var shown: ProfileRateLimits?
+        if case .signedIn = status { shown = limits }
+        if officialClaudeCodeRateLimits != shown { officialClaudeCodeRateLimits = shown }
+    }
+
+    /// Maps the Core status; an open sign-in sheet keeps its own state.
+    private func applyClaudeCodeLoginStatus(_ status: ClaudeCodeLoginStatus) {
+        switch claudeCodeLoginState {
+        case .signingIn, .signInFailed: return
+        default: break
+        }
+        let next: ClaudeCodeLoginState = switch status {
+        case .unknown: .checking
+        case let .signedIn(account): .signedIn(accountLabel: account.label)
+        case let .signedOut(expired):
+            .signedOut(notice: expired ? ClaudeCodeUsageMessage.signInExpired : nil)
+        case .keychainAccessRequired: .needsKeychainAccess
+        }
+        if claudeCodeLoginState != next { claudeCodeLoginState = next }
     }
 
     private func captureRateLimitAnalytics(
