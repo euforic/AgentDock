@@ -155,11 +155,22 @@ private struct OfficialOverview: View {
                 )
             } else {
                 UsageLimitsSection(
+                    title: "Claude Desktop Usage Limits",
                     limits: model.officialClaudeRateLimits,
                     accent: product.usageTint,
                     providerName: "Claude",
-                    footer: "Live limits follow the signed-in Claude account. Local activity can also include Claude Code sessions from a different login."
+                    footer: "Live limits follow the signed-in Claude Desktop account."
                 )
+                UsageLimitsSection(
+                    title: "Claude Code Usage Limits",
+                    limits: model.officialClaudeCodeRateLimits,
+                    accent: product.usageTint,
+                    providerName: "Claude Code",
+                    footer: claudeCodeFooter,
+                    showsLimits: model.claudeCodeLoginState.isSignedIn
+                ) {
+                    ClaudeCodeLoginRow()
+                }
                 ClaudeUsageSection(stats: stats, loading: model.officialStatsLoading, accent: product.usageTint)
             }
 
@@ -179,6 +190,20 @@ private struct OfficialOverview: View {
         .sheet(item: $activityDestination) { destination in
             ActivityDetailSheet(officialProduct: product, destination: destination)
         }
+        .sheet(isPresented: Binding(
+            get: { model.isClaudeSignInSheetPresented },
+            set: { if !$0 { model.cancelClaudeCodeSignIn() } }
+        )) {
+            ClaudeSignInSheet()
+        }
+    }
+
+    private var claudeCodeFooter: String {
+        let footer = "Live limits for the Claude account you sign in with here, which can differ from the Claude Desktop account. Fable has a separate weekly allowance."
+        guard let limits = model.officialClaudeCodeRateLimits, !limits.buckets.isEmpty else {
+            return footer
+        }
+        return "\(footer) Updated \(limits.fetchedAt.formatted(.relative(presentation: .named)))."
     }
 }
 
@@ -358,14 +383,40 @@ private struct CodexProviderSection: View {
     }
 }
 
-private struct UsageLimitsSection: View {
+private struct UsageLimitsSection<Accessory: View>: View {
+    var title = "Usage Limits"
     let limits: ProfileRateLimits?
     let accent: Color
     var providerName = "Codex"
     var footer: String?
+    /// False hides the limit, error, and loading rows; the accessory still shows.
+    var showsLimits = true
+    /// The section's first row.
+    @ViewBuilder let accessory: Accessory
 
     var body: some View {
         Section {
+            accessory
+            if showsLimits {
+                limitRows
+            }
+        } header: {
+            HStack {
+                Text(title)
+                Spacer()
+                if showsLimits, let plan = limits?.planType, !plan.isEmpty {
+                    Text(plan.replacingOccurrences(of: "_", with: " ").capitalized)
+                }
+            }
+        } footer: {
+            if let footer {
+                Text(footer)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var limitRows: some View {
             if let error = limits?.errorMessage {
                 Label(error, systemImage: "exclamationmark.triangle")
                     .foregroundStyle(.secondary)
@@ -393,18 +444,77 @@ private struct UsageLimitsSection: View {
                         .foregroundStyle(.secondary)
                 }
             }
-        } header: {
-            HStack {
-                Text("Usage Limits")
-                Spacer()
-                if let plan = limits?.planType, !plan.isEmpty {
-                    Text(plan.replacingOccurrences(of: "_", with: " ").capitalized)
+    }
+}
+
+extension UsageLimitsSection where Accessory == EmptyView {
+    init(
+        title: String = "Usage Limits",
+        limits: ProfileRateLimits?,
+        accent: Color,
+        providerName: String = "Codex",
+        footer: String? = nil
+    ) {
+        self.init(
+            title: title,
+            limits: limits,
+            accent: accent,
+            providerName: providerName,
+            footer: footer,
+            showsLimits: true
+        ) {
+            EmptyView()
+        }
+    }
+}
+
+/// AgentDock's own Claude sign-in, shown at the top of the Claude Code section.
+private struct ClaudeCodeLoginRow: View {
+    @EnvironmentObject private var model: AgentDockModel
+
+    var body: some View {
+        switch model.claudeCodeLoginState {
+        case .checking:
+            HStack(spacing: 8) {
+                ProgressView().controlSize(.small)
+                Text("Checking Claude sign-in…")
+                    .foregroundStyle(.secondary)
+            }
+        case let .signedOut(notice):
+            if let notice {
+                Label(notice, systemImage: "exclamationmark.triangle")
+                    .foregroundStyle(.secondary)
+            }
+            signInRow
+        case .needsKeychainAccess:
+            Label(ClaudeCodeUsageMessage.keychainAccessRequired, systemImage: "key")
+                .foregroundStyle(.secondary)
+            signInRow
+        case .signingIn:
+            HStack(spacing: 8) {
+                ProgressView().controlSize(.small)
+                Text("Signing in…")
+                    .foregroundStyle(.secondary)
+            }
+        case let .signInFailed(message):
+            Label(message, systemImage: "exclamationmark.triangle")
+                .foregroundStyle(.secondary)
+            signInRow
+        case let .signedIn(accountLabel):
+            LabeledContent("Signed in as") {
+                HStack(spacing: 8) {
+                    Text(accountLabel)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                    Button("Sign Out") { model.signOutOfClaude() }
                 }
             }
-        } footer: {
-            if let footer {
-                Text(footer)
-            }
+        }
+    }
+
+    private var signInRow: some View {
+        LabeledContent("Claude Account") {
+            Button("Sign In to Claude…") { model.signInToClaude() }
         }
     }
 }

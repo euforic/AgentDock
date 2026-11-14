@@ -43,6 +43,18 @@ Selecting a count opens Available Resets with the expiring reset selected.
 Home adds no polling, notification scheduling, reset consumption, or account
 persistence.
 
+## Claude Code row
+
+When the Claude account signed in to AgentDock reports live windows, a "Claude Code" row
+appears under Official Claude. It shows a terminal icon and "Claude Code
+login", the plan, and Fable's weekly percentage when reported. Its Session and
+Weekly columns use the 5-hour and weekly windows, and the Closest to Limit and
+Next Usage Reset tiles include its Fable window. The row has no running state
+and no Open action; Show Details and selection open the Official Claude
+overview. It is not counted as an account in the provider header or the
+Running tile, and it is hidden when signed out of AgentDock's Claude sign-in or
+when no windows are reported.
+
 ## Design
 
 Home uses standard macOS components: a `Table` with provider sections and

@@ -24,12 +24,19 @@
 | `Sources/AgentDockCore/BoundedSubprocess.swift` | Timeout and output-bounded subprocess execution |
 | `Sources/AgentDockCore/ShortcutInstaller.swift` | Profile shortcut generation and replacement |
 | `Sources/AgentDockCore/SQLiteReadOnly.swift` | Path-checked, read-only, no-follow, bounded in-process provider database queries |
+| `Sources/AgentDockCore/ClaudeHTTPTransport.swift` | Bounded HTTP transport seam and shared Anthropic OAuth API request headers |
+| `Sources/AgentDockCore/ClaudeOAuth.swift` | Claude sign-in protocol: PKCE, authorize URL, code exchange and refresh requests, pasted-code parsing, renewal classification |
+| `Sources/AgentDockCore/ClaudeLoopbackCallbackServer.swift` | One-shot 127.0.0.1 OAuth callback listener with a `state` check |
+| `Sources/AgentDockCore/ClaudeLoginStore.swift` | AgentDock's Claude sign-in tokens and their non-prompting Keychain item |
+| `Sources/AgentDockCore/ClaudeCodeLogin.swift` | Sign-in, sign-out, single-flight renewal with write-back, and Claude Code guidance messages |
+| `Sources/AgentDockCore/ClaudeUsageRateLimitGate.swift` | Saved 429 cooldowns by account identity, identity-verification ledger, and refresh gate decisions |
 
 ## UI and Rendering
 
 | Path | Responsibility |
 | --- | --- |
 | `Sources/AgentDock/OverviewView.swift` | Profile and official-app overview |
+| `Sources/AgentDock/ClaudeSignInSheet.swift` | Browser and pasted-code steps of AgentDock's Claude sign-in |
 | `Sources/AgentDock/ActivityDetailView.swift` | Supported local activity details |
 | `Sources/TranscriptRenderer/TranscriptModels.swift` | Provider-neutral render model and event classification |
 | `Sources/TranscriptRenderer/TranscriptView.swift` | Accessible presentation for the separate renderer showcase and tests |

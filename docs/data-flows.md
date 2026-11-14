@@ -102,17 +102,60 @@ AgentDock does not carry an older percentage into a newer limit window.
 
 Live Claude quota refresh is a separate flow:
 
-1. Official Claude uses the official Desktop OAuth cache exclusively. Managed
-   profiles use only their own Desktop user-data root. A separate Claude Code
-   login cannot replace the account displayed for Desktop.
+1. Official Claude **Desktop** uses the Desktop OAuth cache exclusively. Managed
+   profiles use only their own Desktop user-data root. AgentDock's separate
+   Claude sign-in cannot replace the account displayed for Desktop.
 2. Background refresh reads Keychain without interaction. Manual refresh may
    request access to Claude Safe Storage.
 3. The active account and organization are resolved locally and verified with
-   Anthropic before the usage response is assigned to a source.
-4. Access tokens remain in memory and are never copied, refreshed, persisted,
-   or logged by AgentDock.
-5. HTTP 429 responses create a credential-scoped cooldown and retain only the
-   last successful in-memory snapshot for that same login.
+   Anthropic once per account, organization, and token before the usage
+   response is assigned to a source.
+4. Desktop access tokens remain in memory and are never copied, refreshed,
+   persisted, or logged by AgentDock.
+5. HTTP 429 responses create an account-scoped cooldown and retain only the
+   last successful in-memory snapshot for that same login. The cooldown
+   deadline is saved under a SHA-256 digest of the account identity so it
+   survives relaunch and token changes.
+
+Claude Code live limits use AgentDock's own Claude sign-in and are shown in
+their own section of the Official Claude overview.
+
+**Sign-in**
+
+1. **Sign In to Claude…** starts a listener on 127.0.0.1 with a random port
+   and generates a PKCE verifier and a random `state`.
+2. AgentDock opens `claude.ai/oauth/authorize` in the browser.
+3. Claude redirects to the listener with the code. Alternatively, the user
+   pastes the code that claude.ai shows (`code#state` or the callback URL).
+   Either way the `state` must match.
+4. The code is exchanged at the token endpoint for an access token and a
+   refresh token.
+5. The profile endpoint supplies the account and organization UUIDs, the email
+   label, and the plan. Without both UUIDs, nothing is saved.
+6. The tokens and account are saved to AgentDock's own Keychain item.
+
+**Live limits**
+
+1. The Keychain item is loaded without interaction. If access needs approval,
+   the section asks for a manual refresh, which can show the prompt.
+2. A token that expires within five minutes is renewed first and written back.
+   Only one renewal runs at a time.
+3. The gate is checked in order: an active 429 cooldown (in memory or saved)
+   shows the last success or a rate-limit message; a success younger than five
+   minutes (30 seconds for a manual refresh) is reused; a non-429 failure
+   backoff applies to automatic refreshes only; otherwise the request goes
+   ahead.
+4. The account identity is verified with the profile endpoint once per token,
+   then one usage request is sent.
+5. A 401 renews the token once and retries once. A second 401, or a refused
+   renewal, signs out and deletes the Keychain item. An outage keeps the
+   current token and retries on the next refresh.
+6. The response is projected to the 5-hour window, the weekly window, and
+   Fable's weekly percentage only. Claude Code results are excluded from
+   analytics and do not hold back the quota-refresh schedule for other sources.
+
+Background refreshes never prompt. Only a manual refresh can prompt, and only
+when an ad-hoc rebuild changed the code signature since the item was saved.
 
 Older browser versions may have left metadata-only indexes containing no full
 transcript bodies or tool output. Explicit profile removal or deletion cleans

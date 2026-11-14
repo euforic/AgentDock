@@ -57,8 +57,10 @@ struct HomeView: View {
         .tableStyle(.inset(alternatesRowBackgrounds: false))
         .contextMenu(forSelectionType: DashboardSource.ID.self) { ids in
             if let source = sources.first(where: { ids.count == 1 && ids.contains($0.id) }) {
-                Button(source.running == true ? "Focus" : "Open") { open(source) }
-                    .disabled(source.busy)
+                if source.kind != .claudeCode {
+                    Button(source.running == true ? "Focus" : "Open") { open(source) }
+                        .disabled(source.busy)
+                }
                 Button("Show Details") { showDetails(source) }
             }
         } primaryAction: { ids in
@@ -74,7 +76,7 @@ struct HomeView: View {
     }
 
     private func header(for product: DesktopProduct, in sources: [DashboardSource]) -> String {
-        let accounts = sources.filter { $0.product == product }
+        let accounts = sources.filter { $0.product == product && $0.countsAsAccount }
         let running = accounts.filter { $0.running == true }.count
         let count = "\(accounts.count) \(accounts.count == 1 ? "account" : "accounts")"
         return running > 0 ? "\(product.displayName) · \(count) · \(running) running" : "\(product.displayName) · \(count)"
@@ -83,6 +85,7 @@ struct HomeView: View {
     private func open(_ source: DashboardSource) {
         switch source.kind {
         case .official: model.openStock(source.product)
+        case .claudeCode: model.selectOfficial(.claude)
         case let .profile(profile): model.launch(profile)
         }
     }
@@ -90,6 +93,7 @@ struct HomeView: View {
     private func showDetails(_ source: DashboardSource) {
         switch source.kind {
         case .official: model.selectOfficial(source.product)
+        case .claudeCode: model.selectOfficial(.claude)
         case let .profile(profile): model.selectProfile(profile.id)
         }
         model.detailTab = .overview
@@ -100,6 +104,8 @@ struct HomeView: View {
 struct DashboardSource: Identifiable {
     enum Kind: Equatable {
         case official
+        /// The Claude Code CLI login's live limits; not an app or a separate account row.
+        case claudeCode
         case profile(CodexProfile)
     }
 
@@ -115,9 +121,13 @@ struct DashboardSource: Identifiable {
     var id: String {
         switch kind {
         case .official: "official.\(product.rawValue)"
+        case .claudeCode: "official.claude.code"
         case let .profile(profile): profile.id.uuidString
         }
     }
+
+    /// Claude Code shares the official Claude account context, so it is not counted.
+    var countsAsAccount: Bool { kind != .claudeCode }
 
     var windows: [HomeUsageWindow] {
         guard let limits, limits.errorMessage == nil else { return [] }
@@ -144,8 +154,8 @@ struct DashboardSource: Identifiable {
         func digest(_ sourceID: String) -> HomeResetDigest {
             HomeResetDigest(accounts: controller.accounts, sourceErrors: controller.sourceErrors, now: now, sourceID: sourceID)
         }
-        return DesktopProduct.allCases.flatMap { product in
-            [DashboardSource(
+        return DesktopProduct.allCases.flatMap { product -> [DashboardSource] in
+            let official = DashboardSource(
                 product: product,
                 kind: .official,
                 name: "Official \(product.displayName)",
@@ -153,7 +163,24 @@ struct DashboardSource: Identifiable {
                 running: model.stockInstanceStatuses[product]?.isRunning,
                 busy: model.busyStockProducts.contains(product),
                 resets: product == .codex ? digest("official") : nil
-            )] + model.profiles.filter { $0.product == product }.map { profile in
+            )
+            // Shown only once Claude Code reports windows, so there is no dead row without it.
+            var claudeCode: [DashboardSource] = []
+            if product == .claude,
+               let limits = model.officialClaudeCodeRateLimits,
+               !limits.buckets.isEmpty
+            {
+                claudeCode.append(DashboardSource(
+                    product: .claude,
+                    kind: .claudeCode,
+                    name: "Claude Code",
+                    limits: limits,
+                    running: nil,
+                    busy: false,
+                    resets: nil
+                ))
+            }
+            let profiles: [DashboardSource] = model.profiles.filter { $0.product == product }.map { profile in
                 DashboardSource(
                     product: product,
                     kind: .profile(profile),
@@ -164,6 +191,7 @@ struct DashboardSource: Identifiable {
                     resets: product == .codex ? digest(profile.id.uuidString) : nil
                 )
             }
+            return [official] + claudeCode + profiles
         }
     }
 }
@@ -206,12 +234,28 @@ private struct AccountCell: View {
         switch source.kind {
         case .official:
             ProviderIconView(product: source.product, appURL: model.appURL(for: source.product), size: 24)
+        case .claudeCode:
+            Image(systemName: "terminal")
+                .resizable()
+                .scaledToFit()
+                .foregroundStyle(.secondary)
+                .frame(width: 24, height: 24)
         case let .profile(profile):
             ProfileIconView(profile: profile, size: 24)
         }
     }
 
     private var subtitle: String {
+        if source.kind == .claudeCode {
+            var parts = ["Claude Code login"]
+            if let plan = source.limits?.planType, !plan.isEmpty {
+                parts.append(plan.replacingOccurrences(of: "_", with: " ").capitalized)
+            }
+            if let fable = source.limits?.buckets.first(where: { $0.id == "model-fable" })?.primary {
+                parts.append("Fable \(Int(fable.usedPercent.rounded()))%")
+            }
+            return parts.joined(separator: " · ")
+        }
         var parts: [String] = [source.kind == .official ? "Official app" : "Profile"]
         if let plan = source.limits?.planType, !plan.isEmpty {
             parts.append(plan.replacingOccurrences(of: "_", with: " ").capitalized)
@@ -309,17 +353,21 @@ private struct OpenButton: View {
     let source: DashboardSource
 
     var body: some View {
-        let title = source.running == true ? "Focus" : "Open"
-        Button(source.busy ? "…" : title) {
-            switch source.kind {
-            case .official: model.openStock(source.product)
-            case let .profile(profile): model.launch(profile)
+        // Claude Code has no app to open; its row offers only Show Details.
+        if source.kind != .claudeCode {
+            let title = source.running == true ? "Focus" : "Open"
+            Button(source.busy ? "…" : title) {
+                switch source.kind {
+                case .official: model.openStock(source.product)
+                case .claudeCode: model.selectOfficial(.claude)
+                case let .profile(profile): model.launch(profile)
+                }
             }
+            .buttonStyle(.bordered)
+            .controlSize(.small)
+            .disabled(source.busy)
+            .accessibilityLabel("\(title) \(source.name)")
         }
-        .buttonStyle(.bordered)
-        .controlSize(.small)
-        .disabled(source.busy)
-        .accessibilityLabel("\(title) \(source.name)")
     }
 }
 
@@ -350,12 +398,13 @@ private struct DashboardSummary: View {
     }
 
     private var runningTile: some View {
-        let running = sources.filter { $0.running == true }.count
+        let accounts = sources.filter(\.countsAsAccount)
+        let running = accounts.filter { $0.running == true }.count
         return DashboardTile(
             title: "Running",
             systemImage: "play.circle.fill",
             tint: running > 0 ? .green : .secondary,
-            value: "\(running) of \(sources.count)",
+            value: "\(running) of \(accounts.count)",
             detail: running == 1 ? "account open" : "accounts open"
         )
     }
@@ -418,6 +467,7 @@ private struct DashboardSummary: View {
     private func select(_ source: DashboardSource) {
         switch source.kind {
         case .official: model.selectOfficial(source.product)
+        case .claudeCode: model.selectOfficial(.claude)
         case let .profile(profile): model.selectProfile(profile.id)
         }
         model.detailTab = .overview

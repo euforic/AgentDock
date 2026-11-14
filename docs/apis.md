@@ -137,7 +137,50 @@ selected provider login's in-memory access token. The response maps five-hour,
 weekly, model-scoped, reset, and extra-usage fields into `ProfileRateLimits`.
 AgentDock verifies account and organization identity through the sibling OAuth
 profile endpoint before assigning a response to an account-scoped source. It
-does not persist, rotate, refresh, or log provider credentials.
+does not persist, rotate, refresh, or log provider credentials. The exception is
+AgentDock's own Claude sign-in for the Claude Code section, described below,
+whose tokens AgentDock stores and renews.
+
+### AgentDock Claude sign-in
+
+The sign-in uses Claude's public OAuth protocol with Claude Code's public
+client ID `9d1c250a-e61b-44d9-88ed-5944d1962f5e`.
+
+- **Authorize:** `https://claude.ai/oauth/authorize` with, in order,
+  `client_id`, `response_type=code`, `redirect_uri`
+  (`http://localhost:<port>/callback`), `scope=user:profile user:inference`,
+  `code_challenge`, `code_challenge_method=S256`, `state`, and `code=true`.
+- **Exchange:** `POST https://platform.claude.com/v1/oauth/token` with only
+  `Content-Type: application/json` and the body `grant_type=authorization_code`,
+  `client_id`, `code`, `state`, `redirect_uri`, and `code_verifier`. A pasted
+  code sends the same body, including the loopback `redirect_uri`.
+- **Refresh:** the same endpoint with `grant_type=refresh_token`,
+  `refresh_token`, `client_id`, and `scope=user:profile user:inference`. A 400
+  with `invalid_scope` is retried once with `scope=user:profile`.
+- **Refusal:** a 400, 401, or 403 whose error code (`error`, `error.code`, or a
+  top-level `code`) is `invalid_grant`, `refresh_token_expired`,
+  `refresh_token_reused`, or `refresh_token_invalidated` ends the sign-in. Any
+  other failure, including 429, 5xx, malformed JSON, or an empty
+  `access_token`, keeps the current token and is retried on the next refresh.
+- **Profile:** `GET https://api.anthropic.com/api/oauth/profile` supplies
+  `account.uuid`, `account.email` (or a top-level `email`),
+  `organization.uuid`, and `organization.organization_type` without its
+  `claude_` prefix as the plan.
+
+The Claude Code section uses a separate projection of the same response. It
+maps only `five_hour` (5-hour, absent when null), `seven_day` (Weekly), and
+Fable's weekly percentage, with no other model rows and no extra usage. Fable
+comes from `limits[]` entries whose `kind` is `weekly_scoped`, whose `group` is
+missing, null, or `weekly`, whose `percent` is a non-negative JSON number (not a
+boolean or string), and whose `scope.model` is Fable: an `id` containing
+`fable`, or a trimmed `display_name` equal to `Fable` or starting with
+`Fable ` (case-insensitive). The highest matching percentage wins, with its
+`resets_at`. Without a matching entry, the legacy `seven_day_fable` window is
+used. The Desktop projection is unchanged.
+
+A 429 from the usage or profile endpoint honors `Retry-After` as delta seconds
+or an HTTP-date (`Wed, 21 Oct 2099 07:28:00 GMT`). The cooldown is at least
+60 seconds, defaults to five minutes, and is capped at one hour.
 
 ## Build and Release Environment
 

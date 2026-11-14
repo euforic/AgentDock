@@ -1,7 +1,7 @@
 import SwiftUI
 import XCTest
 @testable import AgentDock
-import AgentDockCore
+@testable import AgentDockCore
 
 @MainActor
 final class AgentDockModelTests: XCTestCase {
@@ -93,6 +93,7 @@ final class AgentDockModelTests: XCTestCase {
                 codexExecutable: URL(fileURLWithPath: "/usr/bin/false"),
                 timeoutSeconds: 0.1
             ),
+            claudeCodeLogin: ClaudeCodeLogin(store: InMemoryClaudeLoginStore()),
             startMonitoring: false
         )
 
@@ -393,6 +394,67 @@ final class AgentDockModelTests: XCTestCase {
         XCTAssertFalse(model.storeMutationInProgress)
     }
 
+    func testClaudeCodeSignedOutWithoutStoredLogin() async throws {
+        let store = try makeStore()
+        let model = makeModel(store: store)
+
+        await waitUntil { model.claudeCodeLoginState == .signedOut(notice: nil) }
+        XCTAssertNil(model.officialClaudeCodeRateLimits)
+        XCTAssertFalse(model.isClaudeSignInSheetPresented)
+    }
+
+    func testClaudeCodeSignOutClearsLimitsAndStoredLogin() async throws {
+        let store = try makeStore()
+        let loginStore = InMemoryClaudeLoginStore(ClaudeLoginTokens(
+            accessToken: "synthetic-access-a",
+            refreshToken: "synthetic-refresh-a",
+            expiresAt: Date().addingTimeInterval(3_600),
+            scopes: ["user:profile", "user:inference"],
+            accountUUID: "00000000-0000-0000-0000-000000000001",
+            organizationUUID: "00000000-0000-0000-0000-000000000002",
+            accountLabel: "synthetic@example.invalid",
+            subscriptionType: "max"
+        ))
+        let transport = AppScriptedClaudeTransport()
+        await transport.enqueue("/api/oauth/profile", status: 200, body: #"""
+        {"account":{"uuid":"00000000-0000-0000-0000-000000000001"},
+         "organization":{"uuid":"00000000-0000-0000-0000-000000000002"}}
+        """#)
+        await transport.enqueue("/api/oauth/usage", status: 200, body: #"""
+        {"five_hour":{"utilization":12.5,"resets_at":"2099-01-01T05:00:00.000Z"},
+         "seven_day":{"utilization":41,"resets_at":"2099-01-07T00:00:00Z"}}
+        """#)
+        let suiteName = "AgentDockModelTests.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let login = ClaudeCodeLogin(store: loginStore, transport: transport)
+        let model = AgentDockModel(
+            store: store,
+            officialDataRootURL: root.appendingPathComponent("Official"),
+            codexAppURL: URL(fileURLWithPath: "/Applications/Codex.app"),
+            instanceController: RecordingInstanceManager(),
+            shortcutInstaller: NoopShortcutManager(),
+            statsScanner: FixedStatsScanner(),
+            rateLimitClient: FixedRateLimitClient(),
+            claudeUsageClient: ClaudeUsageClient(
+                cooldowns: ClaudeUsageCooldownStore(defaults: defaults),
+                transport: transport,
+                claudeCodeLogin: login
+            ),
+            claudeCodeLogin: login
+        )
+
+        await waitUntil {
+            model.claudeCodeLoginState == .signedIn(accountLabel: "synthetic@example.invalid")
+                && model.officialClaudeCodeRateLimits?.buckets.isEmpty == false
+        }
+
+        model.signOutOfClaude()
+        await waitUntil { model.claudeCodeLoginState == .signedOut(notice: nil) }
+        XCTAssertNil(loginStore.tokens)
+        XCTAssertNil(model.officialClaudeCodeRateLimits)
+    }
+
     func testOfficialCodexActionUsesStockInstancePath() async throws {
         let store = try makeStore()
         let manager = RecordingInstanceManager()
@@ -435,6 +497,7 @@ final class AgentDockModelTests: XCTestCase {
             shortcutInstaller: NoopShortcutManager(),
             statsScanner: FixedStatsScanner(),
             rateLimitClient: FixedRateLimitClient(),
+            claudeCodeLogin: ClaudeCodeLogin(store: InMemoryClaudeLoginStore()),
             preferencesStore: preferencesStore
         )
         await waitUntil { !model.officialCodexConfigProfiles.isEmpty }
@@ -545,6 +608,7 @@ final class AgentDockModelTests: XCTestCase {
             officialDataRootURL: root.appendingPathComponent("Official"),
             codexAppURL: appURL,
             shortcutInstaller: installer,
+            claudeCodeLogin: ClaudeCodeLogin(store: InMemoryClaudeLoginStore()),
             startMonitoring: false,
             loadActivityOnInit: false
         )
@@ -595,7 +659,8 @@ final class AgentDockModelTests: XCTestCase {
             instanceController: manager,
             shortcutInstaller: NoopShortcutManager(),
             statsScanner: scanner,
-            rateLimitClient: FixedRateLimitClient()
+            rateLimitClient: FixedRateLimitClient(),
+            claudeCodeLogin: ClaudeCodeLogin(store: InMemoryClaudeLoginStore())
         )
     }
 
@@ -609,6 +674,7 @@ final class AgentDockModelTests: XCTestCase {
             shortcutInstaller: ShortcutInstaller(),
             statsScanner: ProfileStatsScanner(),
             rateLimitClient: AppServerRateLimitClient(),
+            claudeCodeLogin: ClaudeCodeLogin(store: InMemoryClaudeLoginStore()),
             startMonitoring: false,
             loadActivityOnInit: false
         )

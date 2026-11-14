@@ -106,4 +106,40 @@ final class HomeDashboardTests: XCTestCase {
         ])
         XCTAssertEqual(Set(windows.map(\.id)).count, 3)
     }
+
+    func testClaudeCodeWindowsTitleSessionWeeklyAndFable() {
+        let limits = ProfileRateLimits(planType: "max", buckets: [
+            RateLimitBucket(
+                id: "claude",
+                name: "Claude",
+                primary: RateLimitWindowUsage(usedPercent: 12.5, windowDurationMins: 300, resetsAt: nil),
+                secondary: RateLimitWindowUsage(usedPercent: 41, windowDurationMins: 10_080, resetsAt: nil)
+            ),
+            RateLimitBucket(
+                id: "model-fable",
+                name: "Fable",
+                primary: RateLimitWindowUsage(usedPercent: 2, windowDurationMins: 10_080, resetsAt: nil),
+                secondary: nil
+            )
+        ])
+
+        XCTAssertEqual(
+            HomeUsageWindow.windows(in: limits).map(\.title),
+            ["5-hour", "Weekly", "Fable · Weekly"]
+        )
+
+        let source = DashboardSource(
+            product: .claude,
+            kind: .claudeCode,
+            name: "Claude Code",
+            limits: limits,
+            running: nil,
+            busy: false,
+            resets: nil
+        )
+        XCTAssertEqual(source.id, "official.claude.code")
+        XCTAssertFalse(source.countsAsAccount)
+        XCTAssertEqual(source.sessionWindow?.title, "5-hour")
+        XCTAssertEqual(source.weeklyWindow?.title, "Weekly")
+    }
 }
