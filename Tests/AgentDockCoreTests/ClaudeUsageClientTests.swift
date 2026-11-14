@@ -659,8 +659,15 @@ final class ClaudeUsageClientTests: XCTestCase {
         }
         await transport.enqueue(usagePath, token: second.accessToken, Fixture.usageReply)
         let store = InMemoryClaudeLoginAccounts(accounts: [first, second])
-        let client = try makeClient(accounts: ClaudeCodeAccounts(store: store, transport: transport), transport: transport)
+        let registry = ClaudeCodeAccounts(store: store, transport: transport)
+        let client = try makeClient(accounts: registry, transport: transport)
         let firstKey = first.accountKey
+        // Single-account fetches resolve only accounts the registry has listed,
+        // as the app does at launch. Listing sends no requests.
+        let listing = await registry.list()
+        XCTAssertEqual(listing.accounts.map(\.key), [firstKey, second.accountKey])
+        let listingRequests = await transport.requests.count
+        XCTAssertEqual(listingRequests, 0)
 
         for _ in 0..<ClaudeUsageRequestBudget.limit {
             let result = await client.fetchClaudeCodeUsage(
@@ -668,7 +675,8 @@ final class ClaudeUsageClientTests: XCTestCase {
                 allowKeychainInteraction: false,
                 forceRefresh: true
             )
-            XCTAssertEqual(result?.limits?.errorMessage, "Live usage request failed (HTTP 500).")
+            let failed = try XCTUnwrap(result, "a listed account must resolve")
+            XCTAssertEqual(failed.limits?.errorMessage, "Live usage request failed (HTTP 500).")
         }
         let spent = await client.fetchClaudeCodeUsage(
             accountKey: firstKey,
@@ -686,8 +694,12 @@ final class ClaudeUsageClientTests: XCTestCase {
             allowKeychainInteraction: false,
             forceRefresh: true
         )
+        XCTAssertNotNil(other, "the second account must resolve")
         XCTAssertNil(other?.limits?.errorMessage)
         XCTAssertEqual(other?.limits?.buckets.map(\.id), ["claude"])
+        XCTAssertNil(other?.rateLimitedUntil, "the first account's spent budget does not block the second")
+        let secondUsage = await transport.count(usagePath, token: second.accessToken)
+        XCTAssertEqual(secondUsage, 1)
     }
 
     func testFetchingAllAccountsStaggersStartsAndRunsAtMostTwo() async throws {
