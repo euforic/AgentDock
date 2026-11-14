@@ -199,8 +199,8 @@ public protocol ClaudeLoginTokenStoring: Sendable {
 public protocol ClaudeLoginAccountStoring: Sendable {
     /// The profiles that have an item, sorted by storage key.
     func profileIDs(allowInteraction: Bool) throws -> [ClaudeCodeProfileID]
-    /// The item for one profile. It can hold any account; signing in again
-    /// replaces it.
+    /// The item for one profile. It can hold any account; `ClaudeCodeLogin`
+    /// keeps a profile on the account it signed in with.
     func tokenStore(forProfile profile: ClaudeCodeProfileID) -> any ClaudeLoginTokenStoring
     /// The keys of account-keyed items from earlier versions, sorted. Read
     /// only to migrate them. The legacy item is never listed.
@@ -469,5 +469,23 @@ public struct ClaudeLoginKeychainAccounts: ClaudeLoginAccountStoring, @unchecked
 
     public var legacyTokenStore: any ClaudeLoginTokenStoring {
         ClaudeLoginKeychainStore(keychain: keychain, service: service)
+    }
+}
+
+// AgentDock's sign-in items live in the file-based login Keychain. LAContext
+// only suppresses UI for Data Protection items; legacy Keychain access needs
+// the process-level flag. Serialize the synchronous call and restore the
+// prior flag before returning.
+enum ClaudeKeychainAccess {
+    private static let lock = NSLock()
+
+    static func withInteractionAllowed<T>(_ allowed: Bool, operation: () -> T?) -> T? {
+        lock.lock()
+        defer { lock.unlock() }
+        var previous = DarwinBoolean(false)
+        guard SecKeychainGetUserInteractionAllowed(&previous) == errSecSuccess else { return nil }
+        guard SecKeychainSetUserInteractionAllowed(allowed) == errSecSuccess else { return nil }
+        defer { _ = SecKeychainSetUserInteractionAllowed(previous.boolValue) }
+        return operation()
     }
 }

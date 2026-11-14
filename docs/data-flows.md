@@ -94,28 +94,14 @@ sources also feed an in-memory usage summary. Assistant token records are
 deduplicated by their message/request identity before aggregation, scans are
 byte-bounded and cached by source size and modification time, and model totals
 remain source-scoped. The overview uses the same usage and activity components
-for both source types and lists the official installation beside managed
-accounts for quick comparison and selection.
+for both source types; each page shows only its own source.
 Claude `rate_limit_event` records contribute only their latest observed status,
 bucket, reset time, and optional utilization. Missing utilization stays missing;
 AgentDock does not carry an older percentage into a newer limit window.
 
-Live Claude quota refresh is a separate flow:
-
-1. Official Claude **Desktop** uses the Desktop OAuth cache exclusively. Managed
-   profiles use only their own Desktop user-data root. AgentDock's separate
-   Claude sign-in cannot replace the account displayed for Desktop.
-2. Background refresh reads Keychain without interaction. Manual refresh may
-   request access to Claude Safe Storage.
-3. The active account and organization are resolved locally and verified with
-   Anthropic once per account, organization, and token before the usage
-   response is assigned to a source.
-4. Desktop access tokens remain in memory and are never copied, refreshed,
-   persisted, or logged by AgentDock.
-5. HTTP 429 responses create an account-scoped cooldown and retain only the
-   last successful in-memory snapshot for that same login. The cooldown
-   deadline is saved under a SHA-256 digest of the account identity so it
-   survives relaunch and token changes.
+Live Claude limits come only from the Claude Code flow below. AgentDock does
+not read Claude Desktop's OAuth cache, its `Claude Safe Storage` Keychain item,
+or its cookies, and Claude app rows on Home show no live usage.
 
 Claude Code live limits use AgentDock's own Claude sign-ins, one per Claude
 profile. Each Claude profile's page, Official Claude included, shows its own
@@ -124,9 +110,11 @@ read-only row per signed-in profile that opens that profile's page.
 
 **Sign-in (on a profile's page)**
 
-1. The profile's **Sign In to Claude…** starts a listener on 127.0.0.1 with a
-   random port and generates a PKCE verifier and a random `state`. One
-   sign-in runs at a time.
+1. The profile's **Sign In to Claude…** is offered only while the profile has
+   no sign-in, or to renew an expired or no-longer-matching one. It starts a
+   listener on 127.0.0.1 with a random port and generates a PKCE verifier and a
+   random `state`. One sign-in runs at a time. A profile whose item cannot be
+   read, or cannot be read without a refused Keychain prompt, starts nothing.
 2. AgentDock opens `claude.ai/oauth/authorize` in the browser.
 3. Claude redirects to the listener with the code. Alternatively, the user
    pastes the code that claude.ai shows (`code#state` or the callback URL).
@@ -135,10 +123,15 @@ read-only row per signed-in profile that opens that profile's page.
    refresh token.
 5. The profile endpoint supplies the account and organization UUIDs, the email
    label, and the plan. Without both UUIDs, nothing is saved.
-6. The tokens and account are saved to that profile's own Keychain item,
-   `claude-code-profile:<profile key>`, replacing whatever that profile had.
-   The same account again keeps its name; another account starts fresh. No
-   other profile's item is touched, even one signed in to the same account.
+6. A profile stays with one Claude account. When it has no sign-in, the tokens
+   and account are saved to its own Keychain item,
+   `claude-code-profile:<profile key>`. When it is bound to an account (its
+   item, or after an expiry the account it had until Sign Out or relaunch),
+   only the same account UUID is accepted: the tokens are replaced and the
+   name and added date kept. Another account is refused with "This profile is
+   signed in to <email>. Sign out first to use a different Claude account." and
+   nothing is written. No other profile's item is touched, even one signed in
+   to the same account.
 7. **Sign Out** deletes only that profile's item. Removing a profile from
    AgentDock or deleting its data deletes its item too; a launch also removes
    items of profiles that no longer exist.

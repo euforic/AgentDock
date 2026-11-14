@@ -5,7 +5,7 @@ import Security
 /// Claude's public OAuth protocol for AgentDock's own sign-in. Pure request
 /// building and response classification; all I/O goes through a transport.
 enum ClaudeOAuth {
-    /// Claude Code's public client ID. Desktop credential ranking also uses it.
+    /// Claude Code's public client ID.
     static let clientID = "9d1c250a-e61b-44d9-88ed-5944d1962f5e"
     static let authorizationEndpoint = URL(string: "https://claude.ai/oauth/authorize")!
     static let tokenURL = URL(string: "https://platform.claude.com/v1/oauth/token")!

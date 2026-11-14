@@ -4,7 +4,8 @@ import SwiftUI
 
 /// Guides signing one profile in to Claude with AgentDock's own sign-in: the
 /// browser step, an optional pasted code, the token exchange, and a retry
-/// after a failure. It replaces only this profile's sign-in.
+/// after a failure. A profile stays with one Claude account: renewing an
+/// expired sign-in accepts only that account.
 struct ClaudeSignInSheet: View {
     @EnvironmentObject private var model: AgentDockModel
     let profile: ClaudeCodeProfileID
@@ -25,7 +26,7 @@ struct ClaudeSignInSheet: View {
                 }
                 .textCase(nil)
             } footer: {
-                Text("AgentDock keeps this profile's sign-in in its own Keychain item and uses it only to read the account's profile and Claude Code usage limits. Signing in replaces only this profile's sign-in.")
+                Text("AgentDock keeps this profile's sign-in in its own Keychain item and uses it only to read the account's profile and Claude Code usage limits. The profile stays with one Claude account; to use a different one, sign out first.")
             }
         }
         .formStyle(.grouped)
@@ -48,6 +49,11 @@ struct ClaudeSignInSheet: View {
         case let .signingIn(.waitingForBrowser(url)):
             Text("Finish signing in in your browser. If claude.ai shows a code, paste it here.")
                 .fixedSize(horizontal: false, vertical: true)
+            if model.claudeCodeAccountControls(for: profile).signIn == .sameAccount {
+                Text("Sign in with \(model.claudeCodeUsage(for: profile).account?.label ?? "this profile's Claude account") again. Another account is refused.")
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
             TextField("Code", text: $code)
                 .autocorrectionDisabled()
                 .focused($codeFocused)

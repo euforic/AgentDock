@@ -71,7 +71,8 @@ profile list loads and before any Claude Code usage is fetched,
 - **One sign-in per profile.** When several land on the same profile, the one
   added to AgentDock first wins; a missing added date counts as earliest, and
   the lower account key breaks a tie. A profile that already has a sign-in keeps
-  it.
+  it, even one AgentDock can't read: its item still binds the profile until
+  **Sign Out**, so migration never overwrites it.
 - **Safe moves.** The winner is written to the profile's item, read back and
   compared, and only then is the earlier item deleted. If any step fails, the
   earlier item stays and the next launch retries.
@@ -86,6 +87,20 @@ profile list loads and before any Claude Code usage is fetched,
 - **Idempotent.** Running it again with the same profiles changes nothing.
 - The same launch removes the items of managed profiles that no longer exist,
   in case removing a profile's sign-in failed earlier.
+
+After upgrading, each profile's existing item becomes its account binding: a
+profile already signed in stays with that account, and signing in with another
+account is refused until the profile signs out. The item format is unchanged.
+
+## Claude Desktop usage and the Claude Usage Sources list
+
+Earlier versions also showed a "Claude Desktop Usage Limits" card, read from
+Claude Desktop's own sign-in, and a "Claude Usage Sources" list on Claude
+pages. Both are removed; no migration is needed. The sources list saved no
+selection. Desktop usage was cached only in memory, and the 429 cooldowns it
+saved under `AgentDock.claudeUsage.rateLimitCooldowns` are never looked up
+again and expire within one hour; the store prunes them. Cooldowns of Claude
+Code sign-ins keep their keys and still apply.
 
 If reading the Keychain needs a prompt, migration waits and every Claude
 profile shows the Keychain notice until a manual Refresh allows it. Persisted

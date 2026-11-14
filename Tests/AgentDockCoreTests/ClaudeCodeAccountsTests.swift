@@ -87,29 +87,215 @@ final class ClaudeCodeAccountsTests: XCTestCase {
         XCTAssertEqual(listing.accounts.first?.title, "Work")
     }
 
-    func testSigningInWithAnotherAccountReplacesTheProfilesAccountAndDropsItsName() async throws {
+    // MARK: - One account per profile
+
+    func testSigningInWithAnotherAccountIsRefusedAndKeepsTheProfilesSignIn() async throws {
         let store = InMemoryClaudeLoginAccounts()
         let transport = ScriptedClaudeTransport()
         let accounts = ClaudeCodeAccounts(store: store, transport: transport)
         _ = try await signIn(accounts, transport, profile: Fixture.work, access: "synthetic-access-a")
         _ = try await accounts.rename(profile: Fixture.work, to: "Old name")
+        let kept = try XCTUnwrap(store.tokens(.profile(Fixture.work)))
+        let savesBefore = store.saveCount(.profile(Fixture.work))
 
-        let switched = try await signIn(
+        do {
+            _ = try await signIn(
+                accounts,
+                transport,
+                profile: Fixture.work,
+                access: "synthetic-access-second",
+                account: Fixture.secondAccount,
+                organization: Fixture.secondOrganization,
+                email: Fixture.secondEmail
+            )
+            XCTFail("A profile signed in to one account must refuse another")
+        } catch {
+            let failure = error as Any as? ClaudeSignInError
+            XCTAssertEqual(failure, .differentAccount(Fixture.email))
+            XCTAssertEqual(
+                failure?.message,
+                "This profile is signed in to synthetic@example.invalid. Sign out first to use a different Claude account."
+            )
+        }
+
+        XCTAssertEqual(store.tokens(.profile(Fixture.work)), kept, "the profile's item is untouched")
+        XCTAssertEqual(store.saveCount(.profile(Fixture.work)), savesBefore)
+        XCTAssertEqual(store.storedProfileIDs, [Fixture.work])
+        let listing = await accounts.list(profiles: [Fixture.work])
+        XCTAssertEqual(listing.accounts.first?.accountKey, Fixture.accountKey)
+        XCTAssertEqual(listing.accounts.first?.title, "Old name")
+        XCTAssertEqual(listing.accounts.first?.status.isSignedIn, true)
+    }
+
+    func testExpiredSignInAcceptsOnlyItsOwnAccountAgain() async throws {
+        let now = Date()
+        let original = Fixture.tokens(expiresAt: now.addingTimeInterval(10))
+        let store = InMemoryClaudeLoginAccounts(profiles: [Fixture.work: original])
+        let transport = ScriptedClaudeTransport()
+        await transport.enqueue(tokenPath, Fixture.errorReply(400, "invalid_grant"))
+        let accounts = ClaudeCodeAccounts(store: store, transport: transport)
+        let entries = await accounts.entries(for: [Fixture.work])
+        let login = try XCTUnwrap(entries.first?.login)
+        let outcome = await login.usableTokens(allowKeychainInteraction: false, now: now)
+        XCTAssertEqual(outcome, .signedOut(expired: true))
+        XCTAssertNil(store.tokens(.profile(Fixture.work)))
+        let savesBefore = store.saveCount(.profile(Fixture.work))
+
+        // Another account is refused and nothing is written.
+        do {
+            _ = try await signIn(
+                accounts,
+                transport,
+                profile: Fixture.work,
+                access: "synthetic-access-second",
+                account: Fixture.secondAccount,
+                organization: Fixture.secondOrganization,
+                email: Fixture.secondEmail
+            )
+            XCTFail("An expired sign-in must not be replaced by another account")
+        } catch {
+            XCTAssertEqual(error as Any as? ClaudeSignInError, .differentAccount(Fixture.email))
+        }
+        XCTAssertNil(store.tokens(.profile(Fixture.work)))
+        XCTAssertEqual(store.saveCount(.profile(Fixture.work)), savesBefore)
+        let refused = await accounts.list(profiles: [Fixture.work])
+        let card = try XCTUnwrap(refused.accounts.first)
+        XCTAssertEqual(card.title, Fixture.email)
+        XCTAssertEqual(card.phase(), .reauthenticationRequired(ClaudeCodeUsageMessage.signInExpired))
+        XCTAssertEqual(card.phase().accountControls, ClaudeCodeAccountControls(signIn: .sameAccount, signOut: true))
+
+        // The same account signs in again and replaces the tokens.
+        let renewed = try await signIn(accounts, transport, profile: Fixture.work, access: "synthetic-access-again")
+        XCTAssertEqual(renewed.accountKey, Fixture.accountKey)
+        XCTAssertEqual(store.tokens(.profile(Fixture.work))?.accessToken, "synthetic-access-again")
+        XCTAssertEqual(store.tokens(.profile(Fixture.work))?.accountUUID, Fixture.account)
+        let listing = await accounts.list(profiles: [Fixture.work])
+        XCTAssertEqual(listing.accounts.first?.status.isSignedIn, true)
+        XCTAssertEqual(listing.accounts.first?.phase(), .loading)
+    }
+
+    func testSameAccountInAnotherOrganizationIsAccepted() async throws {
+        let store = InMemoryClaudeLoginAccounts()
+        let transport = ScriptedClaudeTransport()
+        let accounts = ClaudeCodeAccounts(store: store, transport: transport)
+        let first = try await signIn(accounts, transport, profile: Fixture.work, access: "synthetic-access-a")
+        let addedAt = try XCTUnwrap(first.account?.addedAt)
+        _ = try await accounts.rename(profile: Fixture.work, to: "Kept")
+
+        let moved = try await signIn(
             accounts,
             transport,
             profile: Fixture.work,
-            access: "synthetic-access-second",
-            account: Fixture.secondAccount,
+            access: "synthetic-access-other-org",
+            account: Fixture.account,
             organization: Fixture.secondOrganization,
-            email: Fixture.secondEmail
+            email: Fixture.email
         )
 
-        XCTAssertEqual(switched.accountKey, Fixture.secondAccountKey)
-        XCTAssertNil(switched.account?.customName, "another account's name does not carry over")
-        XCTAssertEqual(switched.title, Fixture.secondEmail)
-        XCTAssertEqual(store.storedProfileIDs, [Fixture.work], "exactly one sign-in for the profile")
-        XCTAssertEqual(store.tokens(.profile(Fixture.work))?.accountUUID, Fixture.secondAccount)
-        XCTAssertNil(store.tokens(.profile(Fixture.work))?.customName)
+        let movedKey = ClaudeLoginAccountKey.make(
+            accountUUID: Fixture.account,
+            organizationUUID: Fixture.secondOrganization
+        )
+        XCTAssertEqual(moved.accountKey, movedKey)
+        XCTAssertEqual(moved.account?.customName, "Kept")
+        XCTAssertEqual(moved.account?.addedAt, addedAt)
+        let stored = try XCTUnwrap(store.tokens(.profile(Fixture.work)))
+        XCTAssertEqual(stored.accessToken, "synthetic-access-other-org")
+        XCTAssertEqual(stored.organizationUUID, Fixture.secondOrganization)
+        XCTAssertEqual(store.storedProfileIDs, [Fixture.work])
+    }
+
+    func testUnreadableSignInRefusesEverySignInUntilSignedOut() async throws {
+        let unreadableItem = Fixture.thirdTokens()
+        let store = InMemoryClaudeLoginAccounts(profiles: [Fixture.work: unreadableItem])
+        store.failNextLoad(.profile(Fixture.work), with: .unreadable)
+        let transport = ScriptedClaudeTransport()
+        let accounts = ClaudeCodeAccounts(store: store, transport: transport)
+        let before = store.snapshot
+
+        // No replies are scripted: the refusal must come before any request,
+        // and a late one would fail at the token exchange instead.
+        for (access, account, organization, email) in [
+            ("synthetic-access-a", Fixture.account, Fixture.organization, Fixture.email),
+            ("synthetic-access-third", Fixture.thirdAccount, Fixture.thirdOrganization, Fixture.thirdEmail)
+        ] {
+            do {
+                _ = try await signIn(
+                    accounts,
+                    transport,
+                    profile: Fixture.work,
+                    access: access,
+                    account: account,
+                    organization: organization,
+                    email: email,
+                    scriptsReplies: false
+                )
+                XCTFail("A sign-in whose account is unknown must refuse every account")
+            } catch {
+                XCTAssertEqual(error as Any as? ClaudeSignInError, .unreadableSignIn)
+            }
+        }
+        let requests = await transport.requests.count
+        XCTAssertEqual(requests, 0, "refused before the browser opens")
+        XCTAssertEqual(store.snapshot, before)
+        XCTAssertEqual(store.saveCount(.profile(Fixture.work)), 0)
+        let listing = await accounts.list(profiles: [Fixture.work])
+        XCTAssertEqual(listing.accounts.first?.phase().accountControls, ClaudeCodeAccountControls(signOut: true))
+
+        try await accounts.signOut(profile: Fixture.work)
+        let signedIn = try await signIn(
+            accounts,
+            transport,
+            profile: Fixture.work,
+            access: "synthetic-access-after-sign-out"
+        )
+        XCTAssertEqual(signedIn.accountKey, Fixture.accountKey)
+        XCTAssertEqual(store.tokens(.profile(Fixture.work))?.accessToken, "synthetic-access-after-sign-out")
+    }
+
+    func testSignInStopsBeforeTheBrowserWhenTheSignInCannotBeRead() async throws {
+        let existing = Fixture.tokens()
+        let store = InMemoryClaudeLoginAccounts(profiles: [Fixture.work: existing])
+        store.failNextLoad(.profile(Fixture.work), with: .interactionRequired)
+        let transport = ScriptedClaudeTransport()
+        let accounts = ClaudeCodeAccounts(store: store, transport: transport)
+
+        do {
+            _ = try await signIn(
+                accounts,
+                transport,
+                profile: Fixture.work,
+                access: "synthetic-access-second",
+                account: Fixture.secondAccount,
+                organization: Fixture.secondOrganization,
+                email: Fixture.secondEmail,
+                scriptsReplies: false
+            )
+            XCTFail("A sign-in must not start when the profile's item cannot be read")
+        } catch {
+            XCTAssertEqual(error as Any as? ClaudeSignInError, .keychain(.interactionRequired))
+        }
+        let requests = await transport.requests.count
+        XCTAssertEqual(requests, 0)
+        XCTAssertEqual(store.tokens(.profile(Fixture.work)), existing)
+        XCTAssertEqual(store.saveCount(.profile(Fixture.work)), 0)
+    }
+
+    func testAnotherProfileMaySignInToAnAccountAlreadyOnAProfile() async throws {
+        let store = InMemoryClaudeLoginAccounts()
+        let transport = ScriptedClaudeTransport()
+        let accounts = ClaudeCodeAccounts(store: store, transport: transport)
+        _ = try await signIn(accounts, transport, profile: .official, access: "synthetic-access-official")
+        let onOfficial = try XCTUnwrap(store.tokens(.profile(.official)))
+
+        let onWork = try await signIn(accounts, transport, profile: Fixture.work, access: "synthetic-access-work")
+
+        XCTAssertEqual(onWork.accountKey, Fixture.accountKey)
+        XCTAssertEqual(store.tokens(.profile(Fixture.work))?.accessToken, "synthetic-access-work")
+        XCTAssertEqual(store.tokens(.profile(.official)), onOfficial, "the first profile keeps its own item")
+        let listing = await accounts.list(profiles: [.official, Fixture.work])
+        XCTAssertEqual(listing.accounts.map(\.status.isSignedIn), [true, true])
+        XCTAssertEqual(listing.accounts.map(\.accountKey), [Fixture.accountKey, Fixture.accountKey])
     }
 
     func testRenameChangesOnlyThatProfileAndEmptyNameRestoresEmail() async throws {
@@ -384,6 +570,60 @@ final class ClaudeCodeAccountsTests: XCTestCase {
         )
     }
 
+    func testAccountControlsOfferSignInOnlyWithoutAWorkingSignIn() {
+        let now = Date()
+        let later = now.addingTimeInterval(600)
+
+        XCTAssertEqual(ClaudeCodeUsagePhase.checking.accountControls, .empty)
+        XCTAssertEqual(ClaudeCodeUsagePhase.keychainAccessRequired.accountControls, .empty)
+        XCTAssertEqual(
+            ClaudeCodeUsagePhase.signedOut.accountControls,
+            ClaudeCodeAccountControls(signIn: .anyAccount)
+        )
+        for message in [
+            ClaudeCodeUsageMessage.signInExpired,
+            ClaudeCodeUsageMessage.identityMismatch,
+            ClaudeCodeUsageMessage.missingProfileScope
+        ] {
+            XCTAssertEqual(
+                ClaudeCodeUsagePhase.reauthenticationRequired(message).accountControls,
+                ClaudeCodeAccountControls(signIn: .sameAccount, signOut: true),
+                message
+            )
+        }
+        XCTAssertEqual(
+            ClaudeCodeUsagePhase.reauthenticationRequired(ClaudeCodeUsageMessage.unreadableSignIn).accountControls,
+            ClaudeCodeAccountControls(signOut: true),
+            "an item whose account is unknown can only be signed out"
+        )
+        let working: [ClaudeCodeUsagePhase] = [
+            .loading,
+            .ok,
+            .rateLimited(until: later),
+            .budgetExhausted(until: later),
+            .error("Live usage request failed (HTTP 500).")
+        ]
+        for phase in working {
+            XCTAssertEqual(phase.accountControls, ClaudeCodeAccountControls(rename: true, signOut: true))
+            XCTAssertNil(phase.accountControls.signIn, "a signed-in profile offers no sign-in")
+        }
+
+        // A sign-in without the profile scope asks for the same account again.
+        let account = ClaudeLoginAccount(label: Fixture.email, subscriptionType: "max")
+        let missingScope = ClaudeCodeAccountUsage(
+            profile: Fixture.work,
+            accountKey: Fixture.accountKey,
+            account: account,
+            status: .signedIn(account),
+            limits: ProfileRateLimits(errorMessage: ClaudeCodeUsageMessage.missingProfileScope)
+        )
+        XCTAssertEqual(
+            missingScope.phase(now: now),
+            .reauthenticationRequired(ClaudeCodeUsageMessage.missingProfileScope)
+        )
+        XCTAssertEqual(missingScope.phase(now: now).accountControls.signIn, .sameAccount)
+    }
+
     // MARK: - Migrating earlier sign-ins onto profiles
 
     func testMigratesLegacyItemToTheDefaultProfileWithoutSigningIn() async throws {
@@ -545,6 +785,23 @@ final class ClaudeCodeAccountsTests: XCTestCase {
         XCTAssertEqual(store.tokens(.profile(.official)), existing)
         XCTAssertEqual(store.saveCount(.profile(.official)), 0)
         XCTAssertEqual(store.tokens(.account(earlier.accountKey)), earlier)
+    }
+
+    func testMigrationNeverPlacesASignInOnAProfileWhoseSignInCannotBeRead() async throws {
+        let blocked = Fixture.secondTokens()
+        let earlier = Fixture.tokens()
+        let store = InMemoryClaudeLoginAccounts(accounts: [earlier], profiles: [.official: blocked])
+        store.failNextLoad(.profile(.official), with: .unreadable)
+        let accounts = ClaudeCodeAccounts(store: store, transport: ScriptedClaudeTransport())
+
+        let result = await accounts.migrateEarlierSignIns(to: targets())
+
+        XCTAssertEqual(result, ClaudeCodeMigrationResult(outcome: .complete, unplacedAccountKeys: [earlier.accountKey]))
+        XCTAssertEqual(store.tokens(.profile(.official)), blocked, "the profile's item is never overwritten")
+        XCTAssertEqual(store.saveCount(.profile(.official)), 0)
+        XCTAssertEqual(store.deleteCount(.profile(.official)), 0)
+        XCTAssertEqual(store.tokens(.account(earlier.accountKey)), earlier, "the earlier sign-in is kept")
+        XCTAssertEqual(store.deleteCount(.account(earlier.accountKey)), 0)
     }
 
     func testEarlierItemOfAnAccountAlreadyOnAProfileIsRemoved() async throws {
@@ -760,14 +1017,19 @@ final class ClaudeCodeAccountsTests: XCTestCase {
         access: String,
         account: String = ClaudeLoginFixture.account,
         organization: String = ClaudeLoginFixture.organization,
-        email: String = ClaudeLoginFixture.email
+        email: String = ClaudeLoginFixture.email,
+        scriptsReplies: Bool = true
     ) async throws -> ClaudeCodeAccountUsage {
-        await transport.enqueue(tokenPath, Fixture.tokenReply(access: access, refresh: "synthetic-refresh-\(access)"))
-        await transport.enqueue(
-            profilePath,
-            token: access,
-            Fixture.profileReply(account: account, organization: organization, email: email)
-        )
+        // An attempt refused before any request scripts no replies, so none
+        // is left over for a later sign-in.
+        if scriptsReplies {
+            await transport.enqueue(tokenPath, Fixture.tokenReply(access: access, refresh: "synthetic-refresh-\(access)"))
+            await transport.enqueue(
+                profilePath,
+                token: access,
+                Fixture.profileReply(account: account, organization: organization, email: email)
+            )
+        }
         let (codes, continuation) = AsyncStream<String>.makeStream(bufferingPolicy: .bufferingNewest(1))
         defer { continuation.finish() }
         return try await accounts.signIn(

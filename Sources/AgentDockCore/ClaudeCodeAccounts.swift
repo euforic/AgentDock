@@ -63,7 +63,8 @@ public struct ClaudeCodeAccountUsage: Identifiable, Equatable, Sendable {
             let reauthentication = [
                 ClaudeCodeUsageMessage.signInExpired,
                 ClaudeCodeUsageMessage.identityMismatch,
-                ClaudeCodeUsageMessage.unreadableSignIn
+                ClaudeCodeUsageMessage.unreadableSignIn,
+                ClaudeCodeUsageMessage.missingProfileScope
             ]
             if let error = limits.errorMessage, reauthentication.contains(error) {
                 return .reauthenticationRequired(error)
@@ -102,6 +103,50 @@ public enum ClaudeCodeUsagePhase: Equatable, Sendable {
     case budgetExhausted(until: Date)
     /// The last fetch failed for another reason.
     case error(String)
+}
+
+/// The account controls a profile's Claude Code card offers. A profile stays
+/// with one Claude account, so a working sign-in offers no Sign In.
+public struct ClaudeCodeAccountControls: Equatable, Sendable {
+    public enum SignIn: Equatable, Sendable {
+        /// The profile has no sign-in; any Claude account may sign in.
+        case anyAccount
+        /// The sign-in must be renewed; only the profile's own account may sign in.
+        case sameAccount
+    }
+
+    /// Nil: the card shows no Sign In.
+    public var signIn: SignIn?
+    public var rename: Bool
+    public var signOut: Bool
+
+    public init(signIn: SignIn? = nil, rename: Bool = false, signOut: Bool = false) {
+        self.signIn = signIn
+        self.rename = rename
+        self.signOut = signOut
+    }
+
+    /// No controls.
+    public static let empty = Self()
+}
+
+extension ClaudeCodeUsagePhase {
+    /// The controls the card shows in this phase.
+    public var accountControls: ClaudeCodeAccountControls {
+        switch self {
+        case .checking, .keychainAccessRequired:
+            return .empty
+        case .signedOut:
+            return ClaudeCodeAccountControls(signIn: .anyAccount)
+        case let .reauthenticationRequired(message) where message == ClaudeCodeUsageMessage.unreadableSignIn:
+            // Its account is unknown, so no sign-in can replace it.
+            return ClaudeCodeAccountControls(signOut: true)
+        case .reauthenticationRequired:
+            return ClaudeCodeAccountControls(signIn: .sameAccount, signOut: true)
+        case .loading, .ok, .rateLimited, .budgetExhausted, .error:
+            return ClaudeCodeAccountControls(rename: true, signOut: true)
+        }
+    }
 }
 
 /// The Claude Code sign-ins of the requested profiles, in the requested order.
@@ -164,6 +209,11 @@ public struct ClaudeCodeMigrationResult: Equatable, Sendable {
 /// a new sign-in touch only that profile. Sign-ins are added only by an
 /// explicit sign-in on a profile's page or by migrating AgentDock's own
 /// earlier items; nothing is discovered from other apps.
+///
+/// A profile is bound to the Claude account it signed in with: signing in
+/// again is accepted only for that account (renewing its tokens), and another
+/// account is refused until the profile signs out. Migration never places a
+/// sign-in on a profile that already has an item, readable or not.
 public actor ClaudeCodeAccounts {
     private let store: any ClaudeLoginAccountStoring
     private let transport: any ClaudeHTTPTransport
@@ -200,8 +250,12 @@ public actor ClaudeCodeAccounts {
     // MARK: - Sign in, rename, and sign out
 
     /// Runs one PKCE sign-in through claude.ai and stores it as this profile's
-    /// sign-in, replacing only this profile's item. Other profiles, even ones
-    /// signed in to the same account, are untouched.
+    /// sign-in. A profile without a sign-in takes any account; a profile bound
+    /// to an account accepts only that account again, which renews its tokens.
+    /// Another account is refused with `.differentAccount` and the profile's
+    /// item is kept. A sign-in that cannot be read refuses every account
+    /// before the browser opens. Other profiles, even ones signed in to the
+    /// same account, are untouched.
     public func signIn(
         profile: ClaudeCodeProfileID,
         progress: @escaping @Sendable (ClaudeSignInProgress) async -> Void,
@@ -211,10 +265,13 @@ public actor ClaudeCodeAccounts {
         signInInProgress = true
         defer { signInInProgress = false }
 
+        try await login(for: profile).checkCanSignIn()
         let signedIn = try await ClaudeSignInFlow(transport: transport).run(
             progress: progress,
             pastedCodes: pastedCodes
         )
+        // Fetched again: the login may have been replaced meanwhile, and the
+        // binding is checked as it is now.
         let profileLogin = self.login(for: profile)
         let account = try await profileLogin.adopt(signedIn)
         return ClaudeCodeAccountUsage(
@@ -412,7 +469,9 @@ public actor ClaudeCodeAccounts {
                     signedInAccounts.insert(tokens.accountKey)
                 }
             } catch ClaudeLoginStoreError.unreadable {
-                // Not a sign-in AgentDock can use; signing in replaces it, and so may migration.
+                // Its account is unknown, but it still binds the profile until
+                // Sign Out, so migration never overwrites it.
+                taken.insert(target.profile)
             } catch ClaudeLoginStoreError.interactionRequired {
                 return ClaudeCodeMigrationResult(outcome: .keychainAccessRequired)
             } catch {

@@ -59,75 +59,6 @@ final class ClaudeUsageClientTests: XCTestCase {
         XCTAssertTrue(restored.boolValue)
     }
 
-    func testOfficialUsageRequiresDesktopLoginEvenWhenCodeCredentialExists() async throws {
-        let directory = FileManager.default.temporaryDirectory
-            .appendingPathComponent(UUID().uuidString, isDirectory: true)
-        let codeHome = directory.appendingPathComponent(".claude", isDirectory: true)
-        try FileManager.default.createDirectory(at: codeHome, withIntermediateDirectories: true)
-        defer { try? FileManager.default.removeItem(at: directory) }
-        try Data(#"{"claudeAiOauth":{"accessToken":"synthetic-token","scopes":["user:profile"]}}"#.utf8)
-            .write(to: codeHome.appendingPathComponent(".credentials.json"))
-
-        let limits = await ClaudeUsageClient().fetchOfficialUsage(
-            claudeUserDataURL: directory.appendingPathComponent("desktop"),
-            allowKeychainInteraction: false,
-            forceRefresh: true
-        )
-        XCTAssertTrue(limits.buckets.isEmpty)
-        XCTAssertTrue(limits.errorMessage?.hasPrefix("Live usage is unavailable.") == true)
-    }
-
-    func testInstalledOfficialUsageWhenEnabled() async throws {
-        guard ProcessInfo.processInfo.environment["AGENTDOCK_LIVE_CLAUDE_USAGE_TEST"] == "1" else {
-            throw XCTSkip("Set AGENTDOCK_LIVE_CLAUDE_USAGE_TEST=1 to validate the signed-in official account.")
-        }
-        let home = FileManager.default.homeDirectoryForCurrentUser
-        let limits = await ClaudeUsageClient().fetchOfficialUsage(
-            claudeUserDataURL: home.appendingPathComponent(
-                "Library/Application Support/Claude",
-                isDirectory: true
-            ),
-            allowKeychainInteraction: false,
-            forceRefresh: true
-        )
-
-        XCTAssertNil(limits.errorMessage)
-        XCTAssertFalse(limits.buckets.isEmpty)
-    }
-
-    func testMapsLiveWindowsScopedModelsAndExtraUsage() throws {
-        let data = Data(#"""
-        {
-          "five_hour":{"utilization":12.5,"resets_at":"2099-01-01T00:00:00.000Z"},
-          "seven_day":{"utilization":41,"resets_at":"2099-01-07T00:00:00Z"},
-          "seven_day_sonnet":{"utilization":7,"resets_at":"2099-01-07T00:00:00.000Z"},
-          "limits":[
-            {"kind":"weekly_scoped","percent":23,"resets_at":"2099-01-07T00:00:00.000Z",
-             "scope":{"model":{"display_name":"Fable"}}},
-            {"kind":"other","percent":99,"scope":{"model":{"display_name":"Ignored"}}}
-          ],
-          "extra_usage":{"is_enabled":true,"used_credits":525,"monthly_limit":2000}
-        }
-        """#.utf8)
-
-        let limits = try ClaudeUsageResponseParser.parse(
-            data,
-            planType: "max",
-            fetchedAt: Date(timeIntervalSince1970: 100)
-        )
-
-        XCTAssertEqual(limits.planType, "max")
-        XCTAssertEqual(limits.fetchedAt, Date(timeIntervalSince1970: 100))
-        XCTAssertEqual(limits.buckets.map(\.id), ["claude", "sonnet", "model-fable"])
-        XCTAssertEqual(limits.buckets[0].primary?.usedPercent, 12.5)
-        XCTAssertEqual(limits.buckets[0].primary?.windowDurationMins, 300)
-        XCTAssertEqual(limits.buckets[0].secondary?.usedPercent, 41)
-        XCTAssertEqual(limits.buckets[0].secondary?.windowDurationMins, 10_080)
-        XCTAssertEqual(limits.buckets[2].name, "Fable")
-        XCTAssertEqual(limits.buckets[2].primary?.usedPercent, 23)
-        XCTAssertEqual(limits.credits?.balance, "$5.25 of $20.00 used")
-    }
-
     func testMissingAndNullWindowsRemainHonest() throws {
         let data = Data(#"""
         {
@@ -137,14 +68,10 @@ final class ClaudeUsageClientTests: XCTestCase {
         }
         """#.utf8)
 
-        let limits = try ClaudeUsageResponseParser.parse(data)
+        let limits = try ClaudeUsageResponseParser.parseClaudeCode(data)
 
         XCTAssertTrue(limits.buckets.isEmpty)
         XCTAssertNil(limits.credits)
-    }
-
-    func testRejectsNonObjectResponse() {
-        XCTAssertThrowsError(try ClaudeUsageResponseParser.parse(Data("[]".utf8)))
     }
 
     func testSuccessfulUsageIsReusableForFiveMinutes() {
@@ -203,16 +130,6 @@ final class ClaudeUsageClientTests: XCTestCase {
         XCTAssertEqual(limits.buckets[1].primary?.resetsAt, try Self.date("2099-01-08T00:00:00Z"))
         XCTAssertNil(limits.buckets[1].secondary)
         XCTAssertNil(limits.credits)
-    }
-
-    func testDesktopProjectionOfSameResponseIsUnchanged() throws {
-        let limits = try ClaudeUsageResponseParser.parse(Self.fixtureA, planType: "max")
-
-        XCTAssertEqual(
-            limits.buckets.map(\.id),
-            ["claude", "model-fable", "model-sonnet", "model-design"]
-        )
-        XCTAssertEqual(limits.credits?.balance, "$5.25 of $20.00 used")
     }
 
     func testClaudeCodeFableFallsBackToLegacySevenDayFable() throws {

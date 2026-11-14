@@ -24,8 +24,12 @@ transcript-copying action.
 ## Data and reset counts
 
 Usage comes directly from the model's existing `ProfileRateLimits` snapshots.
-The Session column shows the shortest reported window (under a day) and the
-Weekly column the longest; other windows remain available in Overview. No
+Codex app rows show their app usage. Claude app rows (Official Claude and
+managed Claude profiles) show no usage and no "Checking usage…" note; Claude
+usage appears on the read-only Claude Code rows, one per signed-in Claude
+profile. The Closest to Limit and Next Usage Reset tiles therefore cover Codex
+and Claude Code windows. The Session column shows the shortest reported window
+(under a day) and the Weekly column the longest; other windows remain available in Overview. No
 account quotas are added together. Meters turn orange at 75 percent and red at
 90 percent. Failed reads mark the account "Usage unavailable" with the reason
 in help, and unreported windows show a dash. Countdowns update locally once per
