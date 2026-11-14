@@ -50,11 +50,8 @@ keep their 8 MiB budget, and activity keeps its configured byte budget plus a
 row limit equal to its `LIMIT`. Text that is not UTF-8, or a missing or mistyped
 required activity column, fails that source instead of being repaired.
 
-Claude's active-organization lookup reads the `lastActiveOrg` cookie from a
-profile's `Cookies` or `Network/Cookies` database through the same reader. It
-passes the profile's user-data root, so a database whose resolved path leaves
-that root is refused, and keeps a 2-second timeout, a 4 KiB output budget, and
-one row. Any query failure yields no organization for that database.
+AgentDock no longer reads Claude Desktop's cookie databases; live Claude limits
+come only from AgentDock's own per-profile Claude sign-ins.
 
 Subprocess waits are event driven. `BoundedSubprocess` watches root exit, pipe
 output, and its deadline with dispatch sources on a private queue, and its async

@@ -154,21 +154,17 @@ AGENTDOCK_INSTALLED_CLAUDE_TEST=1 swift test \
 
 AGENTDOCK_CLAUDE_LIVE_LIFECYCLE=1 swift test \
   --filter ClaudeDesktopTests/testLiveClaudeProfileCanOpenAndCloseWithoutTouchingStock
-
-AGENTDOCK_LIVE_CLAUDE_USAGE_TEST=1 swift test \
-  --filter ClaudeUsageClientTests/testInstalledOfficialUsageWhenEnabled
 ```
-
-The live usage check reads the signed-in Claude Desktop login without Keychain
-interaction, sends one usage request, and asserts only that windows were
-returned.
 
 AgentDock's own Claude sign-in for Claude Code limits never reaches Claude in
 tests. Its tests run the sign-in flow with a pasted synthetic code against a
 scripted in-process transport, a real listener on 127.0.0.1, in-memory
 per-profile token stores, and temporary keychains created with
 `SecKeychainCreate`; they never read the login Keychain or reach the internet.
-They cover signing profiles in, replacing one profile's sign-in, renaming, and
+They cover signing profiles in, renewing a profile's sign-in with the same
+account, refusing another account (also after an expiry and for an unreadable
+item) with the item kept, the card controls of every phase (no Sign In for a
+working sign-in) and the model refusing to start one, renaming, and
 signing out per profile with other profiles untouched, removing a profile's
 sign-in when the profile is removed or deleted, migrating earlier
 account-keyed and single items onto profiles (name and email matching, the
@@ -177,9 +173,10 @@ writes, read-backs, and deletes), every card state, each profile page's own
 model state, Home's per-profile rows, per-account cooldowns and budgets shared
 by profiles on the same account, staggered starts, and the concurrency limits.
 Check manually in a built app: the browser sign-in and the pasted-code path on
-Official Claude and on a managed Claude profile, switching a profile to another
-account, migration of existing sign-ins, relaunch without a prompt, Sign Out,
-and deleting a signed-in profile.
+Official Claude and on a managed Claude profile, that a signed-in profile shows
+no **Sign In to Claude…**, that signing an expired profile in with another
+account is refused, migration of existing sign-ins, relaunch without a prompt,
+Sign Out, and deleting a signed-in profile.
 
 The installed Codex configuration check validates the signed app and runs its
 bundled CLI against a temporary managed MCP configuration without account data.

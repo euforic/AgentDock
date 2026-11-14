@@ -56,7 +56,10 @@ mapped to a closed tier (`free`, `plus`, `pro`, `max`, `team`, `business`,
 `enterprise`, `education`, or `unknown`). Usage is reduced to bounded percent
 bands and only the highest observed primary and secondary window per profile is
 used. Exact percentages, balances, reset times, limit names, and model scopes
-never leave the app.
+never leave the app. `profile_inventory`, `usage_snapshot`, and the
+`rateLimitUnavailable` error cover Codex usage only. Claude live limits come
+only from AgentDock's own Claude Code sign-ins, whose results are never sent,
+so current releases emit none of these events with the `claude` provider.
 
 ## Event Catalog
 

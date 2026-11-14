@@ -1,22 +1,9 @@
-import CommonCrypto
 import CryptoKit
 import Foundation
-import LocalAuthentication
-import Security
 
+/// Live Claude limits come only from AgentDock's own per-profile Claude Code
+/// sign-ins. Claude Desktop's and Claude Code's own credentials are never read.
 public protocol ClaudeUsageFetching: Sendable {
-    func fetchOfficialUsage(
-        claudeUserDataURL: URL,
-        allowKeychainInteraction: Bool,
-        forceRefresh: Bool
-    ) async -> ProfileRateLimits
-
-    func fetchManagedUsage(
-        claudeUserDataURL: URL,
-        allowKeychainInteraction: Bool,
-        forceRefresh: Bool
-    ) async -> ProfileRateLimits
-
     /// Live Claude Code limits for each profile's own sign-in, in the given
     /// order. One profile's failure is reported on its own entry and never
     /// hides another.
@@ -105,8 +92,10 @@ enum ClaudeUsageRefreshPolicy {
     }
 }
 
+/// Which view of the usage response is shown. Only the Claude Code projection
+/// remains; its raw value is part of the persisted cooldown keys and the cache
+/// keys, so it must not change.
 enum ClaudeUsageProjection: String, Sendable {
-    case desktop
     case claudeCode
 }
 
@@ -131,7 +120,6 @@ public actor ClaudeUsageClient: ClaudeUsageFetching {
 
     private let transport: any ClaudeHTTPTransport
     private let claudeCodeAccounts: ClaudeCodeAccounts?
-    private var credentialReader: ClaudeCredentialReader
     private let cooldowns: ClaudeUsageCooldownStore
     private var verifiedIdentities = ClaudeIdentityVerificationLedger()
     private var cache: [String: CachedUsage] = [:]
@@ -150,14 +138,12 @@ public actor ClaudeUsageClient: ClaudeUsageFetching {
     public init(claudeCodeAccounts: ClaudeCodeAccounts? = nil) {
         self.init(
             cooldowns: ClaudeUsageCooldownStore(),
-            keychain: nil,
             claudeCodeAccounts: claudeCodeAccounts
         )
     }
 
     init(
         cooldowns: ClaudeUsageCooldownStore,
-        keychain: SecKeychain? = nil,
         transport: any ClaudeHTTPTransport = URLSessionClaudeHTTPTransport(),
         claudeCodeAccounts: ClaudeCodeAccounts? = nil,
         maximumConcurrentClaudeCodeRequests: Int = ClaudeUsageRefreshPolicy.maximumConcurrentClaudeCodeRequests,
@@ -165,7 +151,6 @@ public actor ClaudeUsageClient: ClaudeUsageFetching {
     ) {
         self.transport = transport
         self.claudeCodeAccounts = claudeCodeAccounts
-        credentialReader = ClaudeCredentialReader(keychain: keychain)
         self.cooldowns = cooldowns
         claudeCodeThrottle = ClaudeRequestThrottle(
             maximumConcurrent: maximumConcurrentClaudeCodeRequests,
@@ -173,34 +158,10 @@ public actor ClaudeUsageClient: ClaudeUsageFetching {
         )
     }
 
-    public func fetchOfficialUsage(
-        claudeUserDataURL: URL,
-        allowKeychainInteraction: Bool,
-        forceRefresh: Bool = false
-    ) async -> ProfileRateLimits {
-        // The official row represents Desktop, whose account can differ from Claude Code.
-        let credential = credentialReader.readDesktopCredential(
-            userDataURL: claudeUserDataURL,
-            allowKeychainInteraction: allowKeychainInteraction
-        )
-        return await fetch(credential, projection: .desktop, forceRefresh: forceRefresh)
-    }
-
-    public func fetchManagedUsage(
-        claudeUserDataURL: URL,
-        allowKeychainInteraction: Bool,
-        forceRefresh: Bool = false
-    ) async -> ProfileRateLimits {
-        let credential = credentialReader.readDesktopCredential(
-            userDataURL: claudeUserDataURL,
-            allowKeychainInteraction: allowKeychainInteraction
-        )
-        return await fetch(credential, projection: .desktop, forceRefresh: forceRefresh)
-    }
-
     /// Live limits for each profile's own Claude sign-in, each of which can
-    /// differ from Desktop. Claude Code's own login is never read. Profiles
-    /// are fetched independently; the gate, 429 cooldown, and hourly budget
+    /// differ from Claude Desktop's account. Neither Claude Desktop's nor
+    /// Claude Code's own login is read. Profiles are fetched independently;
+    /// the gate, 429 cooldown, and hourly budget
     /// belong to the Claude account, so two profiles on the same account
     /// share them, and one profile's failure never blocks another.
     public func fetchClaudeCodeUsage(
@@ -270,7 +231,6 @@ public actor ClaudeUsageClient: ClaudeUsageFetching {
             defer { claudeCodeAccountLocks.release(account) }
             return await fetch(
                 tokens.usageCredential,
-                projection: .claudeCode,
                 forceRefresh: forceRefresh,
                 login: login
             )
@@ -348,38 +308,29 @@ public actor ClaudeUsageClient: ClaudeUsageFetching {
             .key
     }
 
-    /// Claude Code entries start with the account key, so one account's
-    /// results can be dropped without touching another's.
-    private static func cacheKey(
-        _ credential: ClaudeUsageCredential,
-        projection: ClaudeUsageProjection
-    ) -> String {
-        guard projection == .claudeCode, let identity = credential.identity else {
-            return "\(projection.rawValue)|\(credential.cacheKey)"
+    /// Entries start with the account key, so one account's results can be
+    /// dropped without touching another's.
+    private static func cacheKey(_ credential: ClaudeUsageCredential) -> String {
+        guard let identity = credential.identity else {
+            return "\(ClaudeUsageProjection.claudeCode.rawValue)|\(credential.cacheKey)"
         }
         return "\(claudeCodeKeyPrefix)\(identity.accountKey)|\(credential.cacheKey)"
     }
 
     private func fetch(
-        _ credential: ClaudeUsageCredential?,
-        projection: ClaudeUsageProjection,
+        _ credential: ClaudeUsageCredential,
         forceRefresh: Bool,
-        login: ClaudeCodeLogin? = nil
+        login: ClaudeCodeLogin
     ) async -> ProfileRateLimits {
-        guard let credential else {
-            return ProfileRateLimits(
-                errorMessage: "Live usage is unavailable. Open Claude and sign in, then refresh. If macOS asks for Keychain access, choose Always Allow to retain access."
-            )
-        }
         guard credential.scopes.isEmpty || credential.scopes.contains("user:profile") else {
             return ProfileRateLimits(
                 planType: credential.subscriptionType,
-                errorMessage: "This login cannot read live usage. Sign in again to grant profile access."
+                errorMessage: ClaudeCodeUsageMessage.missingProfileScope
             )
         }
 
-        let key = Self.cacheKey(credential, projection: projection)
-        let cooldownKey = credential.cooldownKey(for: projection)
+        let key = Self.cacheKey(credential)
+        let cooldownKey = credential.cooldownKey(for: .claudeCode)
         let now = Date()
         let cached = cache[key]
         // Matches the previous reuse rule: only a success with no cooldown is fresh.
@@ -408,16 +359,16 @@ public actor ClaudeUsageClient: ClaudeUsageFetching {
             }
         }
 
-        // Claude Code accounts also have an hourly budget each.
-        if projection == .claudeCode, !claudeCodeBudget.reserve(key: cooldownKey, now: now) {
+        // Each account also has an hourly budget.
+        if !claudeCodeBudget.reserve(key: cooldownKey, now: now) {
             return budgetLimitedLimits(for: key, credential: credential)
         }
 
         refreshWaiters[key] = []
-        // At most two Claude Code accounts fetch at once, with staggered starts.
-        if projection == .claudeCode { await claudeCodeThrottle.acquire() }
-        let limits = await fetchUncached(credential, key: key, projection: projection, login: login)
-        if projection == .claudeCode { claudeCodeThrottle.release() }
+        // At most two accounts fetch at once, with staggered starts.
+        await claudeCodeThrottle.acquire()
+        let limits = await fetchUncached(credential, key: key, login: login)
+        claudeCodeThrottle.release()
         let waiters = refreshWaiters.removeValue(forKey: key) ?? []
         waiters.forEach { $0.resume(returning: limits) }
         return limits
@@ -426,18 +377,13 @@ public actor ClaudeUsageClient: ClaudeUsageFetching {
     private func fetchUncached(
         _ credential: ClaudeUsageCredential,
         key: String,
-        projection: ClaudeUsageProjection,
-        login: ClaudeCodeLogin?
+        login: ClaudeCodeLogin
     ) async -> ProfileRateLimits {
         var credential = credential
         var key = key
         do {
             var read = try await readUsage(credential)
             if case .unauthorized = read {
-                // Desktop tokens belong to Claude Desktop and are never renewed here.
-                guard projection == .claudeCode, let login else {
-                    return recordRequestFailure(401, key: key, credential: credential)
-                }
                 verifiedIdentities.invalidate(credential.cacheKey)
                 switch await login.renewAfterUnauthorized(
                     rejectedAccessToken: credential.accessToken
@@ -447,7 +393,7 @@ public actor ClaudeUsageClient: ClaudeUsageFetching {
                     // this result; the old key's cache entry is dropped.
                     cache.removeValue(forKey: key)
                     credential = renewed.usageCredential
-                    key = Self.cacheKey(credential, projection: projection)
+                    key = Self.cacheKey(credential)
                     read = try await readUsage(credential)
                     if case .unauthorized = read {
                         verifiedIdentities.invalidate(credential.cacheKey)
@@ -477,7 +423,7 @@ public actor ClaudeUsageClient: ClaudeUsageFetching {
             guard case let .response(data, response) = read else {
                 return recordRequestFailure(401, key: key, credential: credential)
             }
-            let cooldownKey = credential.cooldownKey(for: projection)
+            let cooldownKey = credential.cooldownKey(for: .claudeCode)
             if response.statusCode == 429 {
                 return recordRateLimit(
                     key: key,
@@ -493,18 +439,10 @@ public actor ClaudeUsageClient: ClaudeUsageFetching {
                     credential: credential
                 )
             }
-            var limits: ProfileRateLimits
-            if projection == .claudeCode {
-                limits = try ClaudeUsageResponseParser.parseClaudeCode(
-                    data,
-                    planType: credential.subscriptionType
-                )
-            } else {
-                limits = try ClaudeUsageResponseParser.parse(
-                    data,
-                    planType: credential.subscriptionType
-                )
-            }
+            var limits = try ClaudeUsageResponseParser.parseClaudeCode(
+                data,
+                planType: credential.subscriptionType
+            )
             limits.fetchedAt = Date()
             cache[key] = CachedUsage(limits: limits, retryAfter: nil)
             cooldowns.clear(key: cooldownKey)
@@ -512,15 +450,11 @@ public actor ClaudeUsageClient: ClaudeUsageFetching {
         } catch ClaudeUsageClientError.identityMismatch {
             cache.removeValue(forKey: key)
             verifiedIdentities.invalidate(credential.cacheKey)
-            return ProfileRateLimits(
-                errorMessage: projection == .claudeCode
-                    ? ClaudeCodeUsageMessage.identityMismatch
-                    : "The Claude login no longer matches this account. Open Claude and sign in, then refresh."
-            )
+            return ProfileRateLimits(errorMessage: ClaudeCodeUsageMessage.identityMismatch)
         } catch ClaudeUsageClientError.rateLimited(let retryAfter) {
             return recordRateLimit(
                 key: key,
-                cooldownKey: credential.cooldownKey(for: projection),
+                cooldownKey: credential.cooldownKey(for: .claudeCode),
                 retryAfter: retryAfter,
                 credential: credential
             )
@@ -756,102 +690,6 @@ struct ClaudeUsageCredential: Equatable, Sendable {
 }
 
 enum ClaudeUsageResponseParser {
-    static func parse(
-        _ data: Data,
-        planType: String? = nil,
-        fetchedAt: Date = Date()
-    ) throws -> ProfileRateLimits {
-        guard let root = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
-            throw ClaudeUsageClientError.invalidResponse
-        }
-
-        var buckets: [RateLimitBucket] = []
-        let session = window(root["five_hour"], minutes: 300)
-        let weekly = window(root["seven_day"], minutes: 10_080)
-        if session != nil || weekly != nil {
-            buckets.append(RateLimitBucket(
-                id: "claude",
-                name: "Claude",
-                primary: session,
-                secondary: weekly
-            ))
-        }
-        if let sonnet = window(root["seven_day_sonnet"], minutes: 10_080) {
-            buckets.append(RateLimitBucket(
-                id: "sonnet",
-                name: "Sonnet",
-                primary: sonnet,
-                secondary: nil
-            ))
-        }
-        if let limits = root["limits"] as? [[String: Any]] {
-            for limit in limits where limit["kind"] as? String == "weekly_scoped" {
-                guard let scope = limit["scope"] as? [String: Any],
-                      let model = scope["model"] as? [String: Any],
-                      let name = nonempty(model["display_name"] as? String),
-                      let percent = number(limit["percent"])
-                else { continue }
-                let reset = date(limit["resets_at"])
-                buckets.append(RateLimitBucket(
-                    id: "model-\(name.lowercased().replacingOccurrences(of: " ", with: "-"))",
-                    name: name,
-                    primary: RateLimitWindowUsage(
-                        usedPercent: percent,
-                        windowDurationMins: 10_080,
-                        resetsAt: reset
-                    ),
-                    secondary: nil
-                ))
-            }
-        }
-
-        return ProfileRateLimits(
-            planType: planType,
-            buckets: buckets,
-            credits: credits(root["extra_usage"]),
-            fetchedAt: fetchedAt
-        )
-    }
-
-    private static func window(_ value: Any?, minutes: Int) -> RateLimitWindowUsage? {
-        guard let object = value as? [String: Any],
-              let percent = number(object["utilization"])
-        else { return nil }
-        return RateLimitWindowUsage(
-            usedPercent: percent,
-            windowDurationMins: minutes,
-            resetsAt: date(object["resets_at"])
-        )
-    }
-
-    private static func credits(_ value: Any?) -> CreditsUsage? {
-        guard let object = value as? [String: Any], object["is_enabled"] as? Bool == true,
-              let usedCents = number(object["used_credits"])
-        else { return nil }
-        let used = usedCents / 100
-        if let limitCents = number(object["monthly_limit"]), limitCents > 0 {
-            return CreditsUsage(
-                hasCredits: true,
-                unlimited: false,
-                balance: String(format: "$%.2f of $%.2f used", used, limitCents / 100)
-            )
-        }
-        return CreditsUsage(
-            hasCredits: true,
-            unlimited: true,
-            balance: String(format: "$%.2f used", used)
-        )
-    }
-
-    private static func number(_ value: Any?) -> Double? {
-        switch value {
-        case let number as NSNumber: number.doubleValue
-        case let number as Double: number
-        case let number as Int: Double(number)
-        default: nil
-        }
-    }
-
     private static func date(_ value: Any?) -> Date? {
         guard let text = nonempty(value as? String) else { return nil }
         if let date = try? Date.ISO8601FormatStyle(includingFractionalSeconds: true).parse(text) {
@@ -966,279 +804,6 @@ extension ClaudeUsageResponseParser {
     }
 }
 
-struct ClaudeCredentialReader {
-    private static let safeStorageService = "Claude Safe Storage"
-    private static let safeStorageAccount = "Claude Key"
-    private static let cacheKeys = ["oauth:tokenCacheV2", "oauth:tokenCache"]
-    // One reader lives on ClaudeUsageClient's actor and shares this Desktop key
-    // across profiles. Tokens and account identity are still reread for each root.
-    private var desktopKey: Data?
-    private let keychain: SecKeychain?
-
-    init(keychain: SecKeychain? = nil) {
-        self.keychain = keychain
-    }
-
-    mutating func readDesktopCredential(
-        userDataURL: URL,
-        allowKeychainInteraction: Bool
-    ) -> ClaudeUsageCredential? {
-        let configURL = userDataURL.appendingPathComponent("config.json")
-        guard let data = try? BoundedFileReader.data(
-                  at: configURL,
-                  maximumBytes: LocalControlFileLimit.providerCredentialState
-              ),
-              let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              Self.cacheKeys.contains(where: { root[$0] is String }),
-              let key = safeStorageKey(allowKeychainInteraction: allowKeychainInteraction)
-        else { return nil }
-
-        let caches = Self.cacheKeys.compactMap { cacheKey -> [String: Any]? in
-            guard let encoded = root[cacheKey] as? String,
-                  let encrypted = Data(base64Encoded: encoded),
-                  let plaintext = try? decrypt(encrypted, key: key)
-            else { return nil }
-            return try? JSONSerialization.jsonObject(with: plaintext) as? [String: Any]
-        }
-        let organizations = Set(caches.flatMap(desktopOrganizations))
-        guard let activeOrganization = activeOrganization(userDataURL: userDataURL, key: key)
-            ?? (organizations.count == 1 ? organizations.first : nil)
-        else { return nil }
-
-        guard let identity = ClaudeAccountIdentity.desktop(
-            accountUUID: root["lastKnownAccountUuid"] as? String,
-            organizationUUID: activeOrganization
-        ) else { return nil }
-        for cache in caches {
-            guard let credential = selectDesktopCredential(
-                cache,
-                organization: activeOrganization,
-                identity: identity
-            ) else { continue }
-            return credential
-        }
-        return nil
-    }
-
-    private func selectDesktopCredential(
-        _ cache: [String: Any],
-        organization: String,
-        identity: ClaudeAccountIdentity?
-    ) -> ClaudeUsageCredential? {
-        let now = Date().timeIntervalSince1970 * 1_000
-        var candidates: [(rank: Int, expiry: Double, credential: ClaudeUsageCredential)] = []
-        for (key, raw) in cache {
-            guard let metadata = desktopCacheMetadata(key),
-                  metadata.organization.caseInsensitiveCompare(organization) == .orderedSame,
-                  metadata.host == "https://api.anthropic.com",
-                  metadata.scopes.contains("user:profile"),
-                  let entry = raw as? [String: Any],
-                  let token = nonempty(entry["token"] as? String),
-                  let expiry = number(entry["expiresAt"]),
-                  expiry > now + 120_000
-            else { continue }
-            let fullScope = metadata.scopes.contains("user:inference")
-            let productionClient = metadata.clientID == "9d1c250a-e61b-44d9-88ed-5944d1962f5e"
-            let rank = (productionClient && fullScope ? 10_000 : 0)
-                + (fullScope ? 1_000 : 0) + metadata.scopes.count
-            candidates.append((
-                rank,
-                expiry,
-                ClaudeUsageCredential(
-                    accessToken: token,
-                    expiresAt: expiry,
-                    subscriptionType: nonempty(entry["subscriptionType"] as? String),
-                    scopes: Set(metadata.scopes),
-                    identity: identity
-                )
-            ))
-        }
-        return candidates.max {
-            $0.rank == $1.rank ? $0.expiry < $1.expiry : $0.rank < $1.rank
-        }?.credential
-    }
-
-    private func desktopCacheMetadata(
-        _ value: String
-    ) -> (clientID: String, organization: String, host: String, scopes: [String])? {
-        let marker = ":https://api.anthropic.com:"
-        guard let range = value.range(of: marker) else { return nil }
-        let prefix = value[..<range.lowerBound]
-        guard let separator = prefix.firstIndex(of: ":") else { return nil }
-        return (
-            String(prefix[..<separator]),
-            String(prefix[prefix.index(after: separator)...]).lowercased(),
-            "https://api.anthropic.com",
-            value[range.upperBound...].split(whereSeparator: \.isWhitespace).map(String.init)
-        )
-    }
-
-    private func desktopOrganizations(_ cache: [String: Any]) -> [String] {
-        cache.keys.compactMap { desktopCacheMetadata($0)?.organization }
-    }
-
-    func activeOrganization(userDataURL: URL, key: Data) -> String? {
-        let cookieURLs = [
-            userDataURL.appendingPathComponent("Cookies"),
-            userDataURL.appendingPathComponent("Network/Cookies")
-        ]
-        // A non-empty plain value wins; otherwise the encrypted value is used.
-        let query = """
-        SELECT host_key, CAST(value AS TEXT), CAST(encrypted_value AS BLOB)
-        FROM cookies
-        WHERE name = 'lastActiveOrg' AND host_key IN ('.claude.ai', 'claude.ai')
-        ORDER BY last_update_utc DESC LIMIT 1;
-        """
-        for cookieURL in cookieURLs where FileManager.default.fileExists(atPath: cookieURL.path) {
-            guard let row = (try? SQLiteReadOnly.query(
-                database: cookieURL,
-                under: userDataURL,
-                sql: query,
-                timeout: 2,
-                maximumOutputBytes: 4_096,
-                maximumRows: 1
-            ))?.first,
-                  row.count == 3,
-                  case let .text(host) = row[0]
-            else { continue }
-            let value: Data
-            if case let .text(plain) = row[1], !plain.isEmpty {
-                value = Data(plain.utf8)
-            } else if case let .blob(stored) = row[2],
-                      let decrypted = try? decrypt(stored, key: key)
-            {
-                let hostHash = Data(SHA256.hash(data: Data(host.utf8)))
-                guard decrypted.starts(with: hostHash) else { continue }
-                value = decrypted.dropFirst(hostHash.count)
-            } else {
-                continue
-            }
-            guard let organization = String(data: value, encoding: .utf8),
-                  UUID(uuidString: organization) != nil
-            else { continue }
-            return organization.lowercased()
-        }
-        return nil
-    }
-
-    private mutating func safeStorageKey(allowKeychainInteraction: Bool) -> Data? {
-        if let desktopKey { return desktopKey }
-        guard let password = readKeychainPassword(
-            service: Self.safeStorageService,
-            account: Self.safeStorageAccount,
-            allowKeychainInteraction: allowKeychainInteraction
-        ), let key = try? deriveKey(password: password) else { return nil }
-        desktopKey = key
-        return key
-    }
-
-    private func readKeychainPassword(
-        service: String,
-        account: String?,
-        allowKeychainInteraction: Bool
-    ) -> String? {
-        var query: [String: Any] = [
-            kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: service,
-            kSecMatchLimit as String: kSecMatchLimitOne,
-            kSecReturnData as String: true
-        ]
-        if let account { query[kSecAttrAccount as String] = account }
-        if let keychain { query[kSecMatchSearchList as String] = [keychain] }
-        if !allowKeychainInteraction {
-            let context = LAContext()
-            context.interactionNotAllowed = true
-            query[kSecUseAuthenticationContext as String] = context
-        }
-        return ClaudeKeychainAccess.withInteractionAllowed(allowKeychainInteraction) {
-            var result: CFTypeRef?
-            guard SecItemCopyMatching(query as CFDictionary, &result) == errSecSuccess,
-                  let data = result as? Data,
-                  let value = String(data: data, encoding: .utf8)
-            else { return nil }
-            return nonempty(value)
-        }
-    }
-
-    private func deriveKey(password: String) throws -> Data {
-        let password = Data(password.utf8)
-        let salt = Data("saltysalt".utf8)
-        var key = Data(count: kCCKeySizeAES128)
-        let count = key.count
-        let status = key.withUnsafeMutableBytes { keyBytes in
-            password.withUnsafeBytes { passwordBytes in
-                salt.withUnsafeBytes { saltBytes in
-                    CCKeyDerivationPBKDF(
-                        CCPBKDFAlgorithm(kCCPBKDF2),
-                        passwordBytes.bindMemory(to: Int8.self).baseAddress,
-                        password.count,
-                        saltBytes.bindMemory(to: UInt8.self).baseAddress,
-                        salt.count,
-                        CCPseudoRandomAlgorithm(kCCPRFHmacAlgSHA1),
-                        1_003,
-                        keyBytes.bindMemory(to: UInt8.self).baseAddress,
-                        count
-                    )
-                }
-            }
-        }
-        guard status == kCCSuccess else { throw ClaudeUsageClientError.invalidCredential }
-        return key
-    }
-
-    private func decrypt(_ encrypted: Data, key: Data) throws -> Data {
-        guard encrypted.count > 3,
-              encrypted.prefix(3) == Data("v10".utf8),
-              key.count == kCCKeySizeAES128
-        else { throw ClaudeUsageClientError.invalidCredential }
-        let payload = encrypted.dropFirst(3)
-        let iv = Data(repeating: 0x20, count: kCCBlockSizeAES128)
-        var output = Data(count: payload.count + kCCBlockSizeAES128)
-        var outputLength = 0
-        let capacity = output.count
-        let status = output.withUnsafeMutableBytes { outputBytes in
-            payload.withUnsafeBytes { payloadBytes in
-                key.withUnsafeBytes { keyBytes in
-                    iv.withUnsafeBytes { ivBytes in
-                        CCCrypt(
-                            CCOperation(kCCDecrypt),
-                            CCAlgorithm(kCCAlgorithmAES),
-                            CCOptions(kCCOptionPKCS7Padding),
-                            keyBytes.baseAddress,
-                            key.count,
-                            ivBytes.baseAddress,
-                            payloadBytes.baseAddress,
-                            payload.count,
-                            outputBytes.baseAddress,
-                            capacity,
-                            &outputLength
-                        )
-                    }
-                }
-            }
-        }
-        guard status == kCCSuccess else { throw ClaudeUsageClientError.invalidCredential }
-        output.count = outputLength
-        return output
-    }
-
-    private func number(_ value: Any?) -> Double? {
-        switch value {
-        case let value as NSNumber: value.doubleValue
-        case let value as Double: value
-        case let value as Int: Double(value)
-        default: nil
-        }
-    }
-
-    private func nonempty(_ value: String?) -> String? {
-        guard let value = value?.trimmingCharacters(in: .whitespacesAndNewlines), !value.isEmpty else {
-            return nil
-        }
-        return value
-    }
-}
-
 private struct ClaudeAccountProfile: Decodable {
     struct Identity: Decodable { var uuid: String }
     var account: Identity
@@ -1248,26 +813,8 @@ private struct ClaudeAccountProfile: Decodable {
 enum ClaudeUsageClientError: Error {
     case invalidResponse
     case responseTooLarge
-    case invalidCredential
     case identityMismatch
     case unauthorized
     case rateLimited(retryAfter: String?)
     case requestFailed(Int)
-}
-
-// Claude uses the file-based login Keychain. LAContext only suppresses UI for
-// Data Protection items; legacy Keychain access needs the process-level flag.
-// Serialize the synchronous read and restore the prior flag before returning.
-enum ClaudeKeychainAccess {
-    private static let lock = NSLock()
-
-    static func withInteractionAllowed<T>(_ allowed: Bool, operation: () -> T?) -> T? {
-        lock.lock()
-        defer { lock.unlock() }
-        var previous = DarwinBoolean(false)
-        guard SecKeychainGetUserInteractionAllowed(&previous) == errSecSuccess else { return nil }
-        guard SecKeychainSetUserInteractionAllowed(allowed) == errSecSuccess else { return nil }
-        defer { _ = SecKeychainSetUserInteractionAllowed(previous.boolValue) }
-        return operation()
-    }
 }

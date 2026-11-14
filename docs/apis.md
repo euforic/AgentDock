@@ -133,14 +133,11 @@ rate-limit event. Coverage prevents partially available token data from being
 mistaken for complete usage.
 
 Live Claude limits use `GET https://api.anthropic.com/api/oauth/usage` with the
-selected provider login's in-memory access token. The response maps five-hour,
-weekly, model-scoped, reset, and extra-usage fields into `ProfileRateLimits`.
-AgentDock verifies account and organization identity through the sibling OAuth
-profile endpoint before assigning a response to an account-scoped source. It
-does not persist, rotate, refresh, or log provider credentials. The exception is
-AgentDock's own Claude sign-ins for each Claude profile's Claude Code section,
+access token of AgentDock's own Claude sign-in for that Claude profile,
 described below, whose tokens AgentDock stores and renews, one Keychain item
-per profile.
+per profile. AgentDock verifies account and organization identity through the
+sibling OAuth profile endpoint before assigning a response to a profile. It
+does not read Claude Desktop's or Claude Code's credentials.
 
 ### AgentDock Claude sign-in
 
@@ -171,8 +168,12 @@ client ID `9d1c250a-e61b-44d9-88ed-5944d1962f5e`.
   `claude-code-profile:<profile key>` under the service
   `dev.euforic.agentdock.claude-login`, where the profile key is `official`
   (Official Claude, the default profile) or the managed profile's lowercased
-  UUID. It holds whichever account the profile signed in with; signing that
-  profile in again replaces only it.
+  UUID. It holds whichever account the profile signed in with. The profile
+  stays with that account: a later sign-in is saved only when its account UUID
+  matches (renewing the tokens of this item only); another account is refused
+  with `ClaudeSignInError.differentAccount` and the item is kept. An item that
+  cannot be read refuses every sign-in (`ClaudeSignInError.unreadableSignIn`)
+  until Sign Out.
 - **Account key:** the first 16 bytes of
   `SHA-256("agentdock.claude-login|<account uuid>|<organization uuid>")`
   (lowercased UUIDs) as 32 lowercase hex characters. It identifies the account
@@ -185,8 +186,8 @@ client ID `9d1c250a-e61b-44d9-88ed-5944d1962f5e`.
   `customName` and `addedAt`. Payloads without the optional fields, written by
   earlier versions, still load.
 
-The Claude Code section uses a separate projection of the same response. It
-maps only `five_hour` (5-hour, absent when null), `seven_day` (Weekly), and
+The Claude Code projection is the only mapping of the response. It maps only
+`five_hour` (5-hour, absent when null), `seven_day` (Weekly), and
 Fable's weekly percentage, with no other model rows and no extra usage. Fable
 comes from `limits[]` entries whose `kind` is `weekly_scoped`, whose `group` is
 missing, null, or `weekly`, whose `percent` is a non-negative JSON number (not a
@@ -194,7 +195,8 @@ boolean or string), and whose `scope.model` is Fable: an `id` containing
 `fable`, or a trimmed `display_name` equal to `Fable` or starting with
 `Fable ` (case-insensitive). The highest matching percentage wins, with its
 `resets_at`. Without a matching entry, the legacy `seven_day_fable` window is
-used. The Desktop projection is unchanged.
+used. The projection name `claudeCode` stays part of the cache and cooldown
+keys, so cooldowns saved by earlier versions keep applying.
 
 A 429 from the usage or profile endpoint honors `Retry-After` as delta seconds
 or an HTTP-date (`Wed, 21 Oct 2099 07:28:00 GMT`). The cooldown is at least

@@ -120,26 +120,14 @@ random identifier. The public project
 token is release configuration, not a credential; no private PostHog key
 belongs in the app. See the [complete catalog](analytics.md).
 
-Local Claude usage summaries do not require credentials. Live subscription
-limits are an explicit provider-access boundary: AgentDock reads Claude Desktop
-OAuth access tokens and the active Desktop organization from provider-owned
-Keychain and local state, then calls Anthropic's OAuth profile and usage
-endpoints. Desktop and managed Desktop tokens are held only for the request;
-AgentDock never copies them into its own storage, refreshes or rotates them,
-includes them in analytics, or logs them. The Desktop decryption key is retained only in memory
-for the usage client's lifetime and reused across official and managed profiles.
-Each profile's tokens and account identity are still read afresh from its files.
-Background reads forbid Keychain interaction, including legacy login-Keychain
-prompts. A manual refresh can request access; choosing **Always Allow** lets
-macOS retain that grant for subsequent launches of the signed app. Managed profiles resolve credentials
-only from their own Desktop user-data roots. The official Claude Desktop usage
-row still uses Desktop credentials exclusively, so AgentDock's separate Claude
-sign-in cannot replace the displayed Desktop account. Desktop usage requires a valid
-account and organization identity, and responses are verified against that
-identity before display. An explicit identity mismatch clears the corresponding
-cached quota instead of showing stale data. Active-organization cookie database
-reads run in process through the read-only database reader and enforce the same
-root containment and symlink checks as other databases.
+Local Claude usage summaries do not require credentials. Live Claude
+subscription limits come only from each Claude profile's own AgentDock sign-in
+(below). AgentDock does not read Claude Desktop's OAuth token cache, its
+`Claude Safe Storage` Keychain item, or its cookies, for the official
+installation or for managed profiles. Live usage responses are verified against
+the sign-in's account and organization identity before display; an explicit
+identity mismatch clears the corresponding cached quota instead of showing
+stale data.
 
 ## Claude Sign-In for Claude Code Limits
 
@@ -169,9 +157,19 @@ or imports accounts from other apps.
   means a profile can never hold two sign-ins, and no separate mapping file can
   drift from the Keychain. Nothing about these sign-ins is kept in preferences
   or `profiles.json`.
-- Signing a profile in again replaces only that profile's item; no duplicate
-  is created and no other profile's item is touched, even one signed in to the
-  same account.
+- A profile stays with the Claude account it signed in with. Its card offers
+  **Sign In to Claude…** only while it has no sign-in, or to renew an expired
+  or no-longer-matching sign-in. The binding is enforced in Core, not only in
+  the UI: a completed sign-in is saved only when the profile has no sign-in or
+  the new account UUID equals the bound one (renewing the tokens of that
+  profile's item only; no duplicate is created and no other profile's item is
+  touched, even one signed in to the same account). A different account is
+  refused and the item is kept. After Claude refuses a sign-in its item is
+  deleted, but the profile stays bound to that account in memory until
+  **Sign Out** or relaunch. An item AgentDock cannot read binds the profile to
+  an unknown account: every sign-in is refused before the browser opens and the
+  card offers only **Sign Out**. A sign-in also does not start when reading the
+  profile's item needs Keychain access that was refused.
 - Listing reads only the attributes of items under AgentDock's own service.
 - Background reads and writes forbid Keychain interaction. Only Sign In,
   Rename, Sign Out, removing a profile, removing unlinked sign-ins, and a
@@ -195,7 +193,9 @@ or imports accounts from other apps.
   written and read back before the old item is deleted, and any failure keeps
   the old item for the next launch. Sign-ins that no profile can take are kept
   untouched until placed or removed by the user. An unreadable old item is left
-  untouched. See [Upgrade migration](upgrade-migration.md#claude-code-sign-ins).
+  untouched, and a profile whose own item exists, readable or not, is never
+  given another sign-in. See
+  [Upgrade migration](upgrade-migration.md#claude-code-sign-ins).
 - Tokens, authorization codes, and the PKCE verifier are never logged or sent
   to analytics, and Claude Code results are not sent to analytics.
 - For limits, AgentDock never reads Claude Code's `Claude Code-credentials`

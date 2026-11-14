@@ -141,6 +141,10 @@ struct DashboardSource: Identifiable {
     /// Claude Code sign-ins are not app accounts, so they are not counted.
     var countsAsAccount: Bool { kind != .claudeCode }
 
+    /// True when the row's own app usage is read. Claude app rows show no
+    /// usage: Claude usage is on the Claude Code rows, one per signed-in profile.
+    var readsAppUsage: Bool { product == .codex && kind != .claudeCode }
+
     var windows: [HomeUsageWindow] {
         guard let limits, limits.errorMessage == nil else { return [] }
         return HomeUsageWindow.windows(in: limits)
@@ -171,7 +175,7 @@ struct DashboardSource: Identifiable {
                 product: product,
                 kind: .official,
                 name: "Official \(product.displayName)",
-                limits: product == .codex ? model.officialCodexRateLimits : model.officialClaudeRateLimits,
+                limits: product == .codex ? model.officialCodexRateLimits : nil,
                 running: model.stockInstanceStatuses[product]?.isRunning,
                 busy: model.busyStockProducts.contains(product),
                 resets: product == .codex ? digest("official") : nil
@@ -203,7 +207,7 @@ struct DashboardSource: Identifiable {
                     product: product,
                     kind: .profile(profile),
                     name: profile.name,
-                    limits: model.rateLimits(for: profile),
+                    limits: product == .codex ? model.rateLimits(for: profile) : nil,
                     running: model.profileInstanceStatuses[profile.id]?.isRunning,
                     busy: model.isBusy(profile) || model.storeMutationInProgress,
                     resets: product == .codex ? digest(profile.id.uuidString) : nil
@@ -283,7 +287,7 @@ private struct AccountCell: View {
         case false?: break
         case nil: parts.append("Status unavailable")
         }
-        if source.limits == nil { parts.append("Checking usage…") }
+        if source.readsAppUsage, source.limits == nil { parts.append("Checking usage…") }
         return parts.joined(separator: " · ")
     }
 }

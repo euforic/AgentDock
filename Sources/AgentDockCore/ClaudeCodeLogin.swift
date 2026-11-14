@@ -58,6 +58,10 @@ public enum ClaudeSignInError: Error, Equatable, Sendable {
     case profileUnavailable
     case keychain(ClaudeLoginStoreError)
     case accountNotFound
+    /// The profile is bound to another Claude account, named by its email.
+    case differentAccount(String)
+    /// The profile's item cannot be read, so its account is unknown.
+    case unreadableSignIn
 
     public var message: String {
         switch self {
@@ -89,6 +93,10 @@ public enum ClaudeSignInError: Error, Equatable, Sendable {
             "AgentDock couldn't update its Keychain item. Try again."
         case .accountNotFound:
             "This profile is no longer signed in to Claude."
+        case let .differentAccount(label):
+            "This profile is signed in to \(label). Sign out first to use a different Claude account."
+        case .unreadableSignIn:
+            "AgentDock couldn't read this profile's Claude sign-in, so it can't tell which account it belongs to. Sign out to remove it, then sign in again."
         }
     }
 }
@@ -107,13 +115,17 @@ public enum ClaudeCodeUsageMessage {
     public static let keychainAccessRequired = "Click Refresh to let AgentDock read its Claude sign-in from the Keychain. Choose Always Allow to keep access."
     public static let renewalUnavailable = "AgentDock couldn't renew the Claude sign-in. It will try again on the next refresh."
     public static let identityMismatch = "The Claude sign-in no longer matches its account. Sign in again."
-    public static let unreadableSignIn = "AgentDock couldn't read this Claude sign-in. Sign in again or remove it."
+    public static let unreadableSignIn = "AgentDock couldn't read this Claude sign-in. Sign out to remove it, then sign in again."
+    /// The sign-in lacks the `user:profile` scope that live usage needs.
+    public static let missingProfileScope = "This login cannot read live usage. Sign in again to grant profile access."
 }
 
 /// One Claude account signed in to AgentDock for Claude Code limits. It owns
 /// that account's stored tokens: one renewal at a time, written back to the
 /// account's own item without prompting, and deleted when Claude refuses them.
-/// Tokens, the email, and the account identifiers are never logged.
+/// A login stays with the account it signed in with: a sign-in of another
+/// account is refused until the profile signs out. Tokens, the email, and the
+/// account identifiers are never logged.
 public actor ClaudeCodeLogin {
     private let store: any ClaudeLoginTokenStoring
     private let transport: any ClaudeHTTPTransport
@@ -172,21 +184,54 @@ public actor ClaudeCodeLogin {
 
     // MARK: - Sign in, rename, and sign out
 
-    /// Saves a fresh sign-in, replacing whatever was stored. When it is the
-    /// same account again, the user's name and the added date carry over; a
-    /// different account (a profile switching accounts) starts fresh.
+    /// The account this login is bound to, if any.
+    private enum Binding {
+        /// No sign-in: any account may sign in.
+        case none
+        /// Bound to this account: its stored sign-in, or, after Claude
+        /// refused the sign-in, the account it had until Sign Out or relaunch.
+        case account(ClaudeAccountIdentity, ClaudeLoginAccount)
+        /// An item exists but cannot be read, so its account is unknown.
+        case unreadable
+    }
+
+    private func binding() throws(ClaudeSignInError) -> Binding {
+        guard loadIfNeeded(allowInteraction: true) else {
+            throw ClaudeSignInError.keychain(.interactionRequired)
+        }
+        if let tokens { return .account(tokens.identity, Self.account(for: tokens)) }
+        if unreadable { return .unreadable }
+        if expiredNotice, let identity = lastKnownIdentity, let account = lastKnownAccount {
+            return .account(identity, account)
+        }
+        return .none
+    }
+
+    /// Throws when no sign-in can complete here before one is started: the
+    /// item cannot be read, or reading it needs Keychain access that was refused.
+    func checkCanSignIn() throws(ClaudeSignInError) {
+        if case .unreadable = try binding() {
+            throw ClaudeSignInError.unreadableSignIn
+        }
+    }
+
+    /// Saves a fresh sign-in. A profile stays with one Claude account: when it
+    /// is bound to an account, only that account (by account UUID) may sign
+    /// in again, which replaces the tokens and keeps the user's name and the
+    /// added date. Another account is refused and nothing is written.
     func adopt(_ signedIn: ClaudeLoginTokens) throws(ClaudeSignInError) -> ClaudeLoginAccount {
         var replacement = signedIn
-        if loadIfNeeded(allowInteraction: true), let current = tokens {
-            if current.accountKey == replacement.accountKey {
-                replacement.customName = current.customName
-                replacement.addedAt = current.addedAt ?? replacement.addedAt
+        switch try binding() {
+        case .none:
+            break
+        case .unreadable:
+            throw ClaudeSignInError.unreadableSignIn
+        case let .account(identity, account):
+            guard identity.accountUUID.caseInsensitiveCompare(replacement.accountUUID) == .orderedSame else {
+                throw ClaudeSignInError.differentAccount(account.label)
             }
-        } else if let previous = lastKnownAccount,
-                  lastKnownIdentity?.accountKey == replacement.accountKey
-        {
-            replacement.customName = previous.customName
-            replacement.addedAt = previous.addedAt ?? replacement.addedAt
+            replacement.customName = account.customName
+            replacement.addedAt = account.addedAt ?? replacement.addedAt
         }
         do {
             try store.save(replacement, allowInteraction: true)
@@ -388,7 +433,8 @@ public actor ClaudeCodeLogin {
             unreadable = false
             return true
         } catch ClaudeLoginStoreError.unreadable {
-            // Not a sign-in AgentDock can use; signing in again replaces it.
+            // Not a sign-in AgentDock can use. Its account is unknown, so no
+            // sign-in may replace it; Sign Out removes it.
             tokens = nil
             loaded = true
             unreadable = true

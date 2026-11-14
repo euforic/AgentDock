@@ -98,7 +98,6 @@ final class AgentDockModel: ObservableObject {
     @Published private(set) var officialClaudeStats = ProfileStats.empty
     @Published private(set) var officialStatsLoading = false
     @Published private(set) var officialCodexRateLimits: ProfileRateLimits?
-    @Published private(set) var officialClaudeRateLimits: ProfileRateLimits?
     /// Each Claude profile's own Claude Code sign-in and live limits, shown on
     /// that profile's page (Official Claude included). There is no shared list.
     @Published private(set) var claudeCodeUsageByProfile: [ClaudeCodeProfileID: ClaudeCodeAccountUsage] = [:]
@@ -687,7 +686,10 @@ final class AgentDockModel: ObservableObject {
         replaceAll: Bool,
         allowCredentialInteraction: Bool = false
     ) {
-        var requestedProfiles = profiles.map(resolvedProfileForLaunch)
+        // Only Codex app profiles have app usage here; Claude usage comes from
+        // each Claude profile's own Claude Code sign-in.
+        var requestedProfiles = profiles.filter { $0.product == .codex }.map(resolvedProfileForLaunch)
+        guard replaceAll || !requestedProfiles.isEmpty else { return }
         if !replaceAll, rateLimitRefreshTask != nil {
             guard let pending = partialRateLimitProfiles else { return }
             requestedProfiles = Self.merging(pending, with: requestedProfiles)
@@ -702,7 +704,6 @@ final class AgentDockModel: ObservableObject {
         let claudeClient = claudeUsageClient
         let appURL = codexAppURL
         let officialHomeURL = officialCodexHomeURL
-        let officialClaudeUserDataURL = officialClaudeUserDataURL
         // Until earlier sign-ins are placed on profiles, profiles show
         // "checking" and no Claude Code usage is fetched.
         let codeProfiles: [ClaudeCodeProfileID] = claudeCodeMigrated ? claudeCodeProfileIDs : []
@@ -721,15 +722,6 @@ final class AgentDockModel: ObservableObject {
                     )
                     : nil
             }
-            let officialClaudeWorker = Task.detached(priority: .utility) {
-                replaceAll
-                    ? await claudeClient.fetchOfficialUsage(
-                        claudeUserDataURL: officialClaudeUserDataURL,
-                        allowKeychainInteraction: allowCredentialInteraction,
-                        forceRefresh: allowCredentialInteraction
-                    )
-                    : nil
-            }
             let officialClaudeCodeWorker = Task.detached(
                 priority: .utility
             ) { () async -> ClaudeCodeUsageReport? in
@@ -745,11 +737,6 @@ final class AgentDockModel: ObservableObject {
             } onCancel: {
                 officialWorker.cancel()
             }
-            async let officialClaudeResult = withTaskCancellationHandler {
-                await officialClaudeWorker.value
-            } onCancel: {
-                officialClaudeWorker.cancel()
-            }
             async let officialClaudeCodeResult = withTaskCancellationHandler {
                 await officialClaudeCodeWorker.value
             } onCancel: {
@@ -763,16 +750,7 @@ final class AgentDockModel: ObservableObject {
                 for _ in 0..<min(4, profiles.count) {
                     if let profile = iterator.next() {
                         group.addTask {
-                            let limits = switch profile.product {
-                            case .codex:
-                                await client.fetchRateLimits(for: profile, codexAppURL: appURL)
-                            case .claude:
-                                await claudeClient.fetchManagedUsage(
-                                    claudeUserDataURL: profile.claudeUserDataPath,
-                                    allowKeychainInteraction: allowCredentialInteraction,
-                                    forceRefresh: allowCredentialInteraction
-                                )
-                            }
+                            let limits = await client.fetchRateLimits(for: profile, codexAppURL: appURL)
                             return (profile.id, limits)
                         }
                     }
@@ -787,25 +765,15 @@ final class AgentDockModel: ObservableObject {
                     collected[id] = limits
                     if let profile = iterator.next() {
                         group.addTask {
-                            let limits = switch profile.product {
-                            case .codex:
-                                await client.fetchRateLimits(for: profile, codexAppURL: appURL)
-                            case .claude:
-                                await claudeClient.fetchManagedUsage(
-                                    claudeUserDataURL: profile.claudeUserDataPath,
-                                    allowKeychainInteraction: allowCredentialInteraction,
-                                    forceRefresh: allowCredentialInteraction
-                                )
-                            }
+                            let limits = await client.fetchRateLimits(for: profile, codexAppURL: appURL)
                             return (profile.id, limits)
                         }
                     }
                 }
                 return collected
             }
-            let (official, officialClaude, officialClaudeCode) = await (
+            let (official, officialClaudeCode) = await (
                 officialResult,
-                officialClaudeResult,
                 officialClaudeCodeResult
             )
 
@@ -814,13 +782,12 @@ final class AgentDockModel: ObservableObject {
             self.partialRateLimitProfiles = nil
             // Claude Code is optional; its errors must not force quota retries for every source.
             if replaceAll, results.values.allSatisfy({ $0.errorMessage == nil }),
-               official?.errorMessage == nil, officialClaude?.errorMessage == nil {
+               official?.errorMessage == nil {
                 self.lastQuotaRefreshAt = Date()
             }
             if replaceAll {
                 if self.profileRateLimits != results { self.profileRateLimits = results }
                 if self.officialCodexRateLimits != official { self.officialCodexRateLimits = official }
-                if self.officialClaudeRateLimits != officialClaude { self.officialClaudeRateLimits = officialClaude }
                 // A sign-in, rename, or sign-out since this pass started supersedes
                 // its result for that profile only.
                 if let officialClaudeCode {
@@ -833,7 +800,6 @@ final class AgentDockModel: ObservableObject {
                 profiles: profiles,
                 limitsByProfileID: results,
                 officialCodex: replaceAll ? official : nil,
-                officialClaude: replaceAll ? officialClaude : nil,
                 includeInventory: replaceAll
             )
         }
@@ -851,6 +817,22 @@ final class AgentDockModel: ObservableObject {
     /// One profile's Claude Code card. A profile not read yet is "checking".
     func claudeCodeUsage(for profile: ClaudeCodeProfileID) -> ClaudeCodeAccountUsage {
         claudeCodeUsageByProfile[profile] ?? .checking(profile)
+    }
+
+    /// What a profile's Claude Code card shows. Until earlier sign-ins are
+    /// placed on profiles, every profile is still checking.
+    func claudeCodeCardPhase(for profile: ClaudeCodeProfileID, now: Date = Date()) -> ClaudeCodeUsagePhase {
+        switch claudeCodeAccountsState {
+        case .checking: .checking
+        case .needsKeychainAccess: .keychainAccessRequired
+        case .ready: claudeCodeUsage(for: profile).phase(now: now)
+        }
+    }
+
+    /// The account controls a profile's Claude Code card offers. A profile
+    /// with a working sign-in offers no Sign In: it stays with its account.
+    func claudeCodeAccountControls(for profile: ClaudeCodeProfileID) -> ClaudeCodeAccountControls {
+        claudeCodeCardPhase(for: profile).accountControls
     }
 
     /// The name a Claude Code row or sheet uses for a profile.
@@ -884,11 +866,23 @@ final class AgentDockModel: ObservableObject {
         return false
     }
 
-    /// Signs this profile in to Claude with a one-time sign-in. It replaces
-    /// only this profile's sign-in; other profiles keep theirs. A failed
+    /// Signs this profile in to Claude with a one-time sign-in. Only a profile
+    /// whose card offers Sign In can start one: a profile without a sign-in,
+    /// or one whose sign-in must be renewed (then only with the same account;
+    /// Core refuses another). A profile with a working sign-in stays with its
+    /// account and starts nothing. Other profiles keep theirs. A failed
     /// sign-in of another profile is abandoned.
     func signInToClaude(profile: ClaudeCodeProfileID) {
-        guard claudeCodeProfileIDs.contains(profile) else { return }
+        guard claudeCodeProfileIDs.contains(profile),
+              claudeCodeAccountControls(for: profile).signIn != nil
+        else {
+            // A refused retry must not leave this profile's failed sheet with
+            // a Try Again that does nothing.
+            if claudeSignInProfile == profile, case .failed = claudeSignInState {
+                cancelClaudeCodeSignIn()
+            }
+            return
+        }
         switch claudeSignInState {
         case .idle, .failed: break
         case .signingIn: return
@@ -1189,9 +1183,10 @@ final class AgentDockModel: ObservableObject {
         profiles: [CodexProfile],
         limitsByProfileID: [CodexProfile.ID: ProfileRateLimits],
         officialCodex: ProfileRateLimits?,
-        officialClaude: ProfileRateLimits?,
         includeInventory: Bool
     ) {
+        // Codex app usage only. Claude usage comes from AgentDock's Claude Code
+        // sign-ins, whose results are never sent to analytics.
         var sources: [AnalyticsRateLimitSource] = profiles.map { profile in
             AnalyticsRateLimitSource(
                 provider: profile.product.analyticsProvider,
@@ -1206,13 +1201,6 @@ final class AgentDockModel: ObservableObject {
                 provider: .codex,
                 scope: .official,
                 limits: officialCodex
-            ))
-        }
-        if let officialClaude {
-            sources.append(AnalyticsRateLimitSource(
-                provider: .claude,
-                scope: .official,
-                limits: officialClaude
             ))
         }
 

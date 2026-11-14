@@ -748,6 +748,143 @@ final class AgentDockModelTests: XCTestCase {
         XCTAssertEqual(model.selectedProfileID, work.id)
     }
 
+    func testSignedInProfileOffersNoSignInAndTheModelWillNotStartOne() async throws {
+        let store = try makeStore()
+        let work = try store.createProfile(product: .claude, name: "Work")
+        let workID = ClaudeCodeProfileID.managed(work.id)
+        let officialTokens = Self.claudeTokens(access: "synthetic-access-a", account: 1, email: "synthetic@example.invalid")
+        let loginStore = InMemoryClaudeLoginAccounts(profiles: [.official: officialTokens])
+        let transport = AppScriptedClaudeTransport()
+        await transport.enqueue("/api/oauth/profile", status: 200, body: #"""
+        {"account":{"uuid":"00000000-0000-0000-0000-000000000001"},
+         "organization":{"uuid":"00000000-0000-0000-0000-000000000002"}}
+        """#)
+        await transport.enqueue("/api/oauth/usage", status: 200, body: #"""
+        {"five_hour":{"utilization":12.5,"resets_at":"2099-01-01T05:00:00.000Z"},
+         "seven_day":{"utilization":41,"resets_at":"2099-01-07T00:00:00Z"}}
+        """#)
+        let accounts = ClaudeCodeAccounts(store: loginStore, transport: transport)
+        let model = makeModel(
+            store: store,
+            claudeCodeAccounts: accounts,
+            claudeUsageClient: try scriptedClaudeUsageClient(accounts: accounts, transport: transport)
+        )
+
+        // Before sign-ins are read, no card offers controls and nothing starts.
+        if model.claudeCodeAccountsState != .ready {
+            for profile in model.claudeCodeProfileIDs {
+                XCTAssertEqual(model.claudeCodeAccountControls(for: profile), .empty)
+            }
+            model.signInToClaude(profile: workID)
+            let earlyState = model.claudeSignInState
+            model.cancelClaudeCodeSignIn()
+            XCTAssertEqual(earlyState, .idle)
+        }
+
+        await waitUntil {
+            model.claudeCodeAccountsState == .ready
+                && model.claudeCodeUsage(for: .official).limits?.buckets.isEmpty == false
+        }
+        XCTAssertEqual(model.claudeCodeCardPhase(for: .official), .ok)
+        XCTAssertEqual(
+            model.claudeCodeAccountControls(for: .official),
+            ClaudeCodeAccountControls(rename: true, signOut: true)
+        )
+        XCTAssertNil(model.claudeCodeAccountControls(for: .official).signIn, "a signed-in profile has no Sign In")
+        XCTAssertEqual(model.claudeCodeCardPhase(for: workID), .signedOut)
+        XCTAssertEqual(model.claudeCodeAccountControls(for: workID), ClaudeCodeAccountControls(signIn: .anyAccount))
+
+        model.signInToClaude(profile: .official)
+        let state = model.claudeSignInState
+        let sheetProfile = model.claudeSignInProfile
+        let sheetPresented = model.isClaudeSignInSheetPresented
+        // Defensive: if a sign-in had started, stop it before it opens a browser.
+        model.cancelClaudeCodeSignIn()
+        XCTAssertEqual(state, .idle)
+        XCTAssertNil(sheetProfile)
+        XCTAssertFalse(sheetPresented)
+
+        try await Task.sleep(for: .milliseconds(50))
+        let sent = await transport.requests
+        XCTAssertEqual(sent.filter { $0.url?.path == "/v1/oauth/token" }.count, 0, "no sign-in was started")
+        XCTAssertEqual(loginStore.tokens(forProfile: .official), officialTokens)
+        XCTAssertEqual(model.claudeCodeUsage(for: .official).accountKey, officialTokens.accountKey)
+    }
+
+    func testExpiredSignInOffersSignInForTheSameAccountOnly() async throws {
+        let store = try makeStore()
+        let expiring = ClaudeLoginTokens(
+            accessToken: "synthetic-access-a",
+            refreshToken: "synthetic-refresh-a",
+            expiresAt: Date().addingTimeInterval(10),
+            scopes: ["user:profile", "user:inference"],
+            accountUUID: "00000000-0000-0000-0000-000000000001",
+            organizationUUID: "00000000-0000-0000-0000-000000000002",
+            accountLabel: "synthetic@example.invalid",
+            subscriptionType: "max"
+        )
+        let loginStore = InMemoryClaudeLoginAccounts(profiles: [.official: expiring])
+        let transport = AppScriptedClaudeTransport()
+        // Claude refuses the renewal, so the sign-in expires.
+        await transport.enqueue("/v1/oauth/token", status: 400, body: #"{"error":"invalid_grant"}"#)
+        let accounts = ClaudeCodeAccounts(store: loginStore, transport: transport)
+        let model = makeModel(
+            store: store,
+            claudeCodeAccounts: accounts,
+            claudeUsageClient: try scriptedClaudeUsageClient(accounts: accounts, transport: transport)
+        )
+
+        await waitUntil {
+            model.claudeCodeCardPhase(for: .official)
+                == .reauthenticationRequired(ClaudeCodeUsageMessage.signInExpired)
+        }
+        XCTAssertEqual(
+            model.claudeCodeAccountControls(for: .official),
+            ClaudeCodeAccountControls(signIn: .sameAccount, signOut: true)
+        )
+        XCTAssertEqual(model.claudeCodeUsage(for: .official).account?.label, "synthetic@example.invalid")
+        XCTAssertNil(loginStore.tokens(forProfile: .official))
+    }
+
+    func testClaudeRowsShowUsageOnlyThroughClaudeCode() async throws {
+        let store = try makeStore()
+        let claudeProfile = try store.createProfile(product: .claude, name: "Claude Work")
+        let codexProfile = try store.createProfile(product: .codex, name: "Codex Work")
+        let model = makeModel(store: store)
+
+        model.refreshRateLimits()
+        await waitUntil {
+            model.rateLimits(for: codexProfile) != nil && model.officialCodexRateLimits != nil
+        }
+        XCTAssertNil(model.rateLimits(for: claudeProfile), "Claude app usage is no longer read")
+
+        let rows = DashboardSource.all(in: model, resets: model.resetReminders, now: Date())
+        // Profile rows carry the model's copy of the profile, which need not
+        // equal the value createProfile returned, so they are matched by ID.
+        func profileRow(_ id: CodexProfile.ID) -> DashboardSource? {
+            rows.first { row in
+                guard case let .profile(profile) = row.kind else { return false }
+                return profile.id == id
+            }
+        }
+        let officialClaude = try XCTUnwrap(rows.first { $0.kind == .official && $0.product == .claude })
+        let managedClaude = try XCTUnwrap(profileRow(claudeProfile.id))
+        let officialCodex = try XCTUnwrap(rows.first { $0.kind == .official && $0.product == .codex })
+        let managedCodex = try XCTUnwrap(profileRow(codexProfile.id))
+        XCTAssertEqual(managedClaude.product, .claude)
+        XCTAssertEqual(managedCodex.product, .codex)
+
+        for row in [officialClaude, managedClaude] {
+            XCTAssertNil(row.limits, row.name)
+            XCTAssertFalse(row.readsAppUsage, row.name)
+            XCTAssertTrue(row.windows.isEmpty, row.name)
+        }
+        for row in [officialCodex, managedCodex] {
+            XCTAssertNotNil(row.limits, row.name)
+            XCTAssertTrue(row.readsAppUsage, row.name)
+        }
+    }
+
     private static func claudeTokens(
         access: String,
         account: Int,

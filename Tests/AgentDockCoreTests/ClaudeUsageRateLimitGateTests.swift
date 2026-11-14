@@ -114,16 +114,18 @@ final class ClaudeUsageRateLimitGateTests: XCTestCase {
         XCTAssertEqual(key, renewed.cooldownKey(for: .claudeCode))
         XCTAssertNotEqual(key, first.tokenDigest)
         XCTAssertNotEqual(key, renewed.tokenDigest)
-        XCTAssertNotEqual(key, first.cooldownKey(for: .desktop))
         XCTAssertTrue(ClaudeUsageCooldownStore.isDigest(key))
-        XCTAssertTrue(ClaudeUsageCooldownStore.isDigest(first.cooldownKey(for: .desktop)))
         XCTAssertFalse(key.contains(account))
         XCTAssertFalse(key.contains(organization))
+        // Cooldowns saved by earlier versions keep applying: the key is unchanged.
+        XCTAssertEqual(
+            key,
+            ClaudeUsageCredential.digest("claude-usage-cooldown|claudeCode|\(account)/\(organization)")
+        )
 
         var anonymous = first
         anonymous.identity = nil
         XCTAssertEqual(anonymous.cooldownKey(for: .claudeCode), anonymous.tokenDigest)
-        XCTAssertEqual(anonymous.cooldownKey(for: .desktop), anonymous.tokenDigest)
     }
 
     func testRateLimitCooldownCapsAtOneHour() throws {

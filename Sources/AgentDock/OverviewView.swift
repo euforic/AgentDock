@@ -55,15 +55,13 @@ private struct ProfileOverview: View {
                 }
             }
 
-            UsageLimitsSection(
-                title: profile.product == .claude ? "Claude Desktop Usage Limits" : "Usage Limits",
-                limits: model.rateLimits(for: profile),
-                accent: Color(hex: profile.iconColor),
-                providerName: profile.product.displayName,
-                footer: profile.product == .claude
-                    ? "Live limits follow the Claude Desktop account signed in inside this profile."
-                    : nil
-            )
+            if profile.product == .codex {
+                UsageLimitsSection(
+                    limits: model.rateLimits(for: profile),
+                    accent: Color(hex: profile.iconColor),
+                    providerName: profile.product.displayName
+                )
+            }
 
             if profile.product == .claude {
                 // This profile's own Claude Code sign-in; no other profile's appears here.
@@ -92,10 +90,6 @@ private struct ProfileOverview: View {
                 if profile.product == .claude {
                     Text("Totals come from this profile's local Cowork history. Limit status is the latest signal Claude recorded, not a complete quota snapshot.")
                 }
-            }
-
-            if profile.product == .claude {
-                ClaudeUsageSourcesSection(selection: .profile(profile.id))
             }
         }
         .formStyle(.grouped)
@@ -164,13 +158,6 @@ private struct OfficialOverview: View {
                     onMakeDefault: model.setOfficialCodexDefaultConfigProfile
                 )
             } else {
-                UsageLimitsSection(
-                    title: "Claude Desktop Usage Limits",
-                    limits: model.officialClaudeRateLimits,
-                    accent: product.usageTint,
-                    providerName: "Claude",
-                    footer: "Live limits follow the signed-in Claude Desktop account."
-                )
                 // Official Claude is the default profile: it shows only its own
                 // sign-in. Each managed profile shows its own on its page.
                 ClaudeCodeSignInSection(profile: .official, accent: product.usageTint)
@@ -186,10 +173,6 @@ private struct OfficialOverview: View {
                 if product == .claude {
                     Text("Managed profiles isolate Claude user data, logs, configuration, and encrypted payload files. Keychain services, permissions, updater state, files, network, shell, Git, and SSH remain shared.")
                 }
-            }
-
-            if product == .claude, model.profiles.contains(where: { $0.product == .claude }) {
-                ClaudeUsageSourcesSection(selection: .official)
             }
         }
         .formStyle(.grouped)
@@ -454,18 +437,15 @@ private struct UsageLimitsSection<Accessory: View>: View {
 
 extension UsageLimitsSection where Accessory == EmptyView {
     init(
-        title: String = "Usage Limits",
         limits: ProfileRateLimits?,
         accent: Color,
-        providerName: String = "Codex",
-        footer: String? = nil
+        providerName: String = "Codex"
     ) {
         self.init(
-            title: title,
             limits: limits,
             accent: accent,
             providerName: providerName,
-            footer: footer,
+            footer: nil,
             showsLimits: true
         ) {
             EmptyView()
@@ -485,7 +465,8 @@ private struct ClaudeCodeSignInSection: View {
 
     var body: some View {
         let usage = model.claudeCodeUsage(for: profile)
-        let phase = displayedPhase(usage)
+        let phase = model.claudeCodeCardPhase(for: profile)
+        let controls = phase.accountControls
         UsageLimitsSection(
             title: "Claude Code Usage Limits",
             limits: usage.limits,
@@ -494,7 +475,7 @@ private struct ClaudeCodeSignInSection: View {
             footer: footer(usage, phase: phase),
             showsLimits: Self.showsLimits(phase)
         ) {
-            accountRows(usage, phase: phase)
+            accountRows(usage, phase: phase, controls: controls)
             if model.isClaudeSignInSheetPresented(for: profile), case .signingIn = model.claudeSignInState {
                 HStack(spacing: 8) {
                     ProgressView().controlSize(.small)
@@ -514,15 +495,6 @@ private struct ClaudeCodeSignInSection: View {
         }
     }
 
-    /// While migration has not finished, every profile is still checking.
-    private func displayedPhase(_ usage: ClaudeCodeAccountUsage) -> ClaudeCodeUsagePhase {
-        switch model.claudeCodeAccountsState {
-        case .checking: .checking
-        case .needsKeychainAccess: .keychainAccessRequired
-        case .ready: usage.phase()
-        }
-    }
-
     private static func showsLimits(_ phase: ClaudeCodeUsagePhase) -> Bool {
         switch phase {
         case .loading, .ok, .rateLimited, .budgetExhausted, .error: true
@@ -534,14 +506,32 @@ private struct ClaudeCodeSignInSection: View {
         model.isClaudeSignInRunning || model.claudeCodeAccountsState != .ready
     }
 
-    private var signInButton: some View {
+    /// Shown only when the card's controls offer Sign In: without a sign-in,
+    /// or to renew the profile's own account.
+    private func signInButton(
+        _ kind: ClaudeCodeAccountControls.SignIn,
+        label: String?
+    ) -> some View {
         Button("Sign In to Claude…") { model.signInToClaude(profile: profile) }
             .disabled(signInDisabled)
-            .help("Sign this profile in to a Claude account. It replaces only this profile's sign-in.")
+            .help(Self.signInHelp(kind, label: label))
+    }
+
+    private static func signInHelp(_ kind: ClaudeCodeAccountControls.SignIn, label: String?) -> String {
+        switch kind {
+        case .anyAccount:
+            "Sign this profile in to a Claude account. The profile stays with that account until you sign out."
+        case .sameAccount:
+            "Sign in again with \(label ?? "this profile's Claude account"). Another account is refused; sign out first to use one."
+        }
     }
 
     @ViewBuilder
-    private func accountRows(_ usage: ClaudeCodeAccountUsage, phase: ClaudeCodeUsagePhase) -> some View {
+    private func accountRows(
+        _ usage: ClaudeCodeAccountUsage,
+        phase: ClaudeCodeUsagePhase,
+        controls: ClaudeCodeAccountControls
+    ) -> some View {
         switch phase {
         case .checking:
             HStack(spacing: 8) {
@@ -555,31 +545,42 @@ private struct ClaudeCodeSignInSection: View {
         case .signedOut:
             Text(ClaudeCodeUsageMessage.notSignedIn)
                 .foregroundStyle(.secondary)
-            LabeledContent("Claude Account") { signInButton }
+            if let kind = controls.signIn {
+                LabeledContent("Claude Account") { signInButton(kind, label: nil) }
+            }
         case let .reauthenticationRequired(message):
             Label(message, systemImage: "exclamationmark.triangle")
                 .foregroundStyle(.secondary)
             LabeledContent(usage.account?.label ?? "Claude Account") {
                 HStack(spacing: 8) {
-                    signInButton
-                    Button("Sign Out") { model.signOutOfClaude(profile: profile) }
+                    if let kind = controls.signIn {
+                        signInButton(kind, label: usage.account?.label)
+                    }
+                    if controls.signOut {
+                        Button("Sign Out") { model.signOutOfClaude(profile: profile) }
+                    }
                 }
             }
         case .loading, .ok, .rateLimited, .budgetExhausted, .error:
+            // A working sign-in offers no Sign In: the profile stays with
+            // this account until it signs out.
             LabeledContent("Signed in as") {
                 HStack(spacing: 8) {
                     Text(usage.title)
                         .lineLimit(1)
                         .truncationMode(.middle)
                         .help(usage.account?.label ?? "")
-                    Button("Rename…") {
-                        draftName = usage.account?.customName ?? ""
-                        renaming = true
+                    if controls.rename {
+                        Button("Rename…") {
+                            draftName = usage.account?.customName ?? ""
+                            renaming = true
+                        }
                     }
-                    Button("Sign Out") { model.signOutOfClaude(profile: profile) }
+                    if controls.signOut {
+                        Button("Sign Out") { model.signOutOfClaude(profile: profile) }
+                    }
                 }
             }
-            LabeledContent("Use Another Account") { signInButton }
             if case let .rateLimited(until) = phase {
                 Label(
                     "Rate limited until \(until.formatted(date: .omitted, time: .shortened)).",
@@ -623,7 +624,7 @@ private struct UnplacedClaudeSignInsSection: View {
                 Button("Remove", role: .destructive) { model.discardUnplacedClaudeSignIns() }
             }
         } footer: {
-            Text("Each Claude profile has one sign-in. To link a kept sign-in, add a Claude profile named after its account email and relaunch AgentDock, or sign in on a profile's page.")
+            Text("Each Claude profile has one sign-in. To link a kept sign-in, add a Claude profile named after its account email and relaunch AgentDock, or sign in with that account on a Claude profile that has no sign-in.")
         }
     }
 }
@@ -726,74 +727,6 @@ private struct ClaudeUsageSection: View {
         }
         if signal.isUsingOverage == true { parts.append("using overage") }
         return parts.joined(separator: " · ")
-    }
-}
-
-private enum ClaudeUsageSelection: Equatable {
-    case official
-    case profile(CodexProfile.ID)
-}
-
-private struct ClaudeUsageSourcesSection: View {
-    @EnvironmentObject private var model: AgentDockModel
-    let selection: ClaudeUsageSelection
-
-    var body: some View {
-        Section("Claude Usage Sources") {
-            sourceRow(
-                name: "Official Claude",
-                summary: summary(stats: model.officialClaudeStats, loading: model.officialStatsLoading),
-                running: model.stockInstanceStatuses[.claude]?.isRunning == true,
-                selected: selection == .official,
-                select: { model.selectOfficial(.claude) }
-            ) {
-                ProviderIconView(product: .claude, appURL: model.appURL(for: .claude), size: 28)
-            }
-            ForEach(model.profiles.filter { $0.product == .claude }) { profile in
-                sourceRow(
-                    name: profile.name,
-                    summary: summary(stats: model.stats(for: profile), loading: model.statsAreLoading(for: profile)),
-                    running: model.instanceStatus(for: profile).isRunning,
-                    selected: selection == .profile(profile.id),
-                    select: { model.selectProfile(profile.id) }
-                ) {
-                    ProfileIconView(profile: profile, size: 28)
-                }
-            }
-        }
-    }
-
-    private func sourceRow<Icon: View>(
-        name: String,
-        summary: String,
-        running: Bool,
-        selected: Bool,
-        select: @escaping () -> Void,
-        @ViewBuilder icon: () -> Icon
-    ) -> some View {
-        Button(action: select) {
-            HStack(spacing: 10) {
-                icon().runningBadge(running, diameter: 7)
-                VStack(alignment: .leading, spacing: 1) {
-                    Text(name).foregroundStyle(.primary)
-                    Text(summary).font(.subheadline).foregroundStyle(.secondary)
-                }
-                Spacer()
-                if selected {
-                    Image(systemName: "checkmark")
-                        .foregroundStyle(.tint)
-                        .accessibilityLabel("Current")
-                }
-            }
-            .contentShape(.rect)
-        }
-        .buttonStyle(.plain)
-        .accessibilityAddTraits(selected ? [.isSelected] : [])
-    }
-
-    private func summary(stats: ProfileStats, loading: Bool) -> String {
-        if loading { return "Loading local usage…" }
-        return "\(stats.weeklySessions.formatted()) sessions · \(stats.weeklyTokens.formatted()) tokens in 7 days"
     }
 }
 

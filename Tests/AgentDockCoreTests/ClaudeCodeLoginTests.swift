@@ -209,4 +209,72 @@ final class ClaudeCodeLoginTests: XCTestCase {
         let status = await login.status()
         XCTAssertEqual(status, .signedOut(expired: false))
     }
+
+    // MARK: - One account per login
+
+    func testAdoptRefusesAnotherAccountAndReplacesTheSameAccountsTokens() async throws {
+        var current = Fixture.tokens(addedAt: Date(timeIntervalSince1970: 1_800_000_000))
+        current.customName = "Kept"
+        let store = InMemoryClaudeLoginStore(current)
+        let login = ClaudeCodeLogin(store: store, transport: ScriptedClaudeTransport())
+        let stored = try XCTUnwrap(store.tokens)
+
+        do {
+            _ = try await login.adopt(Fixture.secondTokens())
+            XCTFail("A login bound to one account must refuse another")
+        } catch {
+            XCTAssertEqual(error as Any as? ClaudeSignInError, .differentAccount(Fixture.email))
+        }
+        XCTAssertEqual(store.tokens, stored, "the stored sign-in is untouched")
+        XCTAssertEqual(store.saveCount, 0)
+        let status = await login.status()
+        XCTAssertEqual(status.isSignedIn, true)
+
+        let renewed = Fixture.tokens(
+            access: "synthetic-access-b",
+            refresh: "synthetic-refresh-b",
+            addedAt: Date(timeIntervalSince1970: 1_900_000_000)
+        )
+        let account = try await login.adopt(renewed)
+
+        XCTAssertEqual(account.label, Fixture.email)
+        XCTAssertEqual(account.customName, "Kept")
+        XCTAssertEqual(account.addedAt, Date(timeIntervalSince1970: 1_800_000_000))
+        XCTAssertEqual(store.saveCount, 1)
+        XCTAssertEqual(store.tokens?.accessToken, "synthetic-access-b")
+        XCTAssertEqual(store.tokens?.refreshToken, "synthetic-refresh-b")
+        XCTAssertEqual(store.tokens?.customName, "Kept")
+        XCTAssertEqual(store.tokens?.accountUUID, Fixture.account)
+    }
+
+    func testAdoptRefusesEveryAccountForAnUnreadableSignIn() async throws {
+        let store = InMemoryClaudeLoginStore(Fixture.tokens())
+        store.failNextLoad(with: .unreadable)
+        let login = ClaudeCodeLogin(store: store, transport: ScriptedClaudeTransport())
+        let stored = try XCTUnwrap(store.tokens)
+
+        for candidate in [Fixture.tokens(access: "synthetic-access-b"), Fixture.secondTokens()] {
+            do {
+                _ = try await login.adopt(candidate)
+                XCTFail("An unreadable sign-in must refuse every account")
+            } catch {
+                XCTAssertEqual(error as Any as? ClaudeSignInError, .unreadableSignIn)
+            }
+        }
+        do {
+            try await login.checkCanSignIn()
+            XCTFail("An unreadable sign-in must refuse to start a sign-in")
+        } catch {
+            XCTAssertEqual(error as Any as? ClaudeSignInError, .unreadableSignIn)
+        }
+        XCTAssertEqual(store.tokens, stored)
+        XCTAssertEqual(store.saveCount, 0)
+
+        // Signing out removes it; then any account may sign in.
+        try await login.signOut()
+        try await login.checkCanSignIn()
+        let account = try await login.adopt(Fixture.secondTokens())
+        XCTAssertEqual(account.label, Fixture.secondEmail)
+        XCTAssertEqual(store.tokens?.accountUUID, Fixture.secondAccount)
+    }
 }

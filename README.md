@@ -147,27 +147,26 @@ usage summaries are source-dependent:
 - Claude uses supported local Cowork/agent-session data. The Official Claude
   view can also include the lightweight Claude Code history index and matching
   local session files. Official and managed Claude sources expose the same
-  source-backed session, model, and token summaries. When a signed-in OAuth
-  credential grants profile access, AgentDock also reads Anthropic's live
-  session, weekly, model-scoped, reset, and extra-usage status. The cross-source
-  card keeps the official installation visible alongside every managed account.
-  Local rate-limit events remain a clearly separate last-observed fallback.
-  Each Claude profile's page, Official Claude included, has its own Claude
-  Code Usage Limits card with live 5-hour, weekly, and Fable weekly limits for
-  the Claude account that profile signs in with through its own
+  source-backed session, model, and token summaries. Local rate-limit events
+  remain a clearly separate last-observed fallback.
+  Each Claude profile's page, Official Claude included, has one live usage
+  card: Claude Code Usage Limits, with live 5-hour, weekly, and Fable weekly
+  limits for the Claude account that profile signs in with through its own
   **Sign In to Claude…** button, which can differ from the profile's Claude
-  Desktop account. Every Claude profile has at most one such sign-in: signing
-  in again replaces only that profile's sign-in, **Sign Out** removes only it,
-  and removing or deleting the profile removes it too. There is no shared
-  account list. Each sign-in's tokens live only in that profile's own AgentDock
-  Keychain item; AgentDock never reads Claude Code's login or discovers
-  accounts on its own. Home shows a read-only Claude Code row for each signed-in
-  profile that opens the profile's page. Sign-ins from earlier versions move
-  onto profiles automatically at launch; see
+  Desktop account. Every Claude profile has at most one such sign-in and stays
+  with that Claude account: **Sign In to Claude…** appears only while the
+  profile has no sign-in, or to renew an expired sign-in with the same account.
+  A sign-in with a different account is refused; **Sign Out** first to switch.
+  **Sign Out** removes only that profile's sign-in, and removing or deleting
+  the profile removes it too. There is no shared account list. Each sign-in's
+  tokens live only in that profile's own AgentDock Keychain item; AgentDock
+  never reads Claude Desktop's or Claude Code's login or discovers accounts on
+  its own. Home shows a read-only Claude Code row for each signed-in profile
+  that opens the profile's page. Sign-ins from earlier versions move onto
+  profiles automatically at launch; see
   [Upgrade migration](docs/upgrade-migration.md#claude-code-sign-ins).
-- AgentDock does not index ordinary synced claude.ai web-chat content. Live
-  Claude Desktop usage reads the provider-owned OAuth cache and
-  active-organization cookie required to resolve the signed-in account.
+- AgentDock does not index ordinary synced claude.ai web-chat content, and it
+  does not read Claude Desktop's OAuth cache, its Keychain key, or its cookies.
 
 Claude activity scanning still reads supported local session files and keeps
 bounded summaries in memory. The app does not create chat-browser indexes.

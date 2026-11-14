@@ -45,23 +45,25 @@ activity timer cannot skip either. 429 cooldowns are saved by a digest of the
 view and account identity (the token digest when there is no identity), so
 they survive relaunch and token renewal. Account identity is verified once per
 credential rather than before every usage request. Every Claude profile page,
-Official Claude included, shows Claude Desktop and Claude Code limits as
-separate sections; each refresh runs at most one Desktop request per source.
-The Claude Code section belongs to the profile: it shows only that profile's
-own sign-in, with its own **Sign In to Claude…** and **Sign Out**. There is no
-shared account list. `ClaudeCodeAccounts` keeps exactly one `ClaudeCodeLogin`
-per `ClaudeCodeProfileID` (`.official`, the default profile, or
-`.managed(profile ID)`); each login owns that profile's Keychain item and
-renews only its tokens. The registry signs a profile in (replacing only that
-profile's sign-in), renames and signs it out, removes the sign-ins of profiles
+Official Claude included, shows only Claude Code limits; Claude Desktop usage is
+not read. The Claude Code section belongs to the profile: it shows only that
+profile's own sign-in, with its own **Sign In to Claude…** and **Sign Out**.
+There is no shared account list. `ClaudeCodeAccounts` keeps exactly one
+`ClaudeCodeLogin` per `ClaudeCodeProfileID` (`.official`, the default profile,
+or `.managed(profile ID)`); each login owns that profile's Keychain item,
+renews only its tokens, and keeps the profile on the account it signed in with
+(`ClaudeCodeLogin.adopt` refuses another account UUID). The registry signs a
+profile in, renames and signs it out, removes the sign-ins of profiles
 that no longer exist, and once per launch migrates earlier account-keyed and
 single items onto profiles (see
 [Upgrade migration](upgrade-migration.md#claude-code-sign-ins)). The model
 holds one `ClaudeCodeAccountUsage` per profile, and
 `ClaudeCodeAccountUsage.phase` gives its card state: checking, Keychain access
 needed, signed out, sign in again, loading, live, rate limited, hourly budget
-spent, or error. Removing or deleting a Claude profile signs it out. The gate
-state stays per Claude account: the freshness cache, failure backoff, 429
+spent, or error. `ClaudeCodeUsagePhase.accountControls` decides which of Sign
+In (any account or same account only), Rename, and Sign Out the card shows; a
+working sign-in shows no Sign In, and the model refuses to start one for it.
+Removing or deleting a Claude profile signs it out. The gate state stays per Claude account: the freshness cache, failure backoff, 429
 cooldown, and the budget of 30 usage fetches per rolling hour are keyed by
 account identity, so two profiles signed in to the same account share them. At
 most one fetch per profile sign-in and one request per account run at once,

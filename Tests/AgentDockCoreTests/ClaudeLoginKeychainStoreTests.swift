@@ -186,7 +186,8 @@ final class ClaudeLoginKeychainStoreTests: XCTestCase {
         XCTAssertEqual(try accounts.tokenStore(forProfile: managed).load(allowInteraction: false), second)
         XCTAssertEqual(try accounts.tokenStore(forProfile: other).load(allowInteraction: false), sameAccount)
 
-        // Signing in again replaces only that profile's item, even with another account.
+        // A save replaces only that profile's item. The raw item can hold any
+        // account; ClaudeCodeLogin is what keeps a profile on one account.
         try accounts.tokenStore(forProfile: managed).save(first, allowInteraction: false)
         XCTAssertEqual(try accounts.tokenStore(forProfile: managed).load(allowInteraction: false), first)
         XCTAssertEqual(try accounts.tokenStore(forProfile: .official).load(allowInteraction: false), first)
