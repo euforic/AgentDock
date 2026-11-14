@@ -37,9 +37,15 @@ Call sites cannot add arbitrary event names, keys, or string values.
 Claude live-usage responses are cached per credential for five minutes.
 Concurrent reads for the same credential share one in-flight request, and
 failures temporarily suppress automatic retries (including provider-supplied
-`Retry-After` values for rate limits). The explicit user refresh action can
-bypass freshness and failure cooldowns; navigation, profile launch, and the
-automatic activity timer cannot.
+`Retry-After` values for rate limits, in seconds or as an HTTP-date, capped at
+six hours). The explicit user refresh action skips freshness (repeat clicks
+within 30 seconds reuse the last result) and the non-429 failure backoff, but
+never an active 429 cooldown; navigation, profile launch, and the automatic
+activity timer cannot skip either. 429 cooldowns are saved by token digest and
+survive relaunch. Account identity is verified once per credential rather than
+before every usage request. The Official Claude overview shows Claude Desktop
+and Claude Code limits as separate sections; each refresh runs at most one
+Desktop and one Claude Code request alongside the managed-profile requests.
 
 Codex usage refresh is provider-aware. The built-in OpenAI provider uses the
 bundled Codex app-server, while a selected custom provider uses its configured

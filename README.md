@@ -152,6 +152,9 @@ usage summaries are source-dependent:
   session, weekly, model-scoped, reset, and extra-usage status. The cross-source
   card keeps the official installation visible alongside every managed account.
   Local rate-limit events remain a clearly separate last-observed fallback.
+  A separate Claude Code Usage Limits section shows the Claude Code CLI login's
+  live 5-hour, weekly, and Fable weekly limits, which can differ from the
+  Claude Desktop account.
 - AgentDock does not index ordinary synced claude.ai web-chat content. Live
   Claude usage reads the provider-owned OAuth cache and active-organization
   cookie required to resolve the signed-in account.

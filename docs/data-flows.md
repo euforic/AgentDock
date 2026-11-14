@@ -102,17 +102,47 @@ AgentDock does not carry an older percentage into a newer limit window.
 
 Live Claude quota refresh is a separate flow:
 
-1. Official Claude uses the official Desktop OAuth cache exclusively. Managed
+1. Official Claude **Desktop** uses the Desktop OAuth cache exclusively. Managed
    profiles use only their own Desktop user-data root. A separate Claude Code
    login cannot replace the account displayed for Desktop.
 2. Background refresh reads Keychain without interaction. Manual refresh may
    request access to Claude Safe Storage.
 3. The active account and organization are resolved locally and verified with
-   Anthropic before the usage response is assigned to a source.
+   Anthropic once per account, organization, and token before the usage
+   response is assigned to a source.
 4. Access tokens remain in memory and are never copied, refreshed, persisted,
    or logged by AgentDock.
-5. HTTP 429 responses create a credential-scoped cooldown and retain only the
-   last successful in-memory snapshot for that same login.
+5. HTTP 429 responses create a token-scoped cooldown and retain only the last
+   successful in-memory snapshot for that same login. The cooldown deadline is
+   saved under the token's SHA-256 digest so it survives relaunch.
+
+Claude Code live limits are a separate flow shown in their own section of the
+Official Claude overview:
+
+1. The location is `$CLAUDE_CONFIG_DIR` when it is a non-empty absolute path,
+   otherwise `~/.claude` and `~/.claude.json`.
+2. AgentDock reads the `Claude Code-credentials` Keychain item first, then
+   `<home>/.credentials.json` through the bounded no-follow reader. A symlinked
+   file is treated as absent. Only `claudeAiOauth` is parsed; a Keychain item
+   without it falls back to the file. Refresh tokens are never read.
+3. The login must include the `user:profile` scope and must not expire within
+   two minutes. Otherwise the section shows guidance (sign in, refresh the
+   login, run `/login`, or allow Keychain access) and no request is sent.
+4. When `.claude.json` records a valid `oauthAccount` account and organization,
+   that identity is verified with Anthropic once per identity and token. It is
+   reread only when the token changes. A missing or invalid file skips the
+   profile check.
+5. Before any request, the gate is checked in order: an active 429 cooldown
+   (in memory or saved) shows the last success or a rate-limit message; a
+   success younger than five minutes (30 seconds for a manual refresh) is
+   reused; a non-429 failure backoff applies to automatic refreshes only;
+   otherwise one usage request is sent.
+6. The response is projected to the 5-hour window, the weekly window, and
+   Fable's weekly percentage only. Claude Code results are excluded from
+   analytics and do not hold back the quota-refresh schedule for other sources.
+
+A manual refresh may show a Keychain prompt for Claude Code's item. Background
+refreshes never prompt; they show the Keychain guidance until access is granted.
 
 Older browser versions may have left metadata-only indexes containing no full
 transcript bodies or tool output. Explicit profile removal or deletion cleans

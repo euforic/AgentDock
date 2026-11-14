@@ -24,6 +24,8 @@
 | `Sources/AgentDockCore/BoundedSubprocess.swift` | Timeout and output-bounded subprocess execution |
 | `Sources/AgentDockCore/ShortcutInstaller.swift` | Profile shortcut generation and replacement |
 | `Sources/AgentDockCore/SQLiteReadOnly.swift` | Path-checked, read-only, no-follow, bounded in-process provider database queries |
+| `Sources/AgentDockCore/ClaudeCodeCredentials.swift` | Claude Code location, Keychain-then-file login lookup, identity, and guidance messages |
+| `Sources/AgentDockCore/ClaudeUsageRateLimitGate.swift` | Saved 429 cooldowns by token digest, identity-verification ledger, and refresh gate decisions |
 
 ## UI and Rendering
 

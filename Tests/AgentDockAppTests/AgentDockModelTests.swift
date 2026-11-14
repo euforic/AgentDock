@@ -393,6 +393,28 @@ final class AgentDockModelTests: XCTestCase {
         XCTAssertFalse(model.storeMutationInProgress)
     }
 
+    func testOfficialClaudeCodeLimitsUseOnlyTheTestRootLogin() async throws {
+        let store = try makeStore()
+        let codeHome = root.appendingPathComponent("Official/.claude", isDirectory: true)
+        try FileManager.default.createDirectory(at: codeHome, withIntermediateDirectories: true)
+        let expiresAt = Int((Date().timeIntervalSince1970 + 60) * 1_000)
+        try Data(#"""
+        {"claudeAiOauth":{"accessToken":"synthetic-expired-token","expiresAt":\#(expiresAt),
+         "scopes":["user:profile"],"subscriptionType":"pro"}}
+        """#.utf8).write(to: codeHome.appendingPathComponent(".credentials.json"))
+
+        let model = makeModel(store: store)
+        await waitUntil { model.officialClaudeCodeRateLimits != nil }
+
+        // The fixture login, not the developer's Keychain or home, drives the result.
+        XCTAssertEqual(
+            model.officialClaudeCodeRateLimits?.errorMessage,
+            "Claude Code's login has expired. Run Claude Code to refresh its login, then refresh."
+        )
+        XCTAssertEqual(model.officialClaudeCodeRateLimits?.planType, "pro")
+        XCTAssertEqual(model.officialClaudeCodeRateLimits?.buckets.isEmpty, true)
+    }
+
     func testOfficialCodexActionUsesStockInstancePath() async throws {
         let store = try makeStore()
         let manager = RecordingInstanceManager()

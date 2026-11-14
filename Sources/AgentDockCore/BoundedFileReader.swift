@@ -88,6 +88,7 @@ enum LocalControlFileLimit {
     static let providerConfiguration = 1 * 1_024 * 1_024
     static let shortcutConfiguration = 256 * 1_024
     static let providerCredentialState = 4 * 1_024 * 1_024
+    static let claudeCodeGlobalConfig = 32 * 1_024 * 1_024
     static let propertyList = 1 * 1_024 * 1_024
     static let customIcon = 10 * 1_024 * 1_024
 }

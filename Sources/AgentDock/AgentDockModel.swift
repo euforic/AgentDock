@@ -77,6 +77,8 @@ final class AgentDockModel: ObservableObject {
     @Published private(set) var officialStatsLoading = false
     @Published private(set) var officialCodexRateLimits: ProfileRateLimits?
     @Published private(set) var officialClaudeRateLimits: ProfileRateLimits?
+    /// Live limits for the Claude Code CLI login, shown separately from Desktop.
+    @Published private(set) var officialClaudeCodeRateLimits: ProfileRateLimits?
     @Published private(set) var profileInstanceStatuses: [CodexProfile.ID: CodexInstanceStatus] = [:]
     @Published private(set) var stockInstanceStatuses: [DesktopProduct: CodexInstanceStatus] = [:]
     @Published private(set) var installedShortcutProfileIDs: Set<CodexProfile.ID> = []
@@ -123,7 +125,8 @@ final class AgentDockModel: ObservableObject {
     private var appliedInitialDefaultView = false
     private let officialCodexHomeURL: URL
     private let officialClaudeUserDataURL: URL
-    private let officialClaudeCodeHomeURL: URL
+    private let officialClaudeCodeLocation: ClaudeCodeLocation
+    private var officialClaudeCodeHomeURL: URL { officialClaudeCodeLocation.homeURL }
 
     init() {
         resetReminders = ResetReminderController()
@@ -134,8 +137,10 @@ final class AgentDockModel: ObservableObject {
             for: .applicationSupportDirectory,
             in: .userDomainMask
         )[0].appendingPathComponent("Claude", isDirectory: true)
-        officialClaudeCodeHomeURL = FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent(".claude", isDirectory: true)
+        officialClaudeCodeLocation = ClaudeCodeLocation.resolve(
+            environment: ProcessInfo.processInfo.environment,
+            homeDirectory: FileManager.default.homeDirectoryForCurrentUser
+        )
         let preferencesStore = AgentDockPreferencesStore()
         self.preferencesStore = preferencesStore
         preferences = preferencesStore.load()
@@ -237,7 +242,12 @@ final class AgentDockModel: ObservableObject {
         legacyChatIndexRootURL = officialDataRootURL.appendingPathComponent("ChatIndexes", isDirectory: true)
         officialCodexHomeURL = officialDataRootURL.appendingPathComponent(".codex", isDirectory: true)
         officialClaudeUserDataURL = officialDataRootURL.appendingPathComponent("Claude", isDirectory: true)
-        officialClaudeCodeHomeURL = officialDataRootURL.appendingPathComponent(".claude", isDirectory: true)
+        // File-only: test roots never read the developer's Keychain.
+        officialClaudeCodeLocation = ClaudeCodeLocation(
+            homeURL: officialDataRootURL.appendingPathComponent(".claude", isDirectory: true),
+            globalConfigURL: officialDataRootURL.appendingPathComponent(".claude.json", isDirectory: false),
+            keychainService: nil
+        )
         self.preferencesStore = preferencesStore
         preferences = preferencesStore.load()
         officialCodexProfileSettings = preferencesStore.loadOfficialCodexProfileSettings()
@@ -644,6 +654,7 @@ final class AgentDockModel: ObservableObject {
         let appURL = codexAppURL
         let officialHomeURL = officialCodexHomeURL
         let officialClaudeUserDataURL = officialClaudeUserDataURL
+        let officialClaudeCodeLocation = officialClaudeCodeLocation
         let officialConfigProfile = effectiveOfficialCodexConfigProfile
 
         rateLimitRefreshTask = Task { [weak self] in
@@ -667,6 +678,15 @@ final class AgentDockModel: ObservableObject {
                     )
                     : nil
             }
+            let officialClaudeCodeWorker = Task.detached(priority: .utility) {
+                replaceAll
+                    ? await claudeClient.fetchClaudeCodeUsage(
+                        location: officialClaudeCodeLocation,
+                        allowKeychainInteraction: allowCredentialInteraction,
+                        forceRefresh: allowCredentialInteraction
+                    )
+                    : nil
+            }
             async let officialResult = withTaskCancellationHandler {
                 await officialWorker.value
             } onCancel: {
@@ -676,6 +696,11 @@ final class AgentDockModel: ObservableObject {
                 await officialClaudeWorker.value
             } onCancel: {
                 officialClaudeWorker.cancel()
+            }
+            async let officialClaudeCodeResult = withTaskCancellationHandler {
+                await officialClaudeCodeWorker.value
+            } onCancel: {
+                officialClaudeCodeWorker.cancel()
             }
             let results = await withTaskGroup(
                 of: (CodexProfile.ID, ProfileRateLimits).self,
@@ -725,11 +750,16 @@ final class AgentDockModel: ObservableObject {
                 }
                 return collected
             }
-            let (official, officialClaude) = await (officialResult, officialClaudeResult)
+            let (official, officialClaude, officialClaudeCode) = await (
+                officialResult,
+                officialClaudeResult,
+                officialClaudeCodeResult
+            )
 
             guard !Task.isCancelled, let self, self.rateLimitGeneration == generation else { return }
             self.rateLimitRefreshTask = nil
             self.partialRateLimitProfiles = nil
+            // Claude Code is optional; its errors must not force quota retries for every source.
             if replaceAll, results.values.allSatisfy({ $0.errorMessage == nil }),
                official?.errorMessage == nil, officialClaude?.errorMessage == nil {
                 self.lastQuotaRefreshAt = Date()
@@ -738,6 +768,9 @@ final class AgentDockModel: ObservableObject {
                 if self.profileRateLimits != results { self.profileRateLimits = results }
                 if self.officialCodexRateLimits != official { self.officialCodexRateLimits = official }
                 if self.officialClaudeRateLimits != officialClaude { self.officialClaudeRateLimits = officialClaude }
+                if self.officialClaudeCodeRateLimits != officialClaudeCode {
+                    self.officialClaudeCodeRateLimits = officialClaudeCode
+                }
             } else {
                 self.profileRateLimits.merge(results) { _, new in new }
             }

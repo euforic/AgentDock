@@ -155,10 +155,18 @@ private struct OfficialOverview: View {
                 )
             } else {
                 UsageLimitsSection(
+                    title: "Claude Desktop Usage Limits",
                     limits: model.officialClaudeRateLimits,
                     accent: product.usageTint,
                     providerName: "Claude",
-                    footer: "Live limits follow the signed-in Claude account. Local activity can also include Claude Code sessions from a different login."
+                    footer: "Live limits follow the signed-in Claude Desktop account."
+                )
+                UsageLimitsSection(
+                    title: "Claude Code Usage Limits",
+                    limits: model.officialClaudeCodeRateLimits,
+                    accent: product.usageTint,
+                    providerName: "Claude Code",
+                    footer: claudeCodeFooter
                 )
                 ClaudeUsageSection(stats: stats, loading: model.officialStatsLoading, accent: product.usageTint)
             }
@@ -179,6 +187,14 @@ private struct OfficialOverview: View {
         .sheet(item: $activityDestination) { destination in
             ActivityDetailSheet(officialProduct: product, destination: destination)
         }
+    }
+
+    private var claudeCodeFooter: String {
+        let footer = "Live limits for the Claude Code CLI login, which can differ from the Claude Desktop account. Fable has a separate weekly allowance."
+        guard let limits = model.officialClaudeCodeRateLimits, !limits.buckets.isEmpty else {
+            return footer
+        }
+        return "\(footer) Updated \(limits.fetchedAt.formatted(.relative(presentation: .named)))."
     }
 }
 
@@ -359,6 +375,7 @@ private struct CodexProviderSection: View {
 }
 
 private struct UsageLimitsSection: View {
+    var title = "Usage Limits"
     let limits: ProfileRateLimits?
     let accent: Color
     var providerName = "Codex"
@@ -395,7 +412,7 @@ private struct UsageLimitsSection: View {
             }
         } header: {
             HStack {
-                Text("Usage Limits")
+                Text(title)
                 Spacer()
                 if let plan = limits?.planType, !plan.isEmpty {
                     Text(plan.replacingOccurrences(of: "_", with: " ").capitalized)

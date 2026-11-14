@@ -139,6 +139,21 @@ AgentDock verifies account and organization identity through the sibling OAuth
 profile endpoint before assigning a response to an account-scoped source. It
 does not persist, rotate, refresh, or log provider credentials.
 
+The Claude Code section uses a separate projection of the same response. It
+maps only `five_hour` (5-hour, absent when null), `seven_day` (Weekly), and
+Fable's weekly percentage, with no other model rows and no extra usage. Fable
+comes from `limits[]` entries whose `kind` is `weekly_scoped`, whose `group` is
+missing, null, or `weekly`, whose `percent` is a non-negative JSON number (not a
+boolean or string), and whose `scope.model` is Fable: an `id` containing
+`fable`, or a trimmed `display_name` equal to `Fable` or starting with
+`Fable ` (case-insensitive). The highest matching percentage wins, with its
+`resets_at`. Without a matching entry, the legacy `seven_day_fable` window is
+used. The Desktop projection is unchanged.
+
+A 429 from the usage or profile endpoint honors `Retry-After` as delta seconds
+or an HTTP-date (`Wed, 21 Oct 2099 07:28:00 GMT`). The cooldown is at least
+60 seconds, defaults to five minutes, and is capped at six hours.
+
 ## Build and Release Environment
 
 The build scripts accept namespaced environment variables including:

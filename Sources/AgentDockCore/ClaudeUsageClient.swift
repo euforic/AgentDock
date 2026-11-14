@@ -16,12 +16,23 @@ public protocol ClaudeUsageFetching: Sendable {
         allowKeychainInteraction: Bool,
         forceRefresh: Bool
     ) async -> ProfileRateLimits
+
+    func fetchClaudeCodeUsage(
+        location: ClaudeCodeLocation,
+        allowKeychainInteraction: Bool,
+        forceRefresh: Bool
+    ) async -> ProfileRateLimits
 }
 
 enum ClaudeUsageRefreshPolicy {
     static let freshnessInterval: TimeInterval = 5 * 60
     static let failureRetryBackoff: TimeInterval = 60
     static let defaultRateLimitCooldown: TimeInterval = 5 * 60
+    /// Repeated manual refreshes within this interval reuse the last success.
+    static let manualRefreshFloor: TimeInterval = 30
+    static let maximumRateLimitCooldown: TimeInterval = 6 * 60 * 60
+    /// Claude Code logins expiring within this interval are treated as expired.
+    static let credentialExpiryMargin: TimeInterval = 120
 
     static func canReuse(_ limits: ProfileRateLimits, now: Date) -> Bool {
         let age = now.timeIntervalSince(limits.fetchedAt)
@@ -29,24 +40,80 @@ enum ClaudeUsageRefreshPolicy {
     }
 
     static func rateLimitCooldown(retryAfter: TimeInterval?) -> TimeInterval {
-        max(failureRetryBackoff, retryAfter ?? defaultRateLimitCooldown)
+        min(
+            max(failureRetryBackoff, retryAfter ?? defaultRateLimitCooldown),
+            maximumRateLimitCooldown
+        )
     }
+
+    /// Parses `Retry-After` as delta seconds or an HTTP-date.
+    static func retryAfter(_ header: String?, now: Date) -> TimeInterval? {
+        guard let value = header?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !value.isEmpty
+        else { return nil }
+        if let seconds = TimeInterval(value) {
+            return seconds.isFinite && seconds >= 0 ? seconds : nil
+        }
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.timeZone = TimeZone(identifier: "GMT")
+        formatter.dateFormat = "EEE, dd MMM yyyy HH:mm:ss zzz"
+        guard let date = formatter.date(from: value) else { return nil }
+        return max(0, date.timeIntervalSince(now))
+    }
+
+    /// A manual refresh skips freshness (down to a short floor) and non-429
+    /// backoff, but never an active provider rate-limit cooldown.
+    static func gate(
+        now: Date,
+        lastSuccessAt: Date?,
+        failureRetryAt: Date?,
+        rateLimitedUntil: Date?,
+        forceRefresh: Bool
+    ) -> ClaudeUsageGate {
+        if let rateLimitedUntil, rateLimitedUntil > now {
+            return .rateLimited(until: rateLimitedUntil)
+        }
+        if let lastSuccessAt {
+            let age = now.timeIntervalSince(lastSuccessAt)
+            if age >= 0, age < (forceRefresh ? manualRefreshFloor : freshnessInterval) {
+                return .reuseCached
+            }
+        }
+        if !forceRefresh, let failureRetryAt, failureRetryAt > now {
+            return .backingOff
+        }
+        return .fetch
+    }
+}
+
+enum ClaudeUsageProjection: String, Sendable {
+    case desktop
+    case claudeCode
 }
 
 public actor ClaudeUsageClient: ClaudeUsageFetching {
     private static let usageURL = URL(string: "https://api.anthropic.com/api/oauth/usage")!
     private static let profileURL = URL(string: "https://api.anthropic.com/api/oauth/profile")!
+    private static let rateLimitedWarning = "Live usage is rate limited; showing the last successful update."
+    private static let rateLimitedError = "Live usage is rate limited. Try again later."
     private struct CachedUsage {
         var limits: ProfileRateLimits
         var retryAfter: Date?
     }
 
     private let session: URLSession
-    private var credentialReader = ClaudeCredentialReader()
+    private var credentialReader: ClaudeCredentialReader
+    private let cooldowns: ClaudeUsageCooldownStore
+    private var verifiedIdentities = ClaudeIdentityVerificationLedger()
     private var cache: [String: CachedUsage] = [:]
     private var refreshWaiters: [String: [CheckedContinuation<ProfileRateLimits, Never>]] = [:]
 
     public init() {
+        self.init(cooldowns: ClaudeUsageCooldownStore(), keychain: nil)
+    }
+
+    init(cooldowns: ClaudeUsageCooldownStore, keychain: SecKeychain? = nil) {
         let configuration = URLSessionConfiguration.ephemeral
         configuration.urlCache = nil
         configuration.requestCachePolicy = .reloadIgnoringLocalCacheData
@@ -56,6 +123,8 @@ public actor ClaudeUsageClient: ClaudeUsageFetching {
         configuration.timeoutIntervalForResource = 15
         configuration.waitsForConnectivity = false
         session = URLSession(configuration: configuration)
+        credentialReader = ClaudeCredentialReader(keychain: keychain)
+        self.cooldowns = cooldowns
     }
 
     public func fetchOfficialUsage(
@@ -68,7 +137,7 @@ public actor ClaudeUsageClient: ClaudeUsageFetching {
             userDataURL: claudeUserDataURL,
             allowKeychainInteraction: allowKeychainInteraction
         )
-        return await fetch(credential, forceRefresh: forceRefresh)
+        return await fetch(credential, projection: .desktop, forceRefresh: forceRefresh)
     }
 
     public func fetchManagedUsage(
@@ -80,11 +149,41 @@ public actor ClaudeUsageClient: ClaudeUsageFetching {
             userDataURL: claudeUserDataURL,
             allowKeychainInteraction: allowKeychainInteraction
         )
-        return await fetch(credential, forceRefresh: forceRefresh)
+        return await fetch(credential, projection: .desktop, forceRefresh: forceRefresh)
+    }
+
+    /// Live limits for the Claude Code CLI login, which can differ from Desktop.
+    public func fetchClaudeCodeUsage(
+        location: ClaudeCodeLocation,
+        allowKeychainInteraction: Bool,
+        forceRefresh: Bool = false
+    ) async -> ProfileRateLimits {
+        switch credentialReader.readClaudeCodeCredential(
+            location: location,
+            allowKeychainInteraction: allowKeychainInteraction
+        ) {
+        case let .usable(credential):
+            return await fetch(credential, projection: .claudeCode, forceRefresh: forceRefresh)
+        case .notSignedIn:
+            return ProfileRateLimits(errorMessage: ClaudeCodeUsageMessage.notSignedIn)
+        case .keychainAccessRequired:
+            return ProfileRateLimits(errorMessage: ClaudeCodeUsageMessage.keychainAccessRequired)
+        case let .expired(subscriptionType):
+            return ProfileRateLimits(
+                planType: subscriptionType,
+                errorMessage: ClaudeCodeUsageMessage.expired
+            )
+        case let .missingProfileScope(subscriptionType):
+            return ProfileRateLimits(
+                planType: subscriptionType,
+                errorMessage: ClaudeCodeUsageMessage.missingProfileScope
+            )
+        }
     }
 
     private func fetch(
         _ credential: ClaudeUsageCredential?,
+        projection: ClaudeUsageProjection,
         forceRefresh: Bool
     ) async -> ProfileRateLimits {
         guard let credential else {
@@ -99,23 +198,28 @@ public actor ClaudeUsageClient: ClaudeUsageFetching {
             )
         }
 
-        let key = credential.cacheKey
+        let key = "\(projection.rawValue)|\(credential.cacheKey)"
+        let digest = credential.tokenDigest
         let now = Date()
-        if !forceRefresh,
-           let cached = cache[key],
-           cached.retryAfter == nil,
-           ClaudeUsageRefreshPolicy.canReuse(cached.limits, now: now)
-        {
-            return cached.limits
+        let cached = cache[key]
+        // Matches the previous reuse rule: only a success with no cooldown is fresh.
+        var lastSuccessAt: Date?
+        if let cached, cached.retryAfter == nil {
+            lastSuccessAt = cached.limits.fetchedAt
         }
-        if !forceRefresh, let retryAfter = cache[key]?.retryAfter, retryAfter > now {
-            return cachedLimits(
-                for: key,
-                warning: "Live usage is rate limited; showing the last successful update."
-            ) ?? ProfileRateLimits(
-                planType: credential.subscriptionType,
-                errorMessage: "Live usage is rate limited. Try again later."
-            )
+        switch ClaudeUsageRefreshPolicy.gate(
+            now: now,
+            lastSuccessAt: lastSuccessAt,
+            failureRetryAt: cached?.retryAfter,
+            rateLimitedUntil: cooldowns.blockedUntil(tokenDigest: digest, now: now),
+            forceRefresh: forceRefresh
+        ) {
+        case .rateLimited, .backingOff:
+            return rateLimitedLimits(for: key, credential: credential)
+        case .reuseCached:
+            if let cached { return cached.limits }
+        case .fetch:
+            break
         }
 
         if refreshWaiters[key] != nil {
@@ -125,7 +229,7 @@ public actor ClaudeUsageClient: ClaudeUsageFetching {
         }
 
         refreshWaiters[key] = []
-        let limits = await fetchUncached(credential, key: key)
+        let limits = await fetchUncached(credential, key: key, projection: projection)
         let waiters = refreshWaiters.removeValue(forKey: key) ?? []
         waiters.forEach { $0.resume(returning: limits) }
         return limits
@@ -133,89 +237,73 @@ public actor ClaudeUsageClient: ClaudeUsageFetching {
 
     private func fetchUncached(
         _ credential: ClaudeUsageCredential,
-        key: String
+        key: String,
+        projection: ClaudeUsageProjection
     ) async -> ProfileRateLimits {
+        let digest = credential.tokenDigest
         do {
-            if let identity = credential.identity {
+            // Identity is verified once per (identity, token) pair, not per request.
+            if let identity = credential.identity,
+               !verifiedIdentities.isVerified(credential.cacheKey)
+            {
                 try await verifyIdentity(identity, accessToken: credential.accessToken)
+                verifiedIdentities.markVerified(credential.cacheKey)
             }
             let (data, response) = try await request(Self.usageURL, token: credential.accessToken)
             if response.statusCode == 429 {
-                let retryAt = Date().addingTimeInterval(
-                    ClaudeUsageRefreshPolicy.rateLimitCooldown(
-                        retryAfter: retryAfter(from: response)
-                    )
-                )
-                recordFailureCooldown(
-                    for: key,
-                    fallback: ProfileRateLimits(planType: credential.subscriptionType),
-                    retryAt: retryAt
-                )
-                return cachedLimits(
-                    for: key,
-                    warning: "Live usage is rate limited; showing the last successful update."
-                ) ?? ProfileRateLimits(
-                    planType: credential.subscriptionType,
-                    errorMessage: "Live usage is rate limited. Try again later."
+                return recordRateLimit(
+                    key: key,
+                    digest: digest,
+                    retryAfter: response.value(forHTTPHeaderField: "Retry-After"),
+                    credential: credential
                 )
             }
             guard (200..<300).contains(response.statusCode) else {
-                let failure = requestFailure(response.statusCode, credential: credential)
-                let retryDelay = response.statusCode == 401 || response.statusCode == 403
-                    ? ClaudeUsageRefreshPolicy.defaultRateLimitCooldown
-                    : ClaudeUsageRefreshPolicy.failureRetryBackoff
-                recordFailureCooldown(
-                    for: key,
-                    fallback: failure,
-                    retryAt: Date().addingTimeInterval(retryDelay)
+                return recordRequestFailure(
+                    response.statusCode,
+                    key: key,
+                    credential: credential,
+                    projection: projection
                 )
-                return cachedLimits(
-                    for: key,
-                    warning: failure.errorMessage ?? "Live usage could not be refreshed."
-                ) ?? failure
             }
-            var limits = try ClaudeUsageResponseParser.parse(
-                data,
-                planType: credential.subscriptionType
-            )
+            var limits: ProfileRateLimits
+            if projection == .claudeCode {
+                limits = try ClaudeUsageResponseParser.parseClaudeCode(
+                    data,
+                    planType: credential.subscriptionType
+                )
+            } else {
+                limits = try ClaudeUsageResponseParser.parse(
+                    data,
+                    planType: credential.subscriptionType
+                )
+            }
             limits.fetchedAt = Date()
             cache[key] = CachedUsage(limits: limits, retryAfter: nil)
+            cooldowns.clear(tokenDigest: digest)
             return limits
         } catch ClaudeUsageClientError.identityMismatch {
             cache.removeValue(forKey: key)
+            verifiedIdentities.invalidate(credential.cacheKey)
             return ProfileRateLimits(
-                errorMessage: "The Claude login no longer matches this account. Open Claude and sign in, then refresh."
+                errorMessage: projection == .claudeCode
+                    ? ClaudeCodeUsageMessage.identityMismatch
+                    : "The Claude login no longer matches this account. Open Claude and sign in, then refresh."
             )
         } catch ClaudeUsageClientError.rateLimited(let retryAfter) {
-            let retryAt = Date().addingTimeInterval(
-                ClaudeUsageRefreshPolicy.rateLimitCooldown(retryAfter: retryAfter)
-            )
-            recordFailureCooldown(
-                for: key,
-                fallback: ProfileRateLimits(planType: credential.subscriptionType),
-                retryAt: retryAt
-            )
-            return cachedLimits(
-                for: key,
-                warning: "Live usage is rate limited; showing the last successful update."
-            ) ?? ProfileRateLimits(
-                planType: credential.subscriptionType,
-                errorMessage: "Live usage is rate limited. Try again later."
+            return recordRateLimit(
+                key: key,
+                digest: digest,
+                retryAfter: retryAfter,
+                credential: credential
             )
         } catch ClaudeUsageClientError.requestFailed(let statusCode) {
-            let failure = requestFailure(statusCode, credential: credential)
-            let retryDelay = statusCode == 401 || statusCode == 403
-                ? ClaudeUsageRefreshPolicy.defaultRateLimitCooldown
-                : ClaudeUsageRefreshPolicy.failureRetryBackoff
-            recordFailureCooldown(
-                for: key,
-                fallback: failure,
-                retryAt: Date().addingTimeInterval(retryDelay)
+            return recordRequestFailure(
+                statusCode,
+                key: key,
+                credential: credential,
+                projection: projection
             )
-            return cachedLimits(
-                for: key,
-                warning: failure.errorMessage ?? "Live usage could not be refreshed."
-            ) ?? failure
         } catch {
             recordFailureCooldown(
                 for: key,
@@ -230,6 +318,64 @@ public actor ClaudeUsageClient: ClaudeUsageFetching {
                 errorMessage: "Live usage could not be loaded. Check the connection and refresh."
             )
         }
+    }
+
+    /// Handles a 429 from either the usage or profile endpoint. The cooldown is
+    /// persisted by token digest so it survives relaunch and manual refresh.
+    private func recordRateLimit(
+        key: String,
+        digest: String,
+        retryAfter header: String?,
+        credential: ClaudeUsageCredential
+    ) -> ProfileRateLimits {
+        let now = Date()
+        let retryAt = now.addingTimeInterval(
+            ClaudeUsageRefreshPolicy.rateLimitCooldown(
+                retryAfter: ClaudeUsageRefreshPolicy.retryAfter(header, now: now)
+            )
+        )
+        cooldowns.record(tokenDigest: digest, until: retryAt, now: now)
+        recordFailureCooldown(
+            for: key,
+            fallback: ProfileRateLimits(planType: credential.subscriptionType),
+            retryAt: retryAt
+        )
+        return rateLimitedLimits(for: key, credential: credential)
+    }
+
+    private func recordRequestFailure(
+        _ statusCode: Int,
+        key: String,
+        credential: ClaudeUsageCredential,
+        projection: ClaudeUsageProjection
+    ) -> ProfileRateLimits {
+        let unauthorized = statusCode == 401 || statusCode == 403
+        if unauthorized {
+            verifiedIdentities.invalidate(credential.cacheKey)
+        }
+        let failure = requestFailure(statusCode, credential: credential, projection: projection)
+        let retryDelay = unauthorized
+            ? ClaudeUsageRefreshPolicy.defaultRateLimitCooldown
+            : ClaudeUsageRefreshPolicy.failureRetryBackoff
+        recordFailureCooldown(
+            for: key,
+            fallback: failure,
+            retryAt: Date().addingTimeInterval(retryDelay)
+        )
+        return cachedLimits(
+            for: key,
+            warning: failure.errorMessage ?? "Live usage could not be refreshed."
+        ) ?? failure
+    }
+
+    private func rateLimitedLimits(
+        for key: String,
+        credential: ClaudeUsageCredential
+    ) -> ProfileRateLimits {
+        cachedLimits(for: key, warning: Self.rateLimitedWarning) ?? ProfileRateLimits(
+            planType: credential.subscriptionType,
+            errorMessage: Self.rateLimitedError
+        )
     }
 
     private func recordFailureCooldown(
@@ -248,7 +394,9 @@ public actor ClaudeUsageClient: ClaudeUsageFetching {
     private func verifyIdentity(_ expected: ClaudeAccountIdentity, accessToken: String) async throws {
         let (data, response) = try await request(Self.profileURL, token: accessToken)
         if response.statusCode == 429 {
-            throw ClaudeUsageClientError.rateLimited(retryAfter(from: response))
+            throw ClaudeUsageClientError.rateLimited(
+                retryAfter: response.value(forHTTPHeaderField: "Retry-After")
+            )
         }
         guard (200..<300).contains(response.statusCode) else {
             throw ClaudeUsageClientError.requestFailed(response.statusCode)
@@ -291,9 +439,11 @@ public actor ClaudeUsageClient: ClaudeUsageFetching {
 
     private func requestFailure(
         _ statusCode: Int,
-        credential: ClaudeUsageCredential
+        credential: ClaudeUsageCredential,
+        projection: ClaudeUsageProjection
     ) -> ProfileRateLimits {
         let message = switch statusCode {
+        case 401 where projection == .claudeCode: ClaudeCodeUsageMessage.expired
         case 401: "The Claude session expired. Sign in again, then refresh."
         case 403: "This Claude login is not permitted to read live usage."
         default: "Live usage request failed (HTTP \(statusCode))."
@@ -305,12 +455,6 @@ public actor ClaudeUsageClient: ClaudeUsageFetching {
         guard var limits = cache[key]?.limits, !limits.buckets.isEmpty else { return nil }
         limits.warningMessage = warning
         return limits
-    }
-
-    private func retryAfter(from response: HTTPURLResponse) -> TimeInterval? {
-        guard let value = response.value(forHTTPHeaderField: "Retry-After") else { return nil }
-        if let seconds = TimeInterval(value), seconds >= 0 { return seconds }
-        return nil
     }
 }
 
@@ -330,21 +474,29 @@ struct ClaudeAccountIdentity: Equatable, Sendable {
     }
 }
 
-struct ClaudeUsageCredential: Sendable {
+struct ClaudeUsageCredential: Equatable, Sendable {
     var accessToken: String
     var expiresAt: Double?
     var subscriptionType: String?
     var scopes: Set<String>
     var identity: ClaudeAccountIdentity?
 
-    var cacheKey: String {
-        let digest = SHA256.hash(data: Data(accessToken.utf8))
+    /// The SHA-256 hex digest of the access token; safe to persist and compare.
+    var tokenDigest: String {
+        Self.digest(accessToken)
+    }
+
+    static func digest(_ token: String) -> String {
+        SHA256.hash(data: Data(token.utf8))
             .map { String(format: "%02x", $0) }
             .joined()
+    }
+
+    var cacheKey: String {
         if let identity {
-            return "\(identity.accountUUID.lowercased())|\(identity.organizationUUID.lowercased())|\(digest)"
+            return "\(identity.accountUUID.lowercased())|\(identity.organizationUUID.lowercased())|\(tokenDigest)"
         }
-        return digest
+        return tokenDigest
     }
 }
 
@@ -461,6 +613,104 @@ enum ClaudeUsageResponseParser {
     }
 }
 
+extension ClaudeUsageResponseParser {
+    /// The Claude Code projection: the 5-hour and weekly windows plus Fable's
+    /// separate weekly allowance. No other model rows and no extra usage.
+    static func parseClaudeCode(
+        _ data: Data,
+        planType: String? = nil,
+        fetchedAt: Date = Date()
+    ) throws -> ProfileRateLimits {
+        guard let root = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            throw ClaudeUsageClientError.invalidResponse
+        }
+
+        var buckets: [RateLimitBucket] = []
+        let session = strictWindow(root["five_hour"], minutes: 300)
+        let weekly = strictWindow(root["seven_day"], minutes: 10_080)
+        if session != nil || weekly != nil {
+            buckets.append(RateLimitBucket(
+                id: "claude",
+                name: "Claude",
+                primary: session,
+                secondary: weekly
+            ))
+        }
+        if let fable = fableWeekly(in: root) {
+            buckets.append(RateLimitBucket(
+                id: "model-fable",
+                name: "Fable",
+                primary: fable,
+                secondary: nil
+            ))
+        }
+
+        return ProfileRateLimits(
+            planType: planType,
+            buckets: buckets,
+            credits: nil,
+            fetchedAt: fetchedAt
+        )
+    }
+
+    /// Fable's weekly window from `limits[]`, falling back to `seven_day_fable`.
+    static func fableWeekly(in root: [String: Any]) -> RateLimitWindowUsage? {
+        let legacy = strictWindow(root["seven_day_fable"], minutes: 10_080)
+        let limits = (root["limits"] as? [Any])?.compactMap { $0 as? [String: Any] } ?? []
+        var best: (percent: Double, resetsAt: Date?)?
+        for limit in limits where limit["kind"] as? String == "weekly_scoped" {
+            let group = limit["group"]
+            guard group == nil || group is NSNull || group as? String == "weekly",
+                  let percent = strictNumber(limit["percent"]),
+                  let scope = limit["scope"] as? [String: Any],
+                  let model = scope["model"] as? [String: Any],
+                  isFableModel(model)
+            else { continue }
+            // The highest matching percentage wins; the first one wins a tie.
+            if let current = best, percent <= current.percent { continue }
+            best = (percent, date(limit["resets_at"]))
+        }
+        guard let best else { return legacy }
+        return RateLimitWindowUsage(
+            usedPercent: best.percent,
+            windowDurationMins: 10_080,
+            resetsAt: best.resetsAt
+        )
+    }
+
+    static func isFableModel(_ model: [String: Any]) -> Bool {
+        if (model["id"] as? String)?.lowercased().contains("fable") == true {
+            return true
+        }
+        guard let name = (model["display_name"] as? String)?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+        else { return false }
+        return name == "fable" || name.hasPrefix("fable ")
+    }
+
+    private static func strictWindow(_ value: Any?, minutes: Int) -> RateLimitWindowUsage? {
+        guard let object = value as? [String: Any],
+              let percent = strictNumber(object["utilization"])
+        else { return nil }
+        return RateLimitWindowUsage(
+            usedPercent: percent,
+            windowDurationMins: minutes,
+            resetsAt: date(object["resets_at"])
+        )
+    }
+
+    /// A finite, non-negative JSON number. Booleans and strings are rejected.
+    private static func strictNumber(_ value: Any?) -> Double? {
+        guard let number = value as? NSNumber,
+              CFGetTypeID(number) != CFBooleanGetTypeID()
+        else { return nil }
+        let result = number.doubleValue
+        guard result.isFinite, result >= 0 else { return nil }
+        return result
+    }
+}
+
 struct ClaudeCredentialReader {
     private static let safeStorageService = "Claude Safe Storage"
     private static let safeStorageAccount = "Claude Key"
@@ -469,6 +719,8 @@ struct ClaudeCredentialReader {
     // across profiles. Tokens and account identity are still reread for each root.
     private var desktopKey: Data?
     private let keychain: SecKeychain?
+    /// Claude Code's account identity, reread only when its token digest changes.
+    var claudeCodeIdentityCache: (tokenDigest: String, identity: ClaudeAccountIdentity?)?
 
     init(keychain: SecKeychain? = nil) {
         self.keychain = keychain
@@ -632,6 +884,20 @@ struct ClaudeCredentialReader {
         account: String?,
         allowKeychainInteraction: Bool
     ) -> String? {
+        guard case let .found(value) = keychainLookup(
+            service: service,
+            account: account,
+            allowKeychainInteraction: allowKeychainInteraction
+        ) else { return nil }
+        return nonempty(value)
+    }
+
+    /// Reads a generic password and reports why a read failed.
+    func keychainLookup(
+        service: String,
+        account: String?,
+        allowKeychainInteraction: Bool
+    ) -> ClaudeKeychainLookup {
         var query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
@@ -645,14 +911,26 @@ struct ClaudeCredentialReader {
             context.interactionNotAllowed = true
             query[kSecUseAuthenticationContext as String] = context
         }
-        return ClaudeKeychainAccess.withInteractionAllowed(allowKeychainInteraction) {
+        let lookup = ClaudeKeychainAccess.withInteractionAllowed(
+            allowKeychainInteraction
+        ) { () -> ClaudeKeychainLookup? in
             var result: CFTypeRef?
-            guard SecItemCopyMatching(query as CFDictionary, &result) == errSecSuccess,
-                  let data = result as? Data,
-                  let value = String(data: data, encoding: .utf8)
-            else { return nil }
-            return nonempty(value)
+            let status = SecItemCopyMatching(query as CFDictionary, &result)
+            switch status {
+            case errSecSuccess:
+                guard let data = result as? Data,
+                      let value = String(data: data, encoding: .utf8)
+                else { return ClaudeKeychainLookup.failed }
+                return ClaudeKeychainLookup.found(value)
+            case errSecItemNotFound:
+                return ClaudeKeychainLookup.notFound
+            case errSecInteractionNotAllowed, errSecAuthFailed:
+                return ClaudeKeychainLookup.interactionRequired
+            default:
+                return ClaudeKeychainLookup.failed
+            }
         }
+        return lookup ?? .failed
     }
 
     private func deriveKey(password: String) throws -> Data {
@@ -745,8 +1023,15 @@ private enum ClaudeUsageClientError: Error {
     case responseTooLarge
     case invalidCredential
     case identityMismatch
-    case rateLimited(TimeInterval?)
+    case rateLimited(retryAfter: String?)
     case requestFailed(Int)
+}
+
+enum ClaudeKeychainLookup: Sendable {
+    case found(String)
+    case notFound
+    case interactionRequired
+    case failed
 }
 
 // Claude uses the file-based login Keychain. LAContext only suppresses UI for

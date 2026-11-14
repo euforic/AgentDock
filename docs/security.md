@@ -121,8 +121,8 @@ token is release configuration, not a credential; no private PostHog key
 belongs in the app. See the [complete catalog](analytics.md).
 
 Local Claude usage summaries do not require credentials. Live subscription
-limits are an explicit provider-access boundary: AgentDock reads Claude Code or
-Claude Desktop OAuth access tokens and the active Desktop organization from
+limits are an explicit provider-access boundary: AgentDock reads Claude Desktop
+and Claude Code OAuth access tokens and the active Desktop organization from
 provider-owned Keychain and local state, then calls Anthropic's OAuth profile
 and usage endpoints. Tokens are held only for the request; AgentDock never
 copies them into its own storage, refreshes or rotates them, includes them in
@@ -132,14 +132,33 @@ Each profile's tokens and account identity are still read afresh from its files.
 Background reads forbid Keychain interaction, including legacy login-Keychain
 prompts. A manual refresh can request access; choosing **Always Allow** lets
 macOS retain that grant for subsequent launches of the signed app. Managed profiles resolve credentials
-only from their own Desktop user-data roots. The official Claude usage row also
-uses Desktop credentials exclusively, so a separate Claude Code login cannot
-replace the displayed account. Desktop usage requires a valid
+only from their own Desktop user-data roots. The official Claude Desktop usage
+row still uses Desktop credentials exclusively, so a separate Claude Code login
+cannot replace the displayed Desktop account. Desktop usage requires a valid
 account and organization identity, and responses are verified against that
 identity before display. An explicit identity mismatch clears the corresponding
 cached quota instead of showing stale data. Active-organization cookie database
 reads run in process through the read-only database reader and enforce the same
 root containment and symlink checks as other databases.
+
+## Claude Code Live Limits
+
+The separate Claude Code section reads Claude Code's own login: the
+`Claude Code-credentials` Keychain item, then `.credentials.json` in the Claude
+Code home (`$CLAUDE_CONFIG_DIR` when absolute, otherwise `~/.claude`), and the
+`oauthAccount` identity in `.claude.json`. Files are read with bounded,
+no-follow reads, so symlinks are treated as absent. Background reads are
+non-interactive; only a manual refresh can show a Keychain prompt. Only the
+access token, expiry, scopes, and subscription type are parsed; refresh tokens
+are never read. Logins without `user:profile` or within two minutes of expiry
+are not used. When an identity is recorded, responses are verified against it
+once per identity and token. AgentDock never refreshes, rotates, copies, or
+logs Claude Code tokens, and Claude Code results are not sent to analytics.
+
+Provider 429 cooldowns persist in AgentDock's preferences domain as SHA-256
+token digests mapped to expiry timestamps (at most 32 entries and 16 KiB,
+capped at six hours). They never contain tokens, identities, or paths, and
+restoring default preferences does not clear them.
 
 ## Repository and Release Hygiene
 
