@@ -26,7 +26,7 @@ final class ResourceRefreshIntegrationTests: XCTestCase {
         let profile = try store.createProfile(name: "Synthetic")
         let model = AgentDockModel(store: store, officialDataRootURL: root.appendingPathComponent("Official"),
             codexAppURL: root.appendingPathComponent("Missing.app"), claudeAppURL: root.appendingPathComponent("Missing.app"),
-            claudeCodeLogin: ClaudeCodeLogin(store: InMemoryClaudeLoginStore()),
+            claudeCodeAccounts: ClaudeCodeAccounts(store: InMemoryClaudeLoginAccounts()),
             preferencesStore: AgentDockPreferencesStore(defaults: defaults), startMonitoring: false,
             resetReminders: ResetReminderController(store: ResetReminderStore(defaults: defaults), nativeNotifications: false))
         try Data("model_provider = \"openai\"\n".utf8).write(to: profile.codexHomePath.appendingPathComponent("work.config.toml"))
@@ -54,7 +54,7 @@ final class ResourceRefreshIntegrationTests: XCTestCase {
         _ = try store.createProfile(name: "Synthetic")
         let model = AgentDockModel(store: store, officialDataRootURL: root.appendingPathComponent("Official"),
             codexAppURL: root.appendingPathComponent("Missing.app"), claudeAppURL: root.appendingPathComponent("Missing.app"),
-            claudeCodeLogin: ClaudeCodeLogin(store: InMemoryClaudeLoginStore()),
+            claudeCodeAccounts: ClaudeCodeAccounts(store: InMemoryClaudeLoginAccounts()),
             preferencesStore: AgentDockPreferencesStore(defaults: defaults), loadActivityOnInit: false,
             resetReminders: ResetReminderController(store: ResetReminderStore(defaults: defaults), nativeNotifications: false))
         await withTaskGroup(of: Void.self) { group in

@@ -138,8 +138,8 @@ weekly, model-scoped, reset, and extra-usage fields into `ProfileRateLimits`.
 AgentDock verifies account and organization identity through the sibling OAuth
 profile endpoint before assigning a response to an account-scoped source. It
 does not persist, rotate, refresh, or log provider credentials. The exception is
-AgentDock's own Claude sign-in for the Claude Code section, described below,
-whose tokens AgentDock stores and renews.
+AgentDock's own Claude sign-ins for the Claude Code section, described below,
+whose tokens AgentDock stores and renews, one Keychain item per account.
 
 ### AgentDock Claude sign-in
 
@@ -166,6 +166,17 @@ client ID `9d1c250a-e61b-44d9-88ed-5944d1962f5e`.
   `account.uuid`, `account.email` (or a top-level `email`),
   `organization.uuid`, and `organization.organization_type` without its
   `claude_` prefix as the plan.
+- **Account key:** the first 16 bytes of
+  `SHA-256("agentdock.claude-login|<account uuid>|<organization uuid>")`
+  (lowercased UUIDs) as 32 lowercase hex characters. It names the account's
+  Keychain item, `claude-code:<account key>`, under the service
+  `dev.euforic.agentdock.claude-login`. Signing in to the same account and
+  organization again replaces that item.
+- **Stored payload:** JSON with `version`, `accessToken`, `refreshToken`,
+  `expiresAt` (seconds since 1970), `scopes`, `accountUUID`,
+  `organizationUUID`, `accountLabel`, `subscriptionType`, and the optional
+  `customName` and `addedAt`. Payloads without the optional fields, written by
+  earlier versions, still load.
 
 The Claude Code section uses a separate projection of the same response. It
 maps only `five_hour` (5-hour, absent when null), `seven_day` (Weekly), and

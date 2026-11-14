@@ -345,7 +345,7 @@ private final class SyntheticProfileFixture {
             codexAppURL: root.appendingPathComponent("Unavailable.app"),
             claudeAppURL: root.appendingPathComponent("Unavailable.app"),
             statsScanner: ProfileStatsScanner(claudeChatScanner: LocalChatScanner(indexRootURL: indexRoot)),
-            claudeCodeLogin: ClaudeCodeLogin(store: InMemoryClaudeLoginStore()),
+            claudeCodeAccounts: ClaudeCodeAccounts(store: InMemoryClaudeLoginAccounts()),
             preferencesStore: AgentDockPreferencesStore(defaults: defaults),
             startMonitoring: false,
             loadActivityOnInit: false,

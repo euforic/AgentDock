@@ -2,12 +2,28 @@ import Foundation
 import Security
 
 public struct ClaudeLoginAccount: Equatable, Sendable {
+    /// The profile email, or "Claude account".
     public var label: String
     public var subscriptionType: String?
+    /// The name the user chose for this account, if any.
+    public var customName: String?
+    public var addedAt: Date?
 
-    public init(label: String, subscriptionType: String?) {
+    public init(
+        label: String,
+        subscriptionType: String?,
+        customName: String? = nil,
+        addedAt: Date? = nil
+    ) {
         self.label = label
         self.subscriptionType = subscriptionType
+        self.customName = customName
+        self.addedAt = addedAt
+    }
+
+    /// The user's name for the account, or else its email.
+    public var displayName: String {
+        customName ?? label
     }
 }
 
@@ -16,6 +32,11 @@ public enum ClaudeCodeLoginStatus: Equatable, Sendable {
     case keychainAccessRequired
     case signedOut(expired: Bool)
     case signedIn(ClaudeLoginAccount)
+
+    public var isSignedIn: Bool {
+        if case .signedIn = self { return true }
+        return false
+    }
 }
 
 public enum ClaudeSignInProgress: Equatable, Sendable {
@@ -36,6 +57,7 @@ public enum ClaudeSignInError: Error, Equatable, Sendable {
     case invalidResponse
     case profileUnavailable
     case keychain(ClaudeLoginStoreError)
+    case accountNotFound
 
     public var message: String {
         switch self {
@@ -65,6 +87,8 @@ public enum ClaudeSignInError: Error, Equatable, Sendable {
             "AgentDock couldn't update its Keychain item. Allow Keychain access and try again."
         case .keychain:
             "AgentDock couldn't update its Keychain item. Try again."
+        case .accountNotFound:
+            "That Claude account is no longer signed in to AgentDock."
         }
     }
 }
@@ -83,12 +107,13 @@ public enum ClaudeCodeUsageMessage {
     public static let keychainAccessRequired = "Click Refresh to let AgentDock read its Claude sign-in from the Keychain. Choose Always Allow to keep access."
     public static let renewalUnavailable = "AgentDock couldn't renew the Claude sign-in. It will try again on the next refresh."
     public static let identityMismatch = "The Claude sign-in no longer matches its account. Sign in again."
+    public static let unreadableSignIn = "AgentDock couldn't read this Claude sign-in. Sign in again or remove it."
 }
 
-/// AgentDock's own Claude sign-in for Claude Code limits. It owns the stored
-/// tokens: one renewal at a time, written back without prompting, and deleted
-/// when Claude refuses them. Tokens, codes, the verifier, the email, and the
-/// account identifiers are never logged.
+/// One Claude account signed in to AgentDock for Claude Code limits. It owns
+/// that account's stored tokens: one renewal at a time, written back to the
+/// account's own item without prompting, and deleted when Claude refuses them.
+/// Tokens, the email, and the account identifiers are never logged.
 public actor ClaudeCodeLogin {
     private let store: any ClaudeLoginTokenStoring
     private let transport: any ClaudeHTTPTransport
@@ -97,12 +122,16 @@ public actor ClaudeCodeLogin {
     /// A missing item is cached; a load that needed Keychain access is not.
     private var loaded = false
     private var expiredNotice = false
+    /// The item exists but is not a sign-in AgentDock can use.
+    private var unreadable = false
+    /// The last account seen, kept after a refusal so its card can say so.
+    private var lastKnownAccount: ClaudeLoginAccount?
+    private var lastKnownIdentity: ClaudeAccountIdentity?
     /// A renewal the Keychain refused to save; saving it is retried first.
     private var unsavedTokens: ClaudeLoginTokens?
     private var renewal: Task<ClaudeLoginTokenOutcome, Never>?
     /// Bumped by sign-in and sign-out; a renewal that started earlier is discarded.
     private var generation = 0
-    private var signInInProgress = false
 
     public init(
         store: any ClaudeLoginTokenStoring,
@@ -120,71 +149,74 @@ public actor ClaudeCodeLogin {
         return .signedOut(expired: expiredNotice)
     }
 
-    // MARK: - Sign in and out
+    /// The status plus the last account seen, for an account's card.
+    func summary(allowKeychainInteraction: Bool = false) -> (status: ClaudeCodeLoginStatus, account: ClaudeLoginAccount?) {
+        let current = self.status(allowKeychainInteraction: allowKeychainInteraction)
+        return (current, lastKnownAccount)
+    }
 
-    /// Runs one PKCE sign-in through claude.ai. The code arrives at the loopback
-    /// listener or as the first value of `pastedCodes`, whichever comes first.
-    public func signIn(
-        progress: @escaping @Sendable (ClaudeSignInProgress) async -> Void,
-        pastedCodes: AsyncStream<String>
-    ) async throws(ClaudeSignInError) -> ClaudeLoginAccount {
-        guard !signInInProgress else { throw ClaudeSignInError.alreadyInProgress }
-        signInInProgress = true
-        defer { signInInProgress = false }
+    /// The account identity last seen, used to key its rate-limit state.
+    func knownIdentity() -> ClaudeAccountIdentity? {
+        lastKnownIdentity
+    }
 
-        let pkce = ClaudePKCE.generate()
-        let state = UUID().uuidString
-        let server = try await ClaudeLoopbackCallbackServer.start(expectedState: state)
-        defer { server.cancel() }
-        let redirectURI = server.redirectURI
+    /// True once Claude refused the sign-in and its item was deleted.
+    func showsExpiryNotice() -> Bool {
+        tokens == nil && expiredNotice
+    }
 
-        await progress(.waitingForBrowser(ClaudeOAuth.authorizeURL(
-            redirectURI: redirectURI,
-            challenge: pkce.challenge,
-            state: state
-        )))
-        let input = try await Self.authorization(from: server, pastedCodes: pastedCodes)
-        let code = try ClaudeOAuth.authorizationCode(from: input, expectedState: state)
-        server.cancel()
-        try Self.checkCancellation()
+    /// True when the item exists but is not a sign-in AgentDock can use.
+    func isUnreadable() -> Bool {
+        tokens == nil && unreadable
+    }
 
-        await progress(.exchangingCode)
-        let token = try await exchange(
-            code: code,
-            state: state,
-            redirectURI: redirectURI,
-            verifier: pkce.verifier
-        )
-        let profile = try await readProfile(accessToken: token.accessToken)
-        try Self.checkCancellation()
+    // MARK: - Sign in, rename, and sign out
 
-        let grantedScopes = Self.scopeList(token.scope)
-        let signedIn = ClaudeLoginTokens(
-            accessToken: token.accessToken,
-            refreshToken: Self.nonEmpty(token.refreshToken),
-            expiresAt: Self.expiry(token.expiresIn, now: Date()),
-            scopes: grantedScopes.isEmpty ? Self.scopeList(ClaudeOAuth.scopes) : grantedScopes,
-            accountUUID: profile.identity.accountUUID,
-            organizationUUID: profile.identity.organizationUUID,
-            accountLabel: profile.label,
-            subscriptionType: profile.subscriptionType
-        )
+    /// Saves a fresh sign-in for this account, replacing whatever was stored.
+    /// The user's name and the added date carry over from the stored sign-in.
+    func adopt(_ signedIn: ClaudeLoginTokens) throws(ClaudeSignInError) -> ClaudeLoginAccount {
+        var replacement = signedIn
+        if loadIfNeeded(allowInteraction: true), let current = tokens {
+            replacement.customName = current.customName
+            replacement.addedAt = current.addedAt ?? replacement.addedAt
+        } else if let previous = lastKnownAccount {
+            replacement.customName = previous.customName
+            replacement.addedAt = previous.addedAt ?? replacement.addedAt
+        }
         do {
-            try store.save(signedIn, allowInteraction: true)
+            try store.save(replacement, allowInteraction: true)
         } catch {
             throw ClaudeSignInError.keychain(Self.storeError(error))
         }
-
         generation += 1
         renewal?.cancel()
         renewal = nil
-        tokens = signedIn
+        remember(replacement)
         unsavedTokens = nil
         loaded = true
         expiredNotice = false
-        return Self.account(for: signedIn)
+        unreadable = false
+        return Self.account(for: replacement)
     }
 
+    /// Sets or clears the user's name for this account and saves it.
+    func rename(to name: String?) throws(ClaudeSignInError) -> ClaudeLoginAccount {
+        guard loadIfNeeded(allowInteraction: true) else {
+            throw ClaudeSignInError.keychain(.interactionRequired)
+        }
+        guard var updated = tokens else { throw ClaudeSignInError.accountNotFound }
+        updated.customName = ClaudeLoginTokens.normalizedCustomName(name)
+        do {
+            try store.save(updated, allowInteraction: true)
+        } catch {
+            throw ClaudeSignInError.keychain(Self.storeError(error))
+        }
+        remember(updated)
+        unsavedTokens = nil
+        return Self.account(for: updated)
+    }
+
+    /// Deletes only this account's item.
     public func signOut() async throws(ClaudeSignInError) {
         generation += 1
         renewal?.cancel()
@@ -198,6 +230,7 @@ public actor ClaudeCodeLogin {
         unsavedTokens = nil
         loaded = true
         expiredNotice = false
+        unreadable = false
     }
 
     // MARK: - Tokens for live limits
@@ -276,7 +309,7 @@ public actor ClaudeCodeLogin {
             renewed.expiresAt = Self.expiry(response.expiresIn, now: now)
             let scopes = Self.scopeList(response.scope)
             if !scopes.isEmpty { renewed.scopes = scopes }
-            tokens = renewed
+            remember(renewed)
             do {
                 try store.save(renewed, allowInteraction: false)
                 unsavedTokens = nil
@@ -314,7 +347,7 @@ public actor ClaudeCodeLogin {
         }
     }
 
-    /// The tokens are useless now; deleting them stops repeat requests.
+    /// The tokens are useless now; deleting this account's item stops repeat requests.
     private func signOutAfterRejection() {
         generation += 1
         renewal?.cancel()
@@ -324,6 +357,7 @@ public actor ClaudeCodeLogin {
         unsavedTokens = nil
         loaded = true
         expiredNotice = true
+        unreadable = false
     }
 
     private func currentOutcome() -> ClaudeLoginTokenOutcome {
@@ -331,162 +365,66 @@ public actor ClaudeCodeLogin {
         return .signedOut(expired: expiredNotice)
     }
 
+    private func remember(_ current: ClaudeLoginTokens) {
+        tokens = current
+        lastKnownAccount = Self.account(for: current)
+        lastKnownIdentity = current.identity
+    }
+
     private func loadIfNeeded(allowInteraction: Bool) -> Bool {
         guard !loaded else { return true }
         do {
-            tokens = try store.load(allowInteraction: allowInteraction)
+            if let stored = try store.load(allowInteraction: allowInteraction) {
+                remember(stored)
+            } else {
+                tokens = nil
+            }
             loaded = true
+            unreadable = false
             return true
         } catch ClaudeLoginStoreError.unreadable {
             // Not a sign-in AgentDock can use; signing in again replaces it.
             tokens = nil
             loaded = true
+            unreadable = true
             return true
         } catch {
             return false
         }
     }
 
-    // MARK: - Sign-in requests
-
-    private static func authorization(
-        from server: ClaudeLoopbackCallbackServer,
-        pastedCodes: AsyncStream<String>
-    ) async throws(ClaudeSignInError) -> ClaudeAuthorizationInput {
-        do {
-            return try await withTaskCancellationHandler {
-                try await withThrowingTaskGroup(of: ClaudeAuthorizationInput.self) { group in
-                    group.addTask {
-                        let code = try await server.waitForCode()
-                        return .callback(code)
-                    }
-                    group.addTask {
-                        for await code in pastedCodes {
-                            return .pasted(code)
-                        }
-                        throw ClaudeSignInError.cancelled
-                    }
-                    defer {
-                        // Unblocks whichever source lost the race.
-                        server.cancel()
-                        group.cancelAll()
-                    }
-                    guard let first = try await group.next() else {
-                        throw ClaudeSignInError.cancelled
-                    }
-                    return first
-                }
-            } onCancel: {
-                server.cancel()
-            }
-        } catch let error as ClaudeSignInError {
-            throw error
-        } catch {
-            throw ClaudeSignInError.cancelled
-        }
-    }
-
-    private func exchange(
-        code: String,
-        state: String,
-        redirectURI: String,
-        verifier: String
-    ) async throws(ClaudeSignInError) -> ClaudeTokenResponse {
-        let (data, response) = try await send(ClaudeOAuth.codeExchangeRequest(
-            code: code,
-            state: state,
-            redirectURI: redirectURI,
-            verifier: verifier
-        ))
-        guard (200..<300).contains(response.statusCode) else {
-            throw ClaudeSignInError.requestFailed(response.statusCode)
-        }
-        guard let token = try? JSONDecoder().decode(ClaudeTokenResponse.self, from: data),
-              Self.nonEmpty(token.accessToken) != nil
-        else { throw ClaudeSignInError.invalidResponse }
-        return token
-    }
-
-    private func readProfile(
-        accessToken: String
-    ) async throws(ClaudeSignInError) -> (identity: ClaudeAccountIdentity, label: String, subscriptionType: String?) {
-        let (data, response) = try await send(
-            ClaudeAPIRequest.get(ClaudeOAuth.profileURL, bearer: accessToken)
-        )
-        guard (200..<300).contains(response.statusCode),
-              let profile = try? JSONDecoder().decode(ClaudeSignInProfile.self, from: data),
-              let organization = profile.organization,
-              let identity = ClaudeAccountIdentity.desktop(
-                  accountUUID: profile.account.uuid,
-                  organizationUUID: organization.uuid
-              )
-        else { throw ClaudeSignInError.profileUnavailable }
-        let label = Self.nonEmpty(profile.account.email)
-            ?? Self.nonEmpty(profile.email)
-            ?? "Claude account"
-        let plan = Self.nonEmpty(organization.organizationType).map { type in
-            type.hasPrefix("claude_") ? String(type.dropFirst("claude_".count)) : type
-        }
-        return (identity, label, plan)
-    }
-
-    private func send(_ request: URLRequest) async throws(ClaudeSignInError) -> (Data, HTTPURLResponse) {
-        do {
-            return try await transport.send(request, maximumResponseBytes: ClaudeOAuth.maximumResponseBytes)
-        } catch {
-            throw Task.isCancelled ? ClaudeSignInError.cancelled : ClaudeSignInError.connectionFailed
-        }
-    }
-
     // MARK: - Helpers
 
-    private static func checkCancellation() throws(ClaudeSignInError) {
+    static func checkCancellation() throws(ClaudeSignInError) {
         if Task.isCancelled { throw ClaudeSignInError.cancelled }
     }
 
-    private static func account(for tokens: ClaudeLoginTokens) -> ClaudeLoginAccount {
-        ClaudeLoginAccount(label: tokens.accountLabel, subscriptionType: tokens.subscriptionType)
+    static func account(for tokens: ClaudeLoginTokens) -> ClaudeLoginAccount {
+        ClaudeLoginAccount(
+            label: tokens.accountLabel,
+            subscriptionType: tokens.subscriptionType,
+            customName: tokens.customName,
+            addedAt: tokens.addedAt
+        )
     }
 
-    private static func scopeList(_ value: String?) -> [String] {
+    static func scopeList(_ value: String?) -> [String] {
         (value ?? "").split(whereSeparator: \.isWhitespace).map(String.init)
     }
 
-    private static func expiry(_ seconds: Double?, now: Date) -> Date? {
+    static func expiry(_ seconds: Double?, now: Date) -> Date? {
         guard let seconds, seconds.isFinite, seconds > 0 else { return nil }
         return now.addingTimeInterval(seconds)
     }
 
-    private static func nonEmpty(_ value: String?) -> String? {
+    static func nonEmpty(_ value: String?) -> String? {
         guard let value = value?.trimmingCharacters(in: .whitespacesAndNewlines), !value.isEmpty else {
             return nil
         }
         return value
     }
 
-    private static func storeError(_ error: any Error) -> ClaudeLoginStoreError {
+    static func storeError(_ error: any Error) -> ClaudeLoginStoreError {
         (error as? ClaudeLoginStoreError) ?? .failed(errSecInternalComponent)
     }
-}
-
-/// The fields AgentDock reads from `/api/oauth/profile` at sign-in.
-private struct ClaudeSignInProfile: Decodable {
-    struct Account: Decodable {
-        var uuid: String
-        var email: String?
-    }
-
-    struct Organization: Decodable {
-        var uuid: String
-        var organizationType: String?
-
-        private enum CodingKeys: String, CodingKey {
-            case uuid
-            case organizationType = "organization_type"
-        }
-    }
-
-    var account: Account
-    var organization: Organization?
-    var email: String?
 }

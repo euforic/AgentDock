@@ -25,6 +25,45 @@ final class InMemoryClaudeLoginStore: ClaudeLoginTokenStoring, Sendable {
     }
 }
 
+/// A test-only multi-account store built from one in-memory item per account
+/// key, so test models never touch the developer's Keychain.
+final class InMemoryClaudeLoginAccounts: ClaudeLoginAccountStoring, Sendable {
+    private let items: Mutex<[String: InMemoryClaudeLoginStore]>
+    private let legacy: InMemoryClaudeLoginStore
+
+    init(_ accounts: [ClaudeLoginTokens] = [], legacy: ClaudeLoginTokens? = nil) {
+        var stores: [String: InMemoryClaudeLoginStore] = [:]
+        for tokens in accounts {
+            stores[tokens.accountKey] = InMemoryClaudeLoginStore(tokens)
+        }
+        items = Mutex(stores)
+        self.legacy = InMemoryClaudeLoginStore(legacy)
+    }
+
+    func tokens(forAccountKey accountKey: String) -> ClaudeLoginTokens? {
+        items.withLock { $0[accountKey]?.tokens }
+    }
+
+    var legacyTokens: ClaudeLoginTokens? { legacy.tokens }
+
+    func accountKeys(allowInteraction _: Bool) throws -> [String] {
+        items.withLock { stores in
+            stores.filter { $0.value.tokens != nil }.keys.sorted()
+        }
+    }
+
+    func tokenStore(forAccountKey accountKey: String) -> any ClaudeLoginTokenStoring {
+        items.withLock { stores in
+            if let existing = stores[accountKey] { return existing }
+            let created = InMemoryClaudeLoginStore()
+            stores[accountKey] = created
+            return created
+        }
+    }
+
+    var legacyTokenStore: any ClaudeLoginTokenStoring { legacy }
+}
+
 /// A test-only transport that answers from per-path queues and records requests.
 actor AppScriptedClaudeTransport: ClaudeHTTPTransport {
     private var queues: [String: [(status: Int, body: String)]] = [:]

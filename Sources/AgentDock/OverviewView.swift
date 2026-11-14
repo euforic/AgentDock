@@ -161,15 +161,18 @@ private struct OfficialOverview: View {
                     providerName: "Claude",
                     footer: "Live limits follow the signed-in Claude Desktop account."
                 )
-                UsageLimitsSection(
-                    title: "Claude Code Usage Limits",
-                    limits: model.officialClaudeCodeRateLimits,
-                    accent: product.usageTint,
-                    providerName: "Claude Code",
-                    footer: claudeCodeFooter,
-                    showsLimits: model.claudeCodeLoginState.isSignedIn
-                ) {
-                    ClaudeCodeLoginRow()
+                ClaudeCodeAccountsSection(accent: product.usageTint)
+                ForEach(model.claudeCodeAccounts) { account in
+                    UsageLimitsSection(
+                        title: "Claude Code · \(account.title)",
+                        limits: account.limits,
+                        accent: product.usageTint,
+                        providerName: "Claude Code",
+                        footer: claudeCodeFooter(account),
+                        showsLimits: account.status.isSignedIn
+                    ) {
+                        ClaudeCodeAccountRow(account: account)
+                    }
                 }
                 ClaudeUsageSection(stats: stats, loading: model.officialStatsLoading, accent: product.usageTint)
             }
@@ -198,12 +201,11 @@ private struct OfficialOverview: View {
         }
     }
 
-    private var claudeCodeFooter: String {
-        let footer = "Live limits for the Claude account you sign in with here, which can differ from the Claude Desktop account. Fable has a separate weekly allowance."
-        guard let limits = model.officialClaudeCodeRateLimits, !limits.buckets.isEmpty else {
-            return footer
+    private func claudeCodeFooter(_ account: ClaudeCodeAccountUsage) -> String? {
+        guard account.status.isSignedIn, let limits = account.limits, !limits.buckets.isEmpty else {
+            return nil
         }
-        return "\(footer) Updated \(limits.fetchedAt.formatted(.relative(presentation: .named)))."
+        return "Updated \(limits.fetchedAt.formatted(.relative(presentation: .named)))."
     }
 }
 
@@ -468,53 +470,117 @@ extension UsageLimitsSection where Accessory == EmptyView {
     }
 }
 
-/// AgentDock's own Claude sign-in, shown at the top of the Claude Code section.
-private struct ClaudeCodeLoginRow: View {
+/// The Claude accounts signed in to AgentDock for Claude Code limits, and the
+/// button that adds another. Each account then gets its own section.
+private struct ClaudeCodeAccountsSection: View {
     @EnvironmentObject private var model: AgentDockModel
+    let accent: Color
 
     var body: some View {
-        switch model.claudeCodeLoginState {
-        case .checking:
+        Section {
+            switch model.claudeCodeAccountsState {
+            case .checking:
+                HStack(spacing: 8) {
+                    ProgressView().controlSize(.small)
+                    Text("Checking Claude sign-ins…")
+                        .foregroundStyle(.secondary)
+                }
+            case .needsKeychainAccess:
+                Label(ClaudeCodeUsageMessage.keychainAccessRequired, systemImage: "key")
+                    .foregroundStyle(.secondary)
+            case .ready:
+                if model.claudeCodeAccounts.isEmpty {
+                    Text(ClaudeCodeUsageMessage.notSignedIn)
+                        .foregroundStyle(.secondary)
+                }
+            }
+            if case .signingIn = model.claudeSignInState {
+                HStack(spacing: 8) {
+                    ProgressView().controlSize(.small)
+                    Text("Signing in…")
+                        .foregroundStyle(.secondary)
+                }
+            }
+            LabeledContent(model.claudeCodeAccounts.isEmpty ? "Claude Account" : "Another Claude Account") {
+                Button(model.claudeCodeAccounts.isEmpty ? "Sign In to Claude…" : "Add Claude Account…") {
+                    model.signInToClaude()
+                }
+                .disabled(model.isClaudeSignInSheetPresented)
+            }
+        } header: {
+            Text("Claude Code Usage Limits")
+        } footer: {
+            Text("Live limits for each Claude account you sign in with here, which can differ from the Claude Desktop account. Fable has a separate weekly allowance.")
+        }
+    }
+}
+
+/// One signed-in account: who it is, its status, and its actions.
+private struct ClaudeCodeAccountRow: View {
+    @EnvironmentObject private var model: AgentDockModel
+    let account: ClaudeCodeAccountUsage
+    @State private var renaming = false
+    @State private var draftName = ""
+
+    var body: some View {
+        LabeledContent(account.status.isSignedIn ? "Signed in as" : "Account") {
+            HStack(spacing: 8) {
+                Text(account.account?.label ?? "Claude account")
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                if account.status.isSignedIn {
+                    Button("Rename…") {
+                        draftName = account.account?.customName ?? ""
+                        renaming = true
+                    }
+                }
+                Button(account.status.isSignedIn ? "Sign Out" : "Remove") {
+                    model.signOutOfClaude(accountKey: account.key)
+                }
+            }
+        }
+        .alert("Rename Claude Account", isPresented: $renaming) {
+            TextField("Name", text: $draftName)
+            Button("Save") {
+                model.renameClaudeAccount(accountKey: account.key, to: draftName)
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("Leave the name empty to show the account email.")
+        }
+        statusRow
+    }
+
+    @ViewBuilder
+    private var statusRow: some View {
+        switch account.status {
+        case .unknown:
             HStack(spacing: 8) {
                 ProgressView().controlSize(.small)
                 Text("Checking Claude sign-in…")
                     .foregroundStyle(.secondary)
             }
-        case let .signedOut(notice):
-            if let notice {
-                Label(notice, systemImage: "exclamationmark.triangle")
-                    .foregroundStyle(.secondary)
-            }
-            signInRow
-        case .needsKeychainAccess:
+        case .keychainAccessRequired:
             Label(ClaudeCodeUsageMessage.keychainAccessRequired, systemImage: "key")
                 .foregroundStyle(.secondary)
-            signInRow
-        case .signingIn:
-            HStack(spacing: 8) {
-                ProgressView().controlSize(.small)
-                Text("Signing in…")
-                    .foregroundStyle(.secondary)
+        case let .signedOut(expired):
+            Label(
+                expired ? ClaudeCodeUsageMessage.signInExpired : ClaudeCodeUsageMessage.unreadableSignIn,
+                systemImage: "exclamationmark.triangle"
+            )
+            .foregroundStyle(.secondary)
+            LabeledContent("Sign In Again") {
+                Button("Sign In to Claude…") { model.signInToClaude() }
+                    .disabled(model.isClaudeSignInSheetPresented)
             }
-        case let .signInFailed(message):
-            Label(message, systemImage: "exclamationmark.triangle")
+        case .signedIn:
+            if let until = account.rateLimitedUntil, until > Date() {
+                Label(
+                    "Rate limited until \(until.formatted(date: .omitted, time: .shortened)).",
+                    systemImage: "hourglass"
+                )
                 .foregroundStyle(.secondary)
-            signInRow
-        case let .signedIn(accountLabel):
-            LabeledContent("Signed in as") {
-                HStack(spacing: 8) {
-                    Text(accountLabel)
-                        .lineLimit(1)
-                        .truncationMode(.middle)
-                    Button("Sign Out") { model.signOutOfClaude() }
-                }
             }
-        }
-    }
-
-    private var signInRow: some View {
-        LabeledContent("Claude Account") {
-            Button("Sign In to Claude…") { model.signInToClaude() }
         }
     }
 }

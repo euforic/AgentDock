@@ -153,10 +153,13 @@ usage summaries are source-dependent:
   card keeps the official installation visible alongside every managed account.
   Local rate-limit events remain a clearly separate last-observed fallback.
   A separate Claude Code Usage Limits section shows live 5-hour, weekly, and
-  Fable weekly limits for the Claude account you sign in with once through
-  **Sign In to Claude…** in AgentDock, which can differ from the Claude Desktop
-  account. That sign-in's tokens live only in AgentDock's own Keychain item;
-  AgentDock never reads Claude Code's login.
+  Fable weekly limits for each Claude account you sign in with once through
+  **Sign In to Claude…** or **Add Claude Account…** in AgentDock, which can
+  differ from the Claude Desktop account. Every account gets its own card with
+  its own reset times and status, can be renamed, and signs out on its own.
+  Each account's tokens live only in its own AgentDock Keychain item; AgentDock
+  never reads Claude Code's login or discovers accounts on its own. A sign-in
+  from an earlier version moves to the new per-account item automatically.
 - AgentDock does not index ordinary synced claude.ai web-chat content. Live
   Claude Desktop usage reads the provider-owned OAuth cache and
   active-organization cookie required to resolve the signed-in account.

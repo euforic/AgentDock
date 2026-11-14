@@ -17,14 +17,25 @@ public protocol ClaudeUsageFetching: Sendable {
         forceRefresh: Bool
     ) async -> ProfileRateLimits
 
-    /// Live limits for the Claude account signed in to AgentDock.
+    /// Live limits for every Claude account signed in to AgentDock. One
+    /// account's failure is reported on its own entry and never hides another.
     func fetchClaudeCodeUsage(
         allowKeychainInteraction: Bool,
         forceRefresh: Bool
-    ) async -> ProfileRateLimits
+    ) async -> ClaudeCodeUsageReport
 
-    /// Drops cached Claude Code limits after a sign-in or sign-out.
+    /// Live limits for one account; nil when it is no longer signed in here.
+    func fetchClaudeCodeUsage(
+        accountKey: String,
+        allowKeychainInteraction: Bool,
+        forceRefresh: Bool
+    ) async -> ClaudeCodeAccountUsage?
+
+    /// Drops every cached Claude Code result.
     func forgetClaudeCodeUsage() async
+
+    /// Drops one account's cached Claude Code results after a sign-in or sign-out.
+    func forgetClaudeCodeUsage(accountKey: String) async
 }
 
 enum ClaudeUsageRefreshPolicy {
@@ -34,6 +45,10 @@ enum ClaudeUsageRefreshPolicy {
     /// Repeated manual refreshes within this interval reuse the last success.
     static let manualRefreshFloor: TimeInterval = 30
     static let maximumRateLimitCooldown: TimeInterval = 60 * 60
+    /// At most this many Claude Code accounts fetch at once.
+    static let maximumConcurrentClaudeCodeRequests = 2
+    /// Claude Code fetch starts are spaced this far apart across accounts.
+    static let claudeCodeRequestSpacing: Duration = .seconds(1)
 
     static func canReuse(_ limits: ProfileRateLimits, now: Date) -> Bool {
         let age = now.timeIntervalSince(limits.fetchedAt)
@@ -100,6 +115,8 @@ public actor ClaudeUsageClient: ClaudeUsageFetching {
     private static let claudeCodeKeyPrefix = "\(ClaudeUsageProjection.claudeCode.rawValue)|"
     private static let rateLimitedWarning = "Live usage is rate limited; showing the last successful update."
     private static let rateLimitedError = "Live usage is rate limited. Try again later."
+    static let budgetWarning = "This account reached AgentDock's hourly refresh limit; showing the last successful update."
+    static let budgetError = "This account reached AgentDock's hourly refresh limit. Try again later."
     private struct CachedUsage {
         var limits: ProfileRateLimits
         var retryAfter: Date?
@@ -111,19 +128,25 @@ public actor ClaudeUsageClient: ClaudeUsageFetching {
     }
 
     private let transport: any ClaudeHTTPTransport
-    private let claudeCodeLogin: ClaudeCodeLogin?
+    private let claudeCodeAccounts: ClaudeCodeAccounts?
     private var credentialReader: ClaudeCredentialReader
     private let cooldowns: ClaudeUsageCooldownStore
     private var verifiedIdentities = ClaudeIdentityVerificationLedger()
     private var cache: [String: CachedUsage] = [:]
     private var refreshWaiters: [String: [CheckedContinuation<ProfileRateLimits, Never>]] = [:]
+    /// Per-account hourly budget for Claude Code fetches.
+    private var claudeCodeBudget = ClaudeUsageRequestBudget()
+    /// At most two Claude Code fetches at once, with staggered starts.
+    private let claudeCodeThrottle: ClaudeRequestThrottle
+    /// One Claude Code fetch per account at a time.
+    private let claudeCodeAccountLocks = ClaudeKeyedExclusion<ObjectIdentifier>()
 
-    /// `claudeCodeLogin` nil means Claude Code limits always report signed out.
-    public init(claudeCodeLogin: ClaudeCodeLogin? = nil) {
+    /// `claudeCodeAccounts` nil means Claude Code limits list no accounts.
+    public init(claudeCodeAccounts: ClaudeCodeAccounts? = nil) {
         self.init(
             cooldowns: ClaudeUsageCooldownStore(),
             keychain: nil,
-            claudeCodeLogin: claudeCodeLogin
+            claudeCodeAccounts: claudeCodeAccounts
         )
     }
 
@@ -131,12 +154,18 @@ public actor ClaudeUsageClient: ClaudeUsageFetching {
         cooldowns: ClaudeUsageCooldownStore,
         keychain: SecKeychain? = nil,
         transport: any ClaudeHTTPTransport = URLSessionClaudeHTTPTransport(),
-        claudeCodeLogin: ClaudeCodeLogin? = nil
+        claudeCodeAccounts: ClaudeCodeAccounts? = nil,
+        maximumConcurrentClaudeCodeRequests: Int = ClaudeUsageRefreshPolicy.maximumConcurrentClaudeCodeRequests,
+        claudeCodeRequestSpacing: Duration = ClaudeUsageRefreshPolicy.claudeCodeRequestSpacing
     ) {
         self.transport = transport
-        self.claudeCodeLogin = claudeCodeLogin
+        self.claudeCodeAccounts = claudeCodeAccounts
         credentialReader = ClaudeCredentialReader(keychain: keychain)
         self.cooldowns = cooldowns
+        claudeCodeThrottle = ClaudeRequestThrottle(
+            maximumConcurrent: maximumConcurrentClaudeCodeRequests,
+            spacing: claudeCodeRequestSpacing
+        )
     }
 
     public func fetchOfficialUsage(
@@ -164,19 +193,81 @@ public actor ClaudeUsageClient: ClaudeUsageFetching {
         return await fetch(credential, projection: .desktop, forceRefresh: forceRefresh)
     }
 
-    /// Live limits for the Claude account signed in to AgentDock, which can
-    /// differ from Desktop. Claude Code's own login is never read.
+    /// Live limits for every Claude account signed in to AgentDock, each of
+    /// which can differ from Desktop. Claude Code's own login is never read.
+    /// Accounts are fetched independently: each has its own gate, cooldown,
+    /// and budget, and one account's failure never blocks another.
     public func fetchClaudeCodeUsage(
         allowKeychainInteraction: Bool,
         forceRefresh: Bool = false
-    ) async -> ProfileRateLimits {
-        guard let claudeCodeLogin else {
-            return ProfileRateLimits(errorMessage: ClaudeCodeUsageMessage.notSignedIn)
+    ) async -> ClaudeCodeUsageReport {
+        guard let claudeCodeAccounts else { return ClaudeCodeUsageReport() }
+        let listing = await claudeCodeAccounts.entries(allowKeychainInteraction: allowKeychainInteraction)
+        let entries = listing.entries
+        let accounts = await withTaskGroup(
+            of: (Int, ClaudeCodeAccountUsage).self,
+            returning: [ClaudeCodeAccountUsage].self
+        ) { group in
+            for (index, entry) in entries.enumerated() {
+                group.addTask {
+                    let usage = await self.claudeCodeAccountUsage(
+                        key: entry.key,
+                        login: entry.login,
+                        allowKeychainInteraction: allowKeychainInteraction,
+                        forceRefresh: forceRefresh
+                    )
+                    return (index, usage)
+                }
+            }
+            var collected = [ClaudeCodeAccountUsage?](repeating: nil, count: entries.count)
+            for await (index, usage) in group {
+                collected[index] = usage
+            }
+            return collected.compactMap { $0 }
         }
-        switch await claudeCodeLogin.usableTokens(allowKeychainInteraction: allowKeychainInteraction) {
+        return ClaudeCodeUsageReport(
+            keychainAccessRequired: listing.keychainAccessRequired,
+            accounts: accounts
+        )
+    }
+
+    public func fetchClaudeCodeUsage(
+        accountKey: String,
+        allowKeychainInteraction: Bool,
+        forceRefresh: Bool = false
+    ) async -> ClaudeCodeAccountUsage? {
+        guard let login = await claudeCodeAccounts?.login(forAccountKey: accountKey) else { return nil }
+        return await claudeCodeAccountUsage(
+            key: accountKey,
+            login: login,
+            allowKeychainInteraction: allowKeychainInteraction,
+            forceRefresh: forceRefresh
+        )
+    }
+
+    /// Live limits for one signed-in account. Only one fetch per account runs
+    /// at a time; a second caller waits and then normally reuses the result.
+    func fetchClaudeCodeUsage(
+        login: ClaudeCodeLogin,
+        allowKeychainInteraction: Bool,
+        forceRefresh: Bool = false
+    ) async -> ProfileRateLimits {
+        let lock = ObjectIdentifier(login)
+        await claudeCodeAccountLocks.acquire(lock)
+        defer { claudeCodeAccountLocks.release(lock) }
+
+        switch await login.usableTokens(allowKeychainInteraction: allowKeychainInteraction) {
         case let .tokens(tokens):
-            return await fetch(tokens.usageCredential, projection: .claudeCode, forceRefresh: forceRefresh)
+            return await fetch(
+                tokens.usageCredential,
+                projection: .claudeCode,
+                forceRefresh: forceRefresh,
+                login: login
+            )
         case let .signedOut(expired):
+            if !expired, await login.isUnreadable() {
+                return ProfileRateLimits(errorMessage: ClaudeCodeUsageMessage.unreadableSignIn)
+            }
             return ProfileRateLimits(
                 errorMessage: expired
                     ? ClaudeCodeUsageMessage.signInExpired
@@ -186,7 +277,8 @@ public actor ClaudeUsageClient: ClaudeUsageFetching {
             return ProfileRateLimits(errorMessage: ClaudeCodeUsageMessage.keychainAccessRequired)
         case .renewalUnavailable:
             // No usage request is sent with a token that could not be renewed.
-            let latest = latestClaudeCodeLimits()
+            let identity = await login.knownIdentity()
+            let latest = latestClaudeCodeLimits(accountKey: identity?.accountKey)
             return latest.flatMap {
                 cachedLimits(for: $0, warning: ClaudeCodeUsageMessage.renewalUnavailable)
             } ?? ProfileRateLimits(
@@ -200,18 +292,69 @@ public actor ClaudeUsageClient: ClaudeUsageFetching {
         cache = cache.filter { !$0.key.hasPrefix(Self.claudeCodeKeyPrefix) }
     }
 
-    /// The cache key of the newest Claude Code result, if any.
-    private func latestClaudeCodeLimits() -> String? {
-        cache
-            .filter { $0.key.hasPrefix(Self.claudeCodeKeyPrefix) }
+    public func forgetClaudeCodeUsage(accountKey: String) async {
+        let prefix = "\(Self.claudeCodeKeyPrefix)\(accountKey)|"
+        cache = cache.filter { !$0.key.hasPrefix(prefix) }
+    }
+
+    private func claudeCodeAccountUsage(
+        key: String,
+        login: ClaudeCodeLogin,
+        allowKeychainInteraction: Bool,
+        forceRefresh: Bool
+    ) async -> ClaudeCodeAccountUsage {
+        let limits = await fetchClaudeCodeUsage(
+            login: login,
+            allowKeychainInteraction: allowKeychainInteraction,
+            forceRefresh: forceRefresh
+        )
+        let summary = await login.summary()
+        let identity = await login.knownIdentity()
+        return ClaudeCodeAccountUsage(
+            key: key,
+            account: summary.account,
+            status: summary.status,
+            limits: limits,
+            rateLimitedUntil: identity.flatMap { claudeCodeRetryAt($0, now: Date()) }
+        )
+    }
+
+    /// The later of an active 429 cooldown and the end of a spent hourly budget.
+    private func claudeCodeRetryAt(_ identity: ClaudeAccountIdentity, now: Date) -> Date? {
+        let digest = ClaudeUsageCredential.cooldownKey(identity: identity, projection: .claudeCode)
+        return [
+            cooldowns.blockedUntil(key: digest, now: now),
+            claudeCodeBudget.nextAvailable(key: digest, now: now)
+        ].compactMap { $0 }.max()
+    }
+
+    /// The cache key of an account's newest Claude Code result, if any; any
+    /// account's when the key is unknown.
+    private func latestClaudeCodeLimits(accountKey: String?) -> String? {
+        let prefix = accountKey.map { "\(Self.claudeCodeKeyPrefix)\($0)|" } ?? Self.claudeCodeKeyPrefix
+        return cache
+            .filter { $0.key.hasPrefix(prefix) }
             .max { $0.value.limits.fetchedAt < $1.value.limits.fetchedAt }?
             .key
+    }
+
+    /// Claude Code entries start with the account key, so one account's
+    /// results can be dropped without touching another's.
+    private static func cacheKey(
+        _ credential: ClaudeUsageCredential,
+        projection: ClaudeUsageProjection
+    ) -> String {
+        guard projection == .claudeCode, let identity = credential.identity else {
+            return "\(projection.rawValue)|\(credential.cacheKey)"
+        }
+        return "\(claudeCodeKeyPrefix)\(identity.accountKey)|\(credential.cacheKey)"
     }
 
     private func fetch(
         _ credential: ClaudeUsageCredential?,
         projection: ClaudeUsageProjection,
-        forceRefresh: Bool
+        forceRefresh: Bool,
+        login: ClaudeCodeLogin? = nil
     ) async -> ProfileRateLimits {
         guard let credential else {
             return ProfileRateLimits(
@@ -225,7 +368,7 @@ public actor ClaudeUsageClient: ClaudeUsageFetching {
             )
         }
 
-        let key = "\(projection.rawValue)|\(credential.cacheKey)"
+        let key = Self.cacheKey(credential, projection: projection)
         let cooldownKey = credential.cooldownKey(for: projection)
         let now = Date()
         let cached = cache[key]
@@ -255,8 +398,16 @@ public actor ClaudeUsageClient: ClaudeUsageFetching {
             }
         }
 
+        // Claude Code accounts also have an hourly budget each.
+        if projection == .claudeCode, !claudeCodeBudget.reserve(key: cooldownKey, now: now) {
+            return budgetLimitedLimits(for: key, credential: credential)
+        }
+
         refreshWaiters[key] = []
-        let limits = await fetchUncached(credential, key: key, projection: projection)
+        // At most two Claude Code accounts fetch at once, with staggered starts.
+        if projection == .claudeCode { await claudeCodeThrottle.acquire() }
+        let limits = await fetchUncached(credential, key: key, projection: projection, login: login)
+        if projection == .claudeCode { claudeCodeThrottle.release() }
         let waiters = refreshWaiters.removeValue(forKey: key) ?? []
         waiters.forEach { $0.resume(returning: limits) }
         return limits
@@ -265,7 +416,8 @@ public actor ClaudeUsageClient: ClaudeUsageFetching {
     private func fetchUncached(
         _ credential: ClaudeUsageCredential,
         key: String,
-        projection: ClaudeUsageProjection
+        projection: ClaudeUsageProjection,
+        login: ClaudeCodeLogin?
     ) async -> ProfileRateLimits {
         var credential = credential
         var key = key
@@ -273,11 +425,11 @@ public actor ClaudeUsageClient: ClaudeUsageFetching {
             var read = try await readUsage(credential)
             if case .unauthorized = read {
                 // Desktop tokens belong to Claude Desktop and are never renewed here.
-                guard projection == .claudeCode, let claudeCodeLogin else {
+                guard projection == .claudeCode, let login else {
                     return recordRequestFailure(401, key: key, credential: credential)
                 }
                 verifiedIdentities.invalidate(credential.cacheKey)
-                switch await claudeCodeLogin.renewAfterUnauthorized(
+                switch await login.renewAfterUnauthorized(
                     rejectedAccessToken: credential.accessToken
                 ) {
                 case let .tokens(renewed):
@@ -285,11 +437,11 @@ public actor ClaudeUsageClient: ClaudeUsageFetching {
                     // this result; the old key's cache entry is dropped.
                     cache.removeValue(forKey: key)
                     credential = renewed.usageCredential
-                    key = "\(projection.rawValue)|\(credential.cacheKey)"
+                    key = Self.cacheKey(credential, projection: projection)
                     read = try await readUsage(credential)
                     if case .unauthorized = read {
                         verifiedIdentities.invalidate(credential.cacheKey)
-                        await claudeCodeLogin.markSignedOutAfterRepeatedUnauthorized()
+                        await login.markSignedOutAfterRepeatedUnauthorized()
                         cache.removeValue(forKey: key)
                         return ProfileRateLimits(errorMessage: ClaudeCodeUsageMessage.signInExpired)
                     }
@@ -442,6 +594,16 @@ public actor ClaudeUsageClient: ClaudeUsageFetching {
         )
     }
 
+    private func budgetLimitedLimits(
+        for key: String,
+        credential: ClaudeUsageCredential
+    ) -> ProfileRateLimits {
+        cachedLimits(for: key, warning: Self.budgetWarning) ?? ProfileRateLimits(
+            planType: credential.subscriptionType,
+            errorMessage: Self.budgetError
+        )
+    }
+
     private func recordFailureCooldown(
         for key: String,
         fallback: ProfileRateLimits,
@@ -535,6 +697,11 @@ struct ClaudeAccountIdentity: Equatable, Sendable {
             organizationUUID: organization.uuidString.lowercased()
         )
     }
+
+    /// The key of AgentDock's own sign-in for this account and organization.
+    var accountKey: String {
+        ClaudeLoginAccountKey.make(accountUUID: accountUUID, organizationUUID: organizationUUID)
+    }
 }
 
 struct ClaudeUsageCredential: Equatable, Sendable {
@@ -559,7 +726,13 @@ struct ClaudeUsageCredential: Equatable, Sendable {
     /// identity, so it survives token renewal; the token digest without identity.
     func cooldownKey(for projection: ClaudeUsageProjection) -> String {
         guard let identity else { return tokenDigest }
-        return Self.digest(
+        return Self.cooldownKey(identity: identity, projection: projection)
+    }
+
+    /// Depends only on the account identity, so the cooldown saved before
+    /// multiple accounts were supported still applies to the migrated account.
+    static func cooldownKey(identity: ClaudeAccountIdentity, projection: ClaudeUsageProjection) -> String {
+        digest(
             "claude-usage-cooldown|\(projection.rawValue)|\(identity.accountUUID)/\(identity.organizationUUID)"
         )
     }

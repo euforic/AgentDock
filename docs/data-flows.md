@@ -117,13 +117,15 @@ Live Claude quota refresh is a separate flow:
    deadline is saved under a SHA-256 digest of the account identity so it
    survives relaunch and token changes.
 
-Claude Code live limits use AgentDock's own Claude sign-in and are shown in
-their own section of the Official Claude overview.
+Claude Code live limits use AgentDock's own Claude sign-ins and are shown in
+their own section of the Official Claude overview, one card per account,
+labeled with the user's name for the account or else its email.
 
-**Sign-in**
+**Sign-in (adding an account)**
 
-1. **Sign In to Claude…** starts a listener on 127.0.0.1 with a random port
-   and generates a PKCE verifier and a random `state`.
+1. **Sign In to Claude…** or **Add Claude Account…** starts a listener on
+   127.0.0.1 with a random port and generates a PKCE verifier and a random
+   `state`.
 2. AgentDock opens `claude.ai/oauth/authorize` in the browser.
 3. Claude redirects to the listener with the code. Alternatively, the user
    pastes the code that claude.ai shows (`code#state` or the callback URL).
@@ -132,25 +134,44 @@ their own section of the Official Claude overview.
    refresh token.
 5. The profile endpoint supplies the account and organization UUIDs, the email
    label, and the plan. Without both UUIDs, nothing is saved.
-6. The tokens and account are saved to AgentDock's own Keychain item.
+6. The tokens and account are saved to that account's own Keychain item,
+   named by a digest of the two UUIDs. Signing in to an account that is
+   already listed replaces its item and keeps its name.
+
+**Migration from a single sign-in**
+
+1. On the first listing, the item earlier versions wrote (account
+   `claude-code`) is read without interaction.
+2. Its stored account and organization UUIDs name the new item. If that item
+   does not exist yet, the sign-in is written to it and read back.
+3. Only after the read-back matches is the old item deleted. Any failure keeps
+   the old item and is retried on the next refresh; a prompt that was not
+   allowed asks for a manual refresh. No network request is needed.
 
 **Live limits**
 
-1. The Keychain item is loaded without interaction. If access needs approval,
-   the section asks for a manual refresh, which can show the prompt.
-2. A token that expires within five minutes is renewed first and written back.
-   Only one renewal runs at a time.
-3. The gate is checked in order: an active 429 cooldown (in memory or saved)
-   shows the last success or a rate-limit message; a success younger than five
-   minutes (30 seconds for a manual refresh) is reused; a non-429 failure
-   backoff applies to automatic refreshes only; otherwise the request goes
-   ahead.
-4. The account identity is verified with the profile endpoint once per token,
+1. The accounts are listed from their Keychain item names, and each item is
+   loaded without interaction. If access needs approval, the section or the
+   account's card asks for a manual refresh, which can show the prompt.
+2. Each account is fetched independently; one account's failure, cooldown, or
+   expired sign-in is shown on its own card and never hides another. At most
+   one fetch per account and two across all accounts run at once, and fetch
+   starts are spaced one second apart.
+3. A token that expires within five minutes is renewed first and written back
+   to that account's item. Only one renewal per account runs at a time.
+4. The account's gate is checked in order: an active 429 cooldown (in memory
+   or saved) shows the last success or a rate-limit message with the retry
+   time; a success younger than five minutes (30 seconds for a manual refresh)
+   is reused; a non-429 failure backoff applies to automatic refreshes only;
+   an account that already made 30 fetches in the past hour waits; otherwise
+   the request goes ahead.
+5. The account identity is verified with the profile endpoint once per token,
    then one usage request is sent.
-5. A 401 renews the token once and retries once. A second 401, or a refused
-   renewal, signs out and deletes the Keychain item. An outage keeps the
-   current token and retries on the next refresh.
-6. The response is projected to the 5-hour window, the weekly window, and
+6. A 401 renews the token once and retries once. A second 401, or a refused
+   renewal, signs that account out and deletes its Keychain item; its card
+   asks for a new sign-in until it is removed. An outage keeps the current
+   token and retries on the next refresh.
+7. The response is projected to the 5-hour window, the weekly window, and
    Fable's weekly percentage only. Claude Code results are excluded from
    analytics and do not hold back the quota-refresh schedule for other sources.
 
