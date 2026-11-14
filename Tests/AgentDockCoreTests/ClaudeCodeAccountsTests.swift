@@ -269,9 +269,10 @@ final class ClaudeCodeAccountsTests: XCTestCase {
     }
 
     func testRemovingSignInsOfMissingProfilesKeepsEveryOtherProfile() async throws {
+        let onWork = Fixture.secondTokens()
         let store = InMemoryClaudeLoginAccounts(profiles: [
             .official: Fixture.tokens(),
-            Fixture.work: Fixture.secondTokens(),
+            Fixture.work: onWork,
             Fixture.personal: Fixture.thirdTokens()
         ])
         let accounts = ClaudeCodeAccounts(store: store, transport: ScriptedClaudeTransport())
@@ -280,7 +281,7 @@ final class ClaudeCodeAccountsTests: XCTestCase {
 
         XCTAssertTrue(removed)
         XCTAssertEqual(store.storedProfileIDs, [.official, Fixture.work].sorted { $0.storageKey < $1.storageKey })
-        XCTAssertEqual(store.tokens(.profile(Fixture.work)), Fixture.secondTokens())
+        XCTAssertEqual(store.tokens(.profile(Fixture.work)), onWork)
 
         // Official Claude is never treated as a missing profile.
         await accounts.removeSignIns(keeping: [])
