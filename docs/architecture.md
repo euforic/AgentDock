@@ -44,18 +44,29 @@ never an active 429 cooldown; navigation, profile launch, and the automatic
 activity timer cannot skip either. 429 cooldowns are saved by a digest of the
 view and account identity (the token digest when there is no identity), so
 they survive relaunch and token renewal. Account identity is verified once per
-credential rather than before every usage request. The Official Claude overview
-shows Claude Desktop and Claude Code limits as separate sections; each refresh
-runs at most one Desktop request alongside the managed-profile requests. The
-Claude Code section shows one card per Claude account signed in to AgentDock.
-`ClaudeCodeAccounts` lists those accounts, adds them through the one-time
-sign-in, renames them, signs them out one at a time, and migrates the single
-pre-multi-account Keychain item. Each account has its own `ClaudeCodeLogin`,
-which owns that account's Keychain item and renews only its tokens. Claude Code
-accounts share no gate state: each has its own freshness cache, failure
-backoff, 429 cooldown, and a budget of 30 usage fetches per rolling hour. At
-most one fetch per account and two across all accounts run at once, and fetch
-starts are spaced one second apart so accounts are not polled together.
+credential rather than before every usage request. Every Claude profile page,
+Official Claude included, shows Claude Desktop and Claude Code limits as
+separate sections; each refresh runs at most one Desktop request per source.
+The Claude Code section belongs to the profile: it shows only that profile's
+own sign-in, with its own **Sign In to Claude…** and **Sign Out**. There is no
+shared account list. `ClaudeCodeAccounts` keeps exactly one `ClaudeCodeLogin`
+per `ClaudeCodeProfileID` (`.official`, the default profile, or
+`.managed(profile ID)`); each login owns that profile's Keychain item and
+renews only its tokens. The registry signs a profile in (replacing only that
+profile's sign-in), renames and signs it out, removes the sign-ins of profiles
+that no longer exist, and once per launch migrates earlier account-keyed and
+single items onto profiles (see
+[Upgrade migration](upgrade-migration.md#claude-code-sign-ins)). The model
+holds one `ClaudeCodeAccountUsage` per profile, and
+`ClaudeCodeAccountUsage.phase` gives its card state: checking, Keychain access
+needed, signed out, sign in again, loading, live, rate limited, hourly budget
+spent, or error. Removing or deleting a Claude profile signs it out. The gate
+state stays per Claude account: the freshness cache, failure backoff, 429
+cooldown, and the budget of 30 usage fetches per rolling hour are keyed by
+account identity, so two profiles signed in to the same account share them. At
+most one fetch per profile sign-in and one request per account run at once,
+two across all profiles, and fetch starts are spaced one second apart so
+profiles are not polled together.
 
 Codex usage refresh is provider-aware. The built-in OpenAI provider uses the
 bundled Codex app-server, while a selected custom provider uses its configured

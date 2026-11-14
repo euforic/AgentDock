@@ -143,48 +143,59 @@ root containment and symlink checks as other databases.
 
 ## Claude Sign-In for Claude Code Limits
 
-The separate Claude Code section uses AgentDock's own Claude sign-ins, not
-Claude Code's login. **Sign In to Claude…** (or **Add Claude Account…** once one
-account is signed in) runs a one-time OAuth authorization code flow with PKCE
-(S256) through `claude.ai/oauth/authorize`, using Claude Code's public client
-ID and the scopes `user:profile user:inference`. The code is exchanged at
+Each Claude profile's Claude Code section uses that profile's own AgentDock
+Claude sign-in, not Claude Code's login. Official Claude is the default
+profile and has its own. A profile's **Sign In to Claude…** runs a one-time
+OAuth authorization code flow with PKCE (S256) through
+`claude.ai/oauth/authorize`, using Claude Code's public client ID and the
+scopes `user:profile user:inference`. The code is exchanged at
 `platform.claude.com/v1/oauth/token`, and the account is read once from
-`api.anthropic.com/api/oauth/profile`. Accounts are added only this way, by the
-user; AgentDock never discovers or imports accounts from other apps.
+`api.anthropic.com/api/oauth/profile`. Sign-ins are added only this way, by the
+user, or by migrating AgentDock's own earlier items; AgentDock never discovers
+or imports accounts from other apps.
 
 - `user:inference` lets the token run Claude on the user's plan. AgentDock
   only ever calls the OAuth profile and usage endpoints with it.
 - The callback listener binds to 127.0.0.1 on a system-assigned port and
   ignores requests whose `state` does not match. A pasted `code#state` or
   callback URL is checked against the same `state`.
-- Each account's tokens, account and organization UUIDs, email label, plan,
-  optional user-chosen name, and added date are stored only in that account's
+- Each profile's tokens, account and organization UUIDs, email label, plan,
+  optional user-chosen name, and added date are stored only in that profile's
   own AgentDock Keychain item in the login Keychain: service
-  `dev.euforic.agentdock.claude-login`, account `claude-code:<account key>`,
-  where the key is a truncated SHA-256 digest of the account and organization
-  UUIDs, so item names never carry raw identifiers or the email. Items are not
-  synchronizable. An item only loads or saves the account its key names.
-  Nothing about these accounts is kept in preferences.
-- Signing in to an account that is already listed replaces its item and keeps
-  its name; no duplicate is created.
+  `dev.euforic.agentdock.claude-login`, account
+  `claude-code-profile:<profile key>`, where the key is `official` or the
+  managed profile's lowercased UUID, so item names never carry account
+  identifiers or the email. Items are not synchronizable. One item per profile
+  means a profile can never hold two sign-ins, and no separate mapping file can
+  drift from the Keychain. Nothing about these sign-ins is kept in preferences
+  or `profiles.json`.
+- Signing a profile in again replaces only that profile's item; no duplicate
+  is created and no other profile's item is touched, even one signed in to the
+  same account.
 - Listing reads only the attributes of items under AgentDock's own service.
 - Background reads and writes forbid Keychain interaction. Only Sign In,
-  Rename, Sign Out, and a manual refresh can prompt, and a manual refresh
-  prompts only when an ad-hoc rebuild changed the code signature.
+  Rename, Sign Out, removing a profile, removing unlinked sign-ins, and a
+  manual refresh can prompt, and a manual refresh prompts only when an ad-hoc
+  rebuild changed the code signature.
 - Tokens are renewed five minutes before expiry and written back to that
-  account's item only. Only one renewal per account runs at a time.
+  profile's item only. Only one renewal per sign-in runs at a time.
 - A 401 renews the token once and retries once. A second 401, or a renewal
   Claude refuses (`invalid_grant` or a refresh-token refusal), signs that
-  account out and deletes its item; its card stays to ask for a new sign-in
-  until it is removed. An outage or a rate limit keeps the current token and
-  retries on the next refresh. Other accounts are never affected.
-- **Sign Out** (or **Remove**) deletes only that account's item.
-- The single item written by earlier versions (account `claude-code`) is moved
-  automatically on first launch: its stored account identity names the new
-  item, which is written and read back before the old item is deleted. A
-  failed write, read-back, or delete keeps the old item and retries on the
-  next refresh, so the user never has to sign in again. An unreadable old item
-  is left untouched.
+  profile out and deletes its item; its card asks for a new sign-in. An outage
+  or a rate limit keeps the current token and retries on the next refresh.
+  Other profiles are never affected.
+- **Sign Out** deletes only that profile's item, plus any item an earlier
+  version left for the same account, so migration cannot bring it back.
+  Removing a Claude profile from AgentDock or deleting its data deletes its
+  item; each launch also deletes items of managed profiles that no longer
+  exist.
+- Items earlier versions wrote (`claude-code:<account key>` and the single
+  `claude-code`) are placed on profiles once per launch. Matching uses only
+  AgentDock's own stored name and email and the profile names; the new item is
+  written and read back before the old item is deleted, and any failure keeps
+  the old item for the next launch. Sign-ins that no profile can take are kept
+  untouched until placed or removed by the user. An unreadable old item is left
+  untouched. See [Upgrade migration](upgrade-migration.md#claude-code-sign-ins).
 - Tokens, authorization codes, and the PKCE verifier are never logged or sent
   to analytics, and Claude Code results are not sent to analytics.
 - For limits, AgentDock never reads Claude Code's `Claude Code-credentials`
@@ -197,9 +208,10 @@ token digest when there is no identity), mapped to expiry timestamps. They hold
 at most 32 entries and 16 KiB and are capped at one hour. They never contain
 tokens, raw identifiers, or paths, and restoring default preferences does not
 clear them. Because the digest depends only on the account identity, each
-Claude Code account has its own cooldown, and a cooldown saved before multiple
-accounts were supported still applies to the migrated account. The per-account
-hourly budget of 30 Claude Code usage fetches is kept in memory only.
+Claude account has its own cooldown, shared by every profile signed in to it,
+and a cooldown saved before sign-ins moved onto profiles still applies after
+migration. The per-account hourly budget of 30 Claude Code usage fetches is
+kept in memory only.
 
 ## Repository and Release Hygiene
 

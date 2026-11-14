@@ -25,18 +25,25 @@ final class InMemoryClaudeLoginStore: ClaudeLoginTokenStoring, Sendable {
     }
 }
 
-/// A test-only multi-account store built from one in-memory item per account
-/// key, so test models never touch the developer's Keychain.
+/// A test-only sign-in store built from one in-memory item per profile, plus
+/// the items earlier versions wrote (per account key, and the legacy item),
+/// so test models never touch the developer's Keychain.
 final class InMemoryClaudeLoginAccounts: ClaudeLoginAccountStoring, Sendable {
     private let items: Mutex<[String: InMemoryClaudeLoginStore]>
+    private let profileItems: Mutex<[ClaudeCodeProfileID: InMemoryClaudeLoginStore]>
     private let legacy: InMemoryClaudeLoginStore
 
-    init(_ accounts: [ClaudeLoginTokens] = [], legacy: ClaudeLoginTokens? = nil) {
+    init(
+        _ accounts: [ClaudeLoginTokens] = [],
+        legacy: ClaudeLoginTokens? = nil,
+        profiles: [ClaudeCodeProfileID: ClaudeLoginTokens] = [:]
+    ) {
         var stores: [String: InMemoryClaudeLoginStore] = [:]
         for tokens in accounts {
             stores[tokens.accountKey] = InMemoryClaudeLoginStore(tokens)
         }
         items = Mutex(stores)
+        profileItems = Mutex(profiles.mapValues { InMemoryClaudeLoginStore($0) })
         self.legacy = InMemoryClaudeLoginStore(legacy)
     }
 
@@ -44,11 +51,30 @@ final class InMemoryClaudeLoginAccounts: ClaudeLoginAccountStoring, Sendable {
         items.withLock { $0[accountKey]?.tokens }
     }
 
+    func tokens(forProfile profile: ClaudeCodeProfileID) -> ClaudeLoginTokens? {
+        profileItems.withLock { $0[profile]?.tokens }
+    }
+
     var legacyTokens: ClaudeLoginTokens? { legacy.tokens }
 
     func accountKeys(allowInteraction _: Bool) throws -> [String] {
         items.withLock { stores in
             stores.filter { $0.value.tokens != nil }.keys.sorted()
+        }
+    }
+
+    func profileIDs(allowInteraction _: Bool) throws -> [ClaudeCodeProfileID] {
+        profileItems.withLock { stores in
+            stores.filter { $0.value.tokens != nil }.keys.sorted { $0.storageKey < $1.storageKey }
+        }
+    }
+
+    func tokenStore(forProfile profile: ClaudeCodeProfileID) -> any ClaudeLoginTokenStoring {
+        profileItems.withLock { stores in
+            if let existing = stores[profile] { return existing }
+            let created = InMemoryClaudeLoginStore()
+            stores[profile] = created
+            return created
         }
     }
 

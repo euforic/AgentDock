@@ -88,7 +88,7 @@ public enum ClaudeSignInError: Error, Equatable, Sendable {
         case .keychain:
             "AgentDock couldn't update its Keychain item. Try again."
         case .accountNotFound:
-            "That Claude account is no longer signed in to AgentDock."
+            "This profile is no longer signed in to Claude."
         }
     }
 }
@@ -102,7 +102,7 @@ enum ClaudeLoginTokenOutcome: Equatable, Sendable {
 }
 
 public enum ClaudeCodeUsageMessage {
-    public static let notSignedIn = "Sign in to Claude to show Claude Code live limits."
+    public static let notSignedIn = "Sign in to Claude to show this profile's Claude Code live limits."
     public static let signInExpired = "Your Claude sign-in expired. Sign in again."
     public static let keychainAccessRequired = "Click Refresh to let AgentDock read its Claude sign-in from the Keychain. Choose Always Allow to keep access."
     public static let renewalUnavailable = "AgentDock couldn't renew the Claude sign-in. It will try again on the next refresh."
@@ -172,14 +172,19 @@ public actor ClaudeCodeLogin {
 
     // MARK: - Sign in, rename, and sign out
 
-    /// Saves a fresh sign-in for this account, replacing whatever was stored.
-    /// The user's name and the added date carry over from the stored sign-in.
+    /// Saves a fresh sign-in, replacing whatever was stored. When it is the
+    /// same account again, the user's name and the added date carry over; a
+    /// different account (a profile switching accounts) starts fresh.
     func adopt(_ signedIn: ClaudeLoginTokens) throws(ClaudeSignInError) -> ClaudeLoginAccount {
         var replacement = signedIn
         if loadIfNeeded(allowInteraction: true), let current = tokens {
-            replacement.customName = current.customName
-            replacement.addedAt = current.addedAt ?? replacement.addedAt
-        } else if let previous = lastKnownAccount {
+            if current.accountKey == replacement.accountKey {
+                replacement.customName = current.customName
+                replacement.addedAt = current.addedAt ?? replacement.addedAt
+            }
+        } else if let previous = lastKnownAccount,
+                  lastKnownIdentity?.accountKey == replacement.accountKey
+        {
             replacement.customName = previous.customName
             replacement.addedAt = previous.addedAt ?? replacement.addedAt
         }

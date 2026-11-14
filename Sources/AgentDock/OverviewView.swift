@@ -56,10 +56,19 @@ private struct ProfileOverview: View {
             }
 
             UsageLimitsSection(
+                title: profile.product == .claude ? "Claude Desktop Usage Limits" : "Usage Limits",
                 limits: model.rateLimits(for: profile),
                 accent: Color(hex: profile.iconColor),
-                providerName: profile.product.displayName
+                providerName: profile.product.displayName,
+                footer: profile.product == .claude
+                    ? "Live limits follow the Claude Desktop account signed in inside this profile."
+                    : nil
             )
+
+            if profile.product == .claude {
+                // This profile's own Claude Code sign-in; no other profile's appears here.
+                ClaudeCodeSignInSection(profile: .managed(profile.id), accent: Color(hex: profile.iconColor))
+            }
 
             if profile.product == .codex {
                 CodexProviderSection(
@@ -93,6 +102,7 @@ private struct ProfileOverview: View {
         .sheet(item: $activityDestination) { destination in
             ActivityDetailSheet(profile: profile, destination: destination)
         }
+        .claudeSignInSheet(for: .managed(profile.id), model: model)
     }
 
     private var lastOpenedText: String {
@@ -161,18 +171,11 @@ private struct OfficialOverview: View {
                     providerName: "Claude",
                     footer: "Live limits follow the signed-in Claude Desktop account."
                 )
-                ClaudeCodeAccountsSection(accent: product.usageTint)
-                ForEach(model.claudeCodeAccounts) { account in
-                    UsageLimitsSection(
-                        title: "Claude Code · \(account.title)",
-                        limits: account.limits,
-                        accent: product.usageTint,
-                        providerName: "Claude Code",
-                        footer: claudeCodeFooter(account),
-                        showsLimits: account.status.isSignedIn
-                    ) {
-                        ClaudeCodeAccountRow(account: account)
-                    }
+                // Official Claude is the default profile: it shows only its own
+                // sign-in. Each managed profile shows its own on its page.
+                ClaudeCodeSignInSection(profile: .official, accent: product.usageTint)
+                if !model.unplacedClaudeSignIns.isEmpty {
+                    UnplacedClaudeSignInsSection()
                 }
                 ClaudeUsageSection(stats: stats, loading: model.officialStatsLoading, accent: product.usageTint)
             }
@@ -193,19 +196,19 @@ private struct OfficialOverview: View {
         .sheet(item: $activityDestination) { destination in
             ActivityDetailSheet(officialProduct: product, destination: destination)
         }
-        .sheet(isPresented: Binding(
-            get: { model.isClaudeSignInSheetPresented },
+        .claudeSignInSheet(for: .official, model: model)
+    }
+}
+
+private extension View {
+    /// The sign-in sheet, shown only on the page of the profile signing in.
+    func claudeSignInSheet(for profile: ClaudeCodeProfileID, model: AgentDockModel) -> some View {
+        sheet(isPresented: Binding(
+            get: { model.isClaudeSignInSheetPresented(for: profile) },
             set: { if !$0 { model.cancelClaudeCodeSignIn() } }
         )) {
-            ClaudeSignInSheet()
+            ClaudeSignInSheet(profile: profile)
         }
-    }
-
-    private func claudeCodeFooter(_ account: ClaudeCodeAccountUsage) -> String? {
-        guard account.status.isSignedIn, let limits = account.limits, !limits.buckets.isEmpty else {
-            return nil
-        }
-        return "Updated \(limits.fetchedAt.formatted(.relative(presentation: .named)))."
     }
 }
 
@@ -470,91 +473,77 @@ extension UsageLimitsSection where Accessory == EmptyView {
     }
 }
 
-/// The Claude accounts signed in to AgentDock for Claude Code limits, and the
-/// button that adds another. Each account then gets its own section.
-private struct ClaudeCodeAccountsSection: View {
+/// One profile's own Claude Code sign-in and its live limits. Each Claude
+/// profile page, Official Claude included, shows exactly one of these, for
+/// its own sign-in only.
+private struct ClaudeCodeSignInSection: View {
     @EnvironmentObject private var model: AgentDockModel
+    let profile: ClaudeCodeProfileID
     let accent: Color
+    @State private var renaming = false
+    @State private var draftName = ""
 
     var body: some View {
-        Section {
-            switch model.claudeCodeAccountsState {
-            case .checking:
-                HStack(spacing: 8) {
-                    ProgressView().controlSize(.small)
-                    Text("Checking Claude sign-ins…")
-                        .foregroundStyle(.secondary)
-                }
-            case .needsKeychainAccess:
-                Label(ClaudeCodeUsageMessage.keychainAccessRequired, systemImage: "key")
-                    .foregroundStyle(.secondary)
-            case .ready:
-                if model.claudeCodeAccounts.isEmpty {
-                    Text(ClaudeCodeUsageMessage.notSignedIn)
-                        .foregroundStyle(.secondary)
-                }
-            }
-            if case .signingIn = model.claudeSignInState {
+        let usage = model.claudeCodeUsage(for: profile)
+        let phase = displayedPhase(usage)
+        UsageLimitsSection(
+            title: "Claude Code Usage Limits",
+            limits: usage.limits,
+            accent: accent,
+            providerName: "Claude Code",
+            footer: footer(usage, phase: phase),
+            showsLimits: Self.showsLimits(phase)
+        ) {
+            accountRows(usage, phase: phase)
+            if model.isClaudeSignInSheetPresented(for: profile), case .signingIn = model.claudeSignInState {
                 HStack(spacing: 8) {
                     ProgressView().controlSize(.small)
                     Text("Signing in…")
                         .foregroundStyle(.secondary)
                 }
             }
-            LabeledContent(model.claudeCodeAccounts.isEmpty ? "Claude Account" : "Another Claude Account") {
-                Button(model.claudeCodeAccounts.isEmpty ? "Sign In to Claude…" : "Add Claude Account…") {
-                    model.signInToClaude()
-                }
-                .disabled(model.isClaudeSignInSheetPresented)
-            }
-        } header: {
-            Text("Claude Code Usage Limits")
-        } footer: {
-            Text("Live limits for each Claude account you sign in with here, which can differ from the Claude Desktop account. Fable has a separate weekly allowance.")
-        }
-    }
-}
-
-/// One signed-in account: who it is, its status, and its actions.
-private struct ClaudeCodeAccountRow: View {
-    @EnvironmentObject private var model: AgentDockModel
-    let account: ClaudeCodeAccountUsage
-    @State private var renaming = false
-    @State private var draftName = ""
-
-    var body: some View {
-        LabeledContent(account.status.isSignedIn ? "Signed in as" : "Account") {
-            HStack(spacing: 8) {
-                Text(account.account?.label ?? "Claude account")
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-                if account.status.isSignedIn {
-                    Button("Rename…") {
-                        draftName = account.account?.customName ?? ""
-                        renaming = true
-                    }
-                }
-                Button(account.status.isSignedIn ? "Sign Out" : "Remove") {
-                    model.signOutOfClaude(accountKey: account.key)
-                }
-            }
         }
         .alert("Rename Claude Account", isPresented: $renaming) {
             TextField("Name", text: $draftName)
             Button("Save") {
-                model.renameClaudeAccount(accountKey: account.key, to: draftName)
+                model.renameClaudeAccount(profile: profile, to: draftName)
             }
             Button("Cancel", role: .cancel) {}
         } message: {
             Text("Leave the name empty to show the account email.")
         }
-        statusRow
+    }
+
+    /// While migration has not finished, every profile is still checking.
+    private func displayedPhase(_ usage: ClaudeCodeAccountUsage) -> ClaudeCodeUsagePhase {
+        switch model.claudeCodeAccountsState {
+        case .checking: .checking
+        case .needsKeychainAccess: .keychainAccessRequired
+        case .ready: usage.phase()
+        }
+    }
+
+    private static func showsLimits(_ phase: ClaudeCodeUsagePhase) -> Bool {
+        switch phase {
+        case .loading, .ok, .rateLimited, .budgetExhausted, .error: true
+        case .checking, .keychainAccessRequired, .signedOut, .reauthenticationRequired: false
+        }
+    }
+
+    private var signInDisabled: Bool {
+        model.isClaudeSignInRunning || model.claudeCodeAccountsState != .ready
+    }
+
+    private var signInButton: some View {
+        Button("Sign In to Claude…") { model.signInToClaude(profile: profile) }
+            .disabled(signInDisabled)
+            .help("Sign this profile in to a Claude account. It replaces only this profile's sign-in.")
     }
 
     @ViewBuilder
-    private var statusRow: some View {
-        switch account.status {
-        case .unknown:
+    private func accountRows(_ usage: ClaudeCodeAccountUsage, phase: ClaudeCodeUsagePhase) -> some View {
+        switch phase {
+        case .checking:
             HStack(spacing: 8) {
                 ProgressView().controlSize(.small)
                 Text("Checking Claude sign-in…")
@@ -563,24 +552,78 @@ private struct ClaudeCodeAccountRow: View {
         case .keychainAccessRequired:
             Label(ClaudeCodeUsageMessage.keychainAccessRequired, systemImage: "key")
                 .foregroundStyle(.secondary)
-        case let .signedOut(expired):
-            Label(
-                expired ? ClaudeCodeUsageMessage.signInExpired : ClaudeCodeUsageMessage.unreadableSignIn,
-                systemImage: "exclamationmark.triangle"
-            )
-            .foregroundStyle(.secondary)
-            LabeledContent("Sign In Again") {
-                Button("Sign In to Claude…") { model.signInToClaude() }
-                    .disabled(model.isClaudeSignInSheetPresented)
+        case .signedOut:
+            Text(ClaudeCodeUsageMessage.notSignedIn)
+                .foregroundStyle(.secondary)
+            LabeledContent("Claude Account") { signInButton }
+        case let .reauthenticationRequired(message):
+            Label(message, systemImage: "exclamationmark.triangle")
+                .foregroundStyle(.secondary)
+            LabeledContent(usage.account?.label ?? "Claude Account") {
+                HStack(spacing: 8) {
+                    signInButton
+                    Button("Sign Out") { model.signOutOfClaude(profile: profile) }
+                }
             }
-        case .signedIn:
-            if let until = account.rateLimitedUntil, until > Date() {
+        case .loading, .ok, .rateLimited, .budgetExhausted, .error:
+            LabeledContent("Signed in as") {
+                HStack(spacing: 8) {
+                    Text(usage.title)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                        .help(usage.account?.label ?? "")
+                    Button("Rename…") {
+                        draftName = usage.account?.customName ?? ""
+                        renaming = true
+                    }
+                    Button("Sign Out") { model.signOutOfClaude(profile: profile) }
+                }
+            }
+            LabeledContent("Use Another Account") { signInButton }
+            if case let .rateLimited(until) = phase {
                 Label(
                     "Rate limited until \(until.formatted(date: .omitted, time: .shortened)).",
                     systemImage: "hourglass"
                 )
                 .foregroundStyle(.secondary)
+            } else if case let .budgetExhausted(until) = phase {
+                Label(
+                    "Hourly refresh limit reached. Next refresh after \(until.formatted(date: .omitted, time: .shortened)).",
+                    systemImage: "hourglass"
+                )
+                .foregroundStyle(.secondary)
             }
+        }
+    }
+
+    private func footer(_ usage: ClaudeCodeAccountUsage, phase: ClaudeCodeUsagePhase) -> String {
+        var text = "Live limits for the Claude account this profile signs in with in AgentDock, which can differ from its Claude Desktop account. Fable has a separate weekly allowance."
+        if Self.showsLimits(phase), let limits = usage.limits, !limits.buckets.isEmpty {
+            text += " Updated \(limits.fetchedAt.formatted(.relative(presentation: .named)))."
+        }
+        return text
+    }
+}
+
+/// Earlier sign-ins migration kept because no profile could take them.
+private struct UnplacedClaudeSignInsSection: View {
+    @EnvironmentObject private var model: AgentDockModel
+
+    var body: some View {
+        let count = model.unplacedClaudeSignIns.count
+        Section {
+            Label(
+                count == 1
+                    ? "AgentDock kept 1 earlier Claude sign-in that isn't linked to a profile."
+                    : "AgentDock kept \(count) earlier Claude sign-ins that aren't linked to a profile.",
+                systemImage: "person.crop.circle.badge.questionmark"
+            )
+            .foregroundStyle(.secondary)
+            LabeledContent("Unlinked Sign-Ins") {
+                Button("Remove", role: .destructive) { model.discardUnplacedClaudeSignIns() }
+            }
+        } footer: {
+            Text("Each Claude profile has one sign-in. To link a kept sign-in, add a Claude profile named after its account email and relaunch AgentDock, or sign in on a profile's page.")
         }
     }
 }

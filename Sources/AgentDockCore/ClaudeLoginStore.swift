@@ -140,6 +140,42 @@ public enum ClaudeLoginAccountKey {
     }
 }
 
+/// The AgentDock profile a Claude Code sign-in belongs to. Every Claude
+/// profile has at most one sign-in, stored in its own Keychain item.
+///
+/// The Official Claude page counts as a profile here: it is the default
+/// profile, so it can hold its own sign-in, and sign-ins that match no managed
+/// profile are migrated to it.
+public enum ClaudeCodeProfileID: Hashable, Sendable {
+    /// The Official Claude page, the default profile.
+    case official
+    /// A managed Claude profile, by its `CodexProfile.id`.
+    case managed(UUID)
+
+    public static let officialStorageKey = "official"
+
+    /// Names the profile's Keychain item: "official" or the lowercased UUID.
+    /// It never contains account identifiers or an email.
+    public var storageKey: String {
+        switch self {
+        case .official: Self.officialStorageKey
+        case let .managed(id): id.uuidString.lowercased()
+        }
+    }
+
+    /// Accepts only the exact forms `storageKey` produces.
+    public init?(storageKey: String) {
+        if storageKey == Self.officialStorageKey {
+            self = .official
+            return
+        }
+        guard let id = UUID(uuidString: storageKey), id.uuidString.lowercased() == storageKey else {
+            return nil
+        }
+        self = .managed(id)
+    }
+}
+
 public enum ClaudeLoginStoreError: Error, Equatable, Sendable {
     /// The Keychain would have to prompt, and prompting was not allowed.
     case interactionRequired
@@ -157,12 +193,20 @@ public protocol ClaudeLoginTokenStoring: Sendable {
     func delete(allowInteraction: Bool) throws
 }
 
-/// Every stored sign-in, one item per account key, plus the single item
-/// written before multiple accounts were supported.
+/// Every stored sign-in: one item per profile, plus the items earlier versions
+/// wrote (one per account key, and before that a single item), which are read
+/// only to migrate them onto profiles.
 public protocol ClaudeLoginAccountStoring: Sendable {
-    /// The keys of stored accounts, sorted. The legacy item is never listed.
+    /// The profiles that have an item, sorted by storage key.
+    func profileIDs(allowInteraction: Bool) throws -> [ClaudeCodeProfileID]
+    /// The item for one profile. It can hold any account; signing in again
+    /// replaces it.
+    func tokenStore(forProfile profile: ClaudeCodeProfileID) -> any ClaudeLoginTokenStoring
+    /// The keys of account-keyed items from earlier versions, sorted. Read
+    /// only to migrate them. The legacy item is never listed.
     func accountKeys(allowInteraction: Bool) throws -> [String]
-    /// The item for one account. Loads and saves of another account fail.
+    /// An account-keyed item from earlier versions. Loads and saves of
+    /// another account fail.
     func tokenStore(forAccountKey accountKey: String) -> any ClaudeLoginTokenStoring
     /// The pre-multi-account item, read only to migrate it.
     var legacyTokenStore: any ClaudeLoginTokenStoring { get }
@@ -177,8 +221,11 @@ public struct ClaudeLoginKeychainStore: ClaudeLoginTokenStoring, @unchecked Send
     public static let service = "dev.euforic.agentdock.claude-login"
     /// The single item written before multiple accounts were supported.
     public static let account = "claude-code"
-    /// Each account's item is named `claude-code:<account key>`.
+    /// Each account-keyed item from earlier versions is named `claude-code:<account key>`.
     public static let accountPrefix = "claude-code:"
+    /// Each profile's item is named `claude-code-profile:<profile storage key>`.
+    /// It does not start with `accountPrefix`, so the two kinds never mix.
+    public static let profilePrefix = "claude-code-profile:"
     static let label = "AgentDock Claude Sign-In"
     static let maximumBytes = 64 * 1_024
 
@@ -202,6 +249,18 @@ public struct ClaudeLoginKeychainStore: ClaudeLoginTokenStoring, @unchecked Send
         self.service = service
         self.accountKey = accountKey
         account = accountKey.map { Self.accountPrefix + $0 } ?? Self.account
+    }
+
+    /// One profile's item. It holds whichever account the profile signed in with.
+    init(
+        keychain: SecKeychain?,
+        service: String = ClaudeLoginKeychainStore.service,
+        profile: ClaudeCodeProfileID
+    ) {
+        self.keychain = keychain
+        self.service = service
+        accountKey = nil
+        account = Self.profilePrefix + profile.storageKey
     }
 
     public func load(allowInteraction: Bool) throws -> ClaudeLoginTokens? {
@@ -329,14 +388,16 @@ public struct ClaudeLoginKeychainStore: ClaudeLoginTokenStoring, @unchecked Send
     }
 }
 
-/// Every AgentDock Claude sign-in in the login Keychain: one generic password
-/// per account under the same service, named `claude-code:<account key>`.
+/// Every AgentDock Claude sign-in in the login Keychain, all under the same
+/// service: one generic password per profile, named
+/// `claude-code-profile:<profile storage key>`, plus the items earlier
+/// versions wrote (`claude-code:<account key>` and the single `claude-code`).
 /// Listing reads only item attributes, never another service's items.
 ///
 /// `@unchecked Sendable`: the only non-Sendable member is an immutable
 /// `SecKeychain` reference, used only by tests to target a temporary keychain.
 public struct ClaudeLoginKeychainAccounts: ClaudeLoginAccountStoring, @unchecked Sendable {
-    /// More items than this under AgentDock's service are not listed.
+    /// More items than this of one kind under AgentDock's service are not listed.
     static let maximumAccounts = 64
 
     private let keychain: SecKeychain?
@@ -352,7 +413,30 @@ public struct ClaudeLoginKeychainAccounts: ClaudeLoginAccountStoring, @unchecked
         self.service = service
     }
 
+    public func profileIDs(allowInteraction: Bool) throws -> [ClaudeCodeProfileID] {
+        let keys = try itemNames(allowInteraction: allowInteraction).compactMap { name -> String? in
+            guard name.hasPrefix(ClaudeLoginKeychainStore.profilePrefix) else { return nil }
+            let key = String(name.dropFirst(ClaudeLoginKeychainStore.profilePrefix.count))
+            return ClaudeCodeProfileID(storageKey: key) == nil ? nil : key
+        }
+        return Set(keys).sorted().prefix(Self.maximumAccounts).compactMap(ClaudeCodeProfileID.init(storageKey:))
+    }
+
+    public func tokenStore(forProfile profile: ClaudeCodeProfileID) -> any ClaudeLoginTokenStoring {
+        ClaudeLoginKeychainStore(keychain: keychain, service: service, profile: profile)
+    }
+
     public func accountKeys(allowInteraction: Bool) throws -> [String] {
+        let keys = try itemNames(allowInteraction: allowInteraction).compactMap { name -> String? in
+            guard name.hasPrefix(ClaudeLoginKeychainStore.accountPrefix) else { return nil }
+            let key = String(name.dropFirst(ClaudeLoginKeychainStore.accountPrefix.count))
+            return ClaudeLoginAccountKey.isValid(key) ? key : nil
+        }
+        return Array(Set(keys).sorted().prefix(Self.maximumAccounts))
+    }
+
+    /// The account names of every item under AgentDock's service.
+    private func itemNames(allowInteraction: Bool) throws -> [String] {
         var query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
@@ -376,14 +460,7 @@ public struct ClaudeLoginKeychainAccounts: ClaudeLoginAccountStoring, @unchecked
             throw ClaudeLoginKeychainStore.error(for: status)
         }
         let items = (result as? [[String: Any]]) ?? []
-        let keys = items.compactMap { item -> String? in
-            guard let account = item[kSecAttrAccount as String] as? String,
-                  account.hasPrefix(ClaudeLoginKeychainStore.accountPrefix)
-            else { return nil }
-            let key = String(account.dropFirst(ClaudeLoginKeychainStore.accountPrefix.count))
-            return ClaudeLoginAccountKey.isValid(key) ? key : nil
-        }
-        return Array(Set(keys).sorted().prefix(Self.maximumAccounts))
+        return items.compactMap { $0[kSecAttrAccount as String] as? String }
     }
 
     public func tokenStore(forAccountKey accountKey: String) -> any ClaudeLoginTokenStoring {

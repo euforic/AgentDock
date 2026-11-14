@@ -46,6 +46,52 @@ and profile binding in addition to the build number. A rebuild failure preserves
 the existing shortcut and displays an error; relaunch retries. Dock pins pointing
 to the previous shortcut folder may need to be replaced with the migrated shortcut.
 
+## Claude Code sign-ins
+
+AgentDock's own Claude sign-ins for Claude Code limits belong to profiles: each
+Claude profile, and Official Claude as the default profile, has at most one,
+stored in the generic password `claude-code-profile:<profile key>` under the
+service `dev.euforic.agentdock.claude-login`. The profile key is `official` or
+the managed profile's lowercased UUID.
+
+Earlier versions stored one item per Claude account (`claude-code:<account
+key>`) and, before that, a single `claude-code` item. Once per launch, after the
+profile list loads and before any Claude Code usage is fetched,
+`ClaudeCodeAccounts.migrateEarlierSignIns` places them on profiles:
+
+- **Matching uses only data AgentDock already has**: the name you gave the
+  account in AgentDock and its email, both stored in AgentDock's own item, and
+  the profile names in `profiles.json`. A sign-in goes to the first managed
+  Claude profile, in sidebar order, whose name equals the sign-in's AgentDock
+  name, otherwise to the first whose name equals its email (both ignoring case
+  and outer spaces). A sign-in that matches no profile goes to Official Claude.
+  AgentDock never reads Claude Code's credentials, `~/.claude`,
+  `~/.claude.json`, Claude Desktop data, or another app's Keychain items to
+  match.
+- **One sign-in per profile.** When several land on the same profile, the one
+  added to AgentDock first wins; a missing added date counts as earliest, and
+  the lower account key breaks a tie. A profile that already has a sign-in keeps
+  it.
+- **Safe moves.** The winner is written to the profile's item, read back and
+  compared, and only then is the earlier item deleted. If any step fails, the
+  earlier item stays and the next launch retries.
+- **Nothing is lost.** Sign-ins that cannot be placed keep their earlier item
+  untouched. Official Claude then shows how many were kept, with **Remove** to
+  delete them. A kept sign-in is placed on a later launch once a free Claude
+  profile matches it, for example a new profile named after its email.
+- **Redundant items are removed.** An earlier item whose account is already
+  signed in on a profile is deleted, as is a single legacy item whose account
+  also has an account-keyed item (the keyed one is newer). Signing a profile out
+  also deletes any earlier item of the same account, so it cannot come back.
+- **Idempotent.** Running it again with the same profiles changes nothing.
+- The same launch removes the items of managed profiles that no longer exist,
+  in case removing a profile's sign-in failed earlier.
+
+If reading the Keychain needs a prompt, migration waits and every Claude
+profile shows the Keychain notice until a manual Refresh allows it. Persisted
+429 cooldowns are keyed by account identity, so they still apply after the
+move.
+
 ## Safety and recovery
 
 Before recovering old operation journals, changing profile files, or moving either

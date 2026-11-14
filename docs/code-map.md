@@ -27,17 +27,17 @@
 | `Sources/AgentDockCore/ClaudeHTTPTransport.swift` | Bounded HTTP transport seam and shared Anthropic OAuth API request headers |
 | `Sources/AgentDockCore/ClaudeOAuth.swift` | Claude sign-in protocol: PKCE, authorize URL, code exchange and refresh requests, pasted-code parsing, renewal classification |
 | `Sources/AgentDockCore/ClaudeLoopbackCallbackServer.swift` | One-shot 127.0.0.1 OAuth callback listener with a `state` check |
-| `Sources/AgentDockCore/ClaudeLoginStore.swift` | AgentDock's Claude sign-in tokens, account keys, and the non-prompting per-account Keychain items |
-| `Sources/AgentDockCore/ClaudeCodeAccounts.swift` | The signed-in Claude Code accounts: listing, the PKCE sign-in flow, re-sign-in, rename, per-account sign-out, and legacy-item migration |
-| `Sources/AgentDockCore/ClaudeCodeLogin.swift` | One account's tokens: single-flight renewal with write-back, rename, sign-out, and Claude Code guidance messages |
+| `Sources/AgentDockCore/ClaudeLoginStore.swift` | AgentDock's Claude sign-in tokens, profile IDs and account keys, and the non-prompting per-profile Keychain items (plus the earlier per-account and single items, read to migrate them) |
+| `Sources/AgentDockCore/ClaudeCodeAccounts.swift` | One Claude Code sign-in per Claude profile: listing, the PKCE sign-in flow, per-profile sign-in, rename, and sign-out, removal of missing profiles' sign-ins, migration of earlier items onto profiles, and card states |
+| `Sources/AgentDockCore/ClaudeCodeLogin.swift` | One profile's tokens: single-flight renewal with write-back, rename, sign-out, and Claude Code guidance messages |
 | `Sources/AgentDockCore/ClaudeUsageRateLimitGate.swift` | Saved 429 cooldowns by account identity, identity-verification ledger, per-account hourly budget, cross-account throttle, and per-account exclusion |
 
 ## UI and Rendering
 
 | Path | Responsibility |
 | --- | --- |
-| `Sources/AgentDock/OverviewView.swift` | Profile and official-app overview |
-| `Sources/AgentDock/ClaudeSignInSheet.swift` | Browser and pasted-code steps of adding a Claude account with AgentDock's sign-in |
+| `Sources/AgentDock/OverviewView.swift` | Profile and official-app overview, including each Claude profile's own Claude Code sign-in card |
+| `Sources/AgentDock/ClaudeSignInSheet.swift` | Browser and pasted-code steps of signing one Claude profile in with AgentDock's sign-in |
 | `Sources/AgentDock/ActivityDetailView.swift` | Supported local activity details |
 | `Sources/TranscriptRenderer/TranscriptModels.swift` | Provider-neutral render model and event classification |
 | `Sources/TranscriptRenderer/TranscriptView.swift` | Accessible presentation for the separate renderer showcase and tests |

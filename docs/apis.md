@@ -138,8 +138,9 @@ weekly, model-scoped, reset, and extra-usage fields into `ProfileRateLimits`.
 AgentDock verifies account and organization identity through the sibling OAuth
 profile endpoint before assigning a response to an account-scoped source. It
 does not persist, rotate, refresh, or log provider credentials. The exception is
-AgentDock's own Claude sign-ins for the Claude Code section, described below,
-whose tokens AgentDock stores and renews, one Keychain item per account.
+AgentDock's own Claude sign-ins for each Claude profile's Claude Code section,
+described below, whose tokens AgentDock stores and renews, one Keychain item
+per profile.
 
 ### AgentDock Claude sign-in
 
@@ -166,12 +167,18 @@ client ID `9d1c250a-e61b-44d9-88ed-5944d1962f5e`.
   `account.uuid`, `account.email` (or a top-level `email`),
   `organization.uuid`, and `organization.organization_type` without its
   `claude_` prefix as the plan.
+- **Profile item:** each Claude profile's sign-in is the generic password
+  `claude-code-profile:<profile key>` under the service
+  `dev.euforic.agentdock.claude-login`, where the profile key is `official`
+  (Official Claude, the default profile) or the managed profile's lowercased
+  UUID. It holds whichever account the profile signed in with; signing that
+  profile in again replaces only it.
 - **Account key:** the first 16 bytes of
   `SHA-256("agentdock.claude-login|<account uuid>|<organization uuid>")`
-  (lowercased UUIDs) as 32 lowercase hex characters. It names the account's
-  Keychain item, `claude-code:<account key>`, under the service
-  `dev.euforic.agentdock.claude-login`. Signing in to the same account and
-  organization again replaces that item.
+  (lowercased UUIDs) as 32 lowercase hex characters. It identifies the account
+  for its rate-limit state and cache, and names the per-account items earlier
+  versions wrote, `claude-code:<account key>`, which are read only to migrate
+  them onto profiles.
 - **Stored payload:** JSON with `version`, `accessToken`, `refreshToken`,
   `expiresAt` (seconds since 1970), `scopes`, `accountUUID`,
   `organizationUUID`, `accountLabel`, `subscriptionType`, and the optional
