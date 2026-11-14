@@ -117,15 +117,16 @@ Live Claude quota refresh is a separate flow:
    deadline is saved under a SHA-256 digest of the account identity so it
    survives relaunch and token changes.
 
-Claude Code live limits use AgentDock's own Claude sign-ins and are shown in
-their own section of the Official Claude overview, one card per account,
-labeled with the user's name for the account or else its email.
+Claude Code live limits use AgentDock's own Claude sign-ins, one per Claude
+profile. Each Claude profile's page, Official Claude included, shows its own
+Claude Code card; no page lists another profile's sign-in. Home shows a
+read-only row per signed-in profile that opens that profile's page.
 
-**Sign-in (adding an account)**
+**Sign-in (on a profile's page)**
 
-1. **Sign In to Claude…** or **Add Claude Account…** starts a listener on
-   127.0.0.1 with a random port and generates a PKCE verifier and a random
-   `state`.
+1. The profile's **Sign In to Claude…** starts a listener on 127.0.0.1 with a
+   random port and generates a PKCE verifier and a random `state`. One
+   sign-in runs at a time.
 2. AgentDock opens `claude.ai/oauth/authorize` in the browser.
 3. Claude redirects to the listener with the code. Alternatively, the user
    pastes the code that claude.ai shows (`code#state` or the callback URL).
@@ -134,43 +135,49 @@ labeled with the user's name for the account or else its email.
    refresh token.
 5. The profile endpoint supplies the account and organization UUIDs, the email
    label, and the plan. Without both UUIDs, nothing is saved.
-6. The tokens and account are saved to that account's own Keychain item,
-   named by a digest of the two UUIDs. Signing in to an account that is
-   already listed replaces its item and keeps its name.
+6. The tokens and account are saved to that profile's own Keychain item,
+   `claude-code-profile:<profile key>`, replacing whatever that profile had.
+   The same account again keeps its name; another account starts fresh. No
+   other profile's item is touched, even one signed in to the same account.
+7. **Sign Out** deletes only that profile's item. Removing a profile from
+   AgentDock or deleting its data deletes its item too; a launch also removes
+   items of profiles that no longer exist.
 
-**Migration from a single sign-in**
+**Migration of earlier sign-ins**
 
-1. On the first listing, the item earlier versions wrote (account
-   `claude-code`) is read without interaction.
-2. Its stored account and organization UUIDs name the new item. If that item
-   does not exist yet, the sign-in is written to it and read back.
-3. Only after the read-back matches is the old item deleted. Any failure keeps
-   the old item and is retried on the next refresh; a prompt that was not
-   allowed asks for a manual refresh. No network request is needed.
+Once per launch, after the profile list loads, account-keyed items
+(`claude-code:<account key>`) and the single `claude-code` item from earlier
+versions are placed on the profile they match, or on Official Claude. Each item
+is read without interaction, written to the profile's item, read back, and
+only then deleted. No network request is needed. Matching, the one-per-profile
+rule, and failure handling are described in
+[Upgrade migration](upgrade-migration.md#claude-code-sign-ins).
 
 **Live limits**
 
-1. The accounts are listed from their Keychain item names, and each item is
-   loaded without interaction. If access needs approval, the section or the
-   account's card asks for a manual refresh, which can show the prompt.
-2. Each account is fetched independently; one account's failure, cooldown, or
+1. Each Claude profile's item is loaded without interaction. If access needs
+   approval, that profile's card asks for a manual refresh, which can show the
+   prompt.
+2. Each profile is fetched independently; one profile's failure, cooldown, or
    expired sign-in is shown on its own card and never hides another. At most
-   one fetch per account and two across all accounts run at once, and fetch
-   starts are spaced one second apart.
+   one fetch per profile sign-in, one request per Claude account, and two
+   across all profiles run at once, and fetch starts are spaced one second
+   apart.
 3. A token that expires within five minutes is renewed first and written back
-   to that account's item. Only one renewal per account runs at a time.
+   to that profile's item. Only one renewal per sign-in runs at a time.
 4. The account's gate is checked in order: an active 429 cooldown (in memory
    or saved) shows the last success or a rate-limit message with the retry
    time; a success younger than five minutes (30 seconds for a manual refresh)
    is reused; a non-429 failure backoff applies to automatic refreshes only;
    an account that already made 30 fetches in the past hour waits; otherwise
-   the request goes ahead.
+   the request goes ahead. The gate belongs to the Claude account, so two
+   profiles signed in to the same account share it.
 5. The account identity is verified with the profile endpoint once per token,
    then one usage request is sent.
 6. A 401 renews the token once and retries once. A second 401, or a refused
-   renewal, signs that account out and deletes its Keychain item; its card
-   asks for a new sign-in until it is removed. An outage keeps the current
-   token and retries on the next refresh.
+   renewal, signs that profile out and deletes its Keychain item; its card
+   asks for a new sign-in. An outage keeps the current token and retries on
+   the next refresh.
 7. The response is projected to the 5-hour window, the weekly window, and
    Fable's weekly percentage only. Claude Code results are excluded from
    analytics and do not hold back the quota-refresh schedule for other sources.

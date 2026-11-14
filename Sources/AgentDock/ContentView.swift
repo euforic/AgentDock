@@ -47,7 +47,11 @@ struct ContentView: View {
                 model.pendingRemoveProfile = nil
             }
         } message: {
-            Text("Its data stays on disk, and you can restore it later with File › Restore Profile.")
+            Text(
+                model.pendingRemoveProfile?.product == .claude
+                    ? "Its data stays on disk, and you can restore it later with File › Restore Profile. Its AgentDock Claude Code sign-in is removed; sign in again after restoring."
+                    : "Its data stays on disk, and you can restore it later with File › Restore Profile."
+            )
         }
         .alert(
             "Delete All Data for “\(model.pendingDeleteProfile?.name ?? "Profile")”?",
@@ -62,7 +66,11 @@ struct ContentView: View {
                 model.pendingDeleteProfile = nil
             }
         } message: {
-            Text("This permanently deletes the profile's local sessions, settings, and shortcut. Credentials in the shared macOS Keychain or provider accounts aren't affected. You can't undo this action.")
+            Text(
+                model.pendingDeleteProfile?.product == .claude
+                    ? "This permanently deletes the profile's local sessions, settings, shortcut, and its AgentDock Claude Code sign-in. Other credentials in the shared macOS Keychain and provider accounts aren't affected. You can't undo this action."
+                    : "This permanently deletes the profile's local sessions, settings, and shortcut. Credentials in the shared macOS Keychain or provider accounts aren't affected. You can't undo this action."
+            )
         }
         .onReceive(NotificationCenter.default.publisher(for: .agentDockFocusSearch)) { _ in
             searchFocused = true

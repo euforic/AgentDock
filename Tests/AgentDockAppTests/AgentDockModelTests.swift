@@ -399,8 +399,11 @@ final class AgentDockModelTests: XCTestCase {
         let model = makeModel(store: store)
 
         await waitUntil { model.claudeCodeAccountsState == .ready }
-        XCTAssertTrue(model.claudeCodeAccounts.isEmpty)
+        XCTAssertEqual(model.claudeCodeProfileIDs, [.official])
+        XCTAssertEqual(model.claudeCodeUsage(for: .official).status, .signedOut(expired: false))
+        XCTAssertEqual(model.claudeCodeUsage(for: .official).phase(), .signedOut)
         XCTAssertFalse(model.isClaudeSignInSheetPresented)
+        XCTAssertFalse(model.isClaudeSignInSheetPresented(for: .official))
     }
 
     func testClaudeCodeSignOutClearsLimitsAndStoredLogin() async throws {
@@ -446,21 +449,26 @@ final class AgentDockModelTests: XCTestCase {
             claudeCodeAccounts: accounts
         )
 
+        // The earlier account-keyed sign-in is migrated to Official Claude, the default profile.
         await waitUntil {
-            model.claudeCodeAccounts.count == 1
-                && model.claudeCodeAccounts.first?.title == "synthetic@example.invalid"
-                && model.claudeCodeAccounts.first?.status.isSignedIn == true
-                && model.claudeCodeAccounts.first?.limits?.buckets.isEmpty == false
+            let official = model.claudeCodeUsage(for: .official)
+            return official.title == "synthetic@example.invalid"
+                && official.status.isSignedIn
+                && official.limits?.buckets.isEmpty == false
         }
+        XCTAssertEqual(model.claudeCodeUsage(for: .official).phase(), .ok)
 
-        model.signOutOfClaude(accountKey: tokens.accountKey)
-        await waitUntil { model.claudeCodeAccounts.isEmpty }
+        model.signOutOfClaude(profile: .official)
+        await waitUntil { model.claudeCodeUsage(for: .official).status == .signedOut(expired: false) }
+        XCTAssertNil(model.claudeCodeUsage(for: .official).limits)
+        XCTAssertNil(loginStore.tokens(forProfile: .official))
         XCTAssertNil(loginStore.tokens(forAccountKey: tokens.accountKey))
         XCTAssertEqual(model.claudeCodeAccountsState, .ready)
     }
 
-    func testClaudeCodeShowsOneCardPerAccountAndSignOutKeepsTheOther() async throws {
+    func testClaudeCodeShowsEachProfilesOwnCardAndSignOutKeepsTheOther() async throws {
         let store = try makeStore()
+        let work = try store.createProfile(product: .claude, name: "Work")
         let first = ClaudeLoginTokens(
             accessToken: "synthetic-access-a",
             refreshToken: "synthetic-refresh-a",
@@ -493,19 +501,28 @@ final class AgentDockModelTests: XCTestCase {
             claudeUsageClient: try scriptedClaudeUsageClient(accounts: accounts, transport: transport)
         )
 
-        await waitUntil { model.claudeCodeAccounts.count == 2 }
-        XCTAssertEqual(model.claudeCodeAccounts.map(\.key), [first.accountKey, second.accountKey])
-        XCTAssertEqual(model.claudeCodeAccounts.map(\.title), ["synthetic@example.invalid", "Work"])
+        // The sign-in named "Work" moves to the Work profile; the other one,
+        // matching no profile, to Official Claude.
+        let workID = ClaudeCodeProfileID.managed(work.id)
+        await waitUntil {
+            model.claudeCodeUsage(for: .official).status.isSignedIn
+                && model.claudeCodeUsage(for: workID).status.isSignedIn
+        }
+        XCTAssertEqual(model.claudeCodeProfileIDs, [.official, workID])
+        XCTAssertEqual(model.claudeCodeUsage(for: .official).accountKey, first.accountKey)
+        XCTAssertEqual(model.claudeCodeUsage(for: workID).accountKey, second.accountKey)
+        XCTAssertEqual(model.claudeCodeUsage(for: .official).title, "synthetic@example.invalid")
+        XCTAssertEqual(model.claudeCodeUsage(for: workID).title, "Work")
 
-        model.signOutOfClaude(accountKey: first.accountKey)
-        await waitUntil { model.claudeCodeAccounts.count == 1 }
-        XCTAssertEqual(model.claudeCodeAccounts.map(\.key), [second.accountKey])
-        XCTAssertNil(loginStore.tokens(forAccountKey: first.accountKey))
-        XCTAssertEqual(loginStore.tokens(forAccountKey: second.accountKey), second)
+        model.signOutOfClaude(profile: .official)
+        await waitUntil { model.claudeCodeUsage(for: .official).status == .signedOut(expired: false) }
+        XCTAssertEqual(model.claudeCodeUsage(for: workID).accountKey, second.accountKey)
+        XCTAssertNil(loginStore.tokens(forProfile: .official))
+        XCTAssertEqual(loginStore.tokens(forProfile: workID), second)
 
-        model.renameClaudeAccount(accountKey: second.accountKey, to: "Personal")
-        await waitUntil { model.claudeCodeAccounts.first?.title == "Personal" }
-        XCTAssertEqual(loginStore.tokens(forAccountKey: second.accountKey)?.customName, "Personal")
+        model.renameClaudeAccount(profile: workID, to: "Personal")
+        await waitUntil { model.claudeCodeUsage(for: workID).title == "Personal" }
+        XCTAssertEqual(loginStore.tokens(forProfile: workID)?.customName, "Personal")
     }
 
     func testClaudeCodeLegacySignInAppearsWithoutSigningInAgain() async throws {
@@ -529,11 +546,225 @@ final class AgentDockModelTests: XCTestCase {
             claudeUsageClient: try scriptedClaudeUsageClient(accounts: accounts, transport: transport)
         )
 
-        await waitUntil { model.claudeCodeAccounts.count == 1 }
-        XCTAssertEqual(model.claudeCodeAccounts.first?.key, legacy.accountKey)
-        XCTAssertEqual(model.claudeCodeAccounts.first?.status.isSignedIn, true)
+        await waitUntil { model.claudeCodeUsage(for: .official).status.isSignedIn }
+        XCTAssertEqual(model.claudeCodeUsage(for: .official).accountKey, legacy.accountKey)
+        XCTAssertEqual(model.claudeCodeUsage(for: .official).status.isSignedIn, true)
         XCTAssertNil(loginStore.legacyTokens)
-        XCTAssertEqual(loginStore.tokens(forAccountKey: legacy.accountKey)?.accessToken, legacy.accessToken)
+        XCTAssertEqual(loginStore.tokens(forProfile: .official)?.accessToken, legacy.accessToken)
+        XCTAssertNil(loginStore.tokens(forAccountKey: legacy.accountKey))
+        XCTAssertTrue(model.unplacedClaudeSignIns.isEmpty)
+    }
+
+    func testEachClaudeProfilePageExposesOnlyItsOwnSignIn() async throws {
+        let store = try makeStore()
+        let work = try store.createProfile(product: .claude, name: "Work")
+        let personal = try store.createProfile(product: .claude, name: "Personal")
+        _ = try store.createProfile(product: .codex, name: "Codex Only")
+        let workID = ClaudeCodeProfileID.managed(work.id)
+        let personalID = ClaudeCodeProfileID.managed(personal.id)
+        let officialTokens = Self.claudeTokens(access: "synthetic-access-a", account: 1, email: "synthetic@example.invalid")
+        let workTokens = Self.claudeTokens(access: "synthetic-access-work", account: 3, email: "work@example.invalid")
+        let loginStore = InMemoryClaudeLoginAccounts(profiles: [.official: officialTokens, workID: workTokens])
+        let transport = AppScriptedClaudeTransport()
+        let accounts = ClaudeCodeAccounts(store: loginStore, transport: transport)
+        let model = makeModel(
+            store: store,
+            claudeCodeAccounts: accounts,
+            claudeUsageClient: try scriptedClaudeUsageClient(accounts: accounts, transport: transport)
+        )
+
+        await waitUntil {
+            model.claudeCodeAccountsState == .ready
+                && model.claudeCodeUsage(for: .official).limits != nil
+                && model.claudeCodeUsage(for: workID).limits != nil
+        }
+
+        // Only Claude profiles have a page with a sign-in; Official Claude first.
+        XCTAssertEqual(model.claudeCodeProfileIDs, [.official, workID, personalID])
+        XCTAssertEqual(Set(model.claudeCodeUsageByProfile.keys), [.official, workID, personalID])
+        // Each page shows its own sign-in and nothing from another profile.
+        XCTAssertEqual(model.claudeCodeUsage(for: .official).profile, .official)
+        XCTAssertEqual(model.claudeCodeUsage(for: .official).accountKey, officialTokens.accountKey)
+        XCTAssertEqual(model.claudeCodeUsage(for: .official).title, "synthetic@example.invalid")
+        XCTAssertEqual(model.claudeCodeUsage(for: workID).profile, workID)
+        XCTAssertEqual(model.claudeCodeUsage(for: workID).accountKey, workTokens.accountKey)
+        XCTAssertEqual(model.claudeCodeUsage(for: workID).title, "work@example.invalid")
+        XCTAssertEqual(model.claudeCodeUsage(for: personalID).phase(), .signedOut)
+        XCTAssertNil(model.claudeCodeUsage(for: personalID).account)
+        // No usage requests were answered, so signed-in pages show their own error.
+        if case .error = model.claudeCodeUsage(for: workID).phase() {} else {
+            XCTFail("Expected the Work page to show its own fetch error")
+        }
+        XCTAssertEqual(model.claudeCodeProfileName(.official), "Official Claude")
+        XCTAssertEqual(model.claudeCodeProfileName(workID), "Work")
+        XCTAssertTrue(model.unplacedClaudeSignIns.isEmpty)
+        for profile in model.claudeCodeProfileIDs {
+            XCTAssertFalse(model.isClaudeSignInSheetPresented(for: profile))
+        }
+
+        // Selecting a Claude Code profile opens that profile's page.
+        model.selectClaudeCodeProfile(workID)
+        XCTAssertEqual(model.selectedProfileID, work.id)
+        model.selectClaudeCodeProfile(.official)
+        XCTAssertEqual(model.selectedOfficialProduct, .claude)
+    }
+
+    func testUnplacedEarlierSignInsAreKeptAndCanBeDiscarded() async throws {
+        let store = try makeStore()
+        let earlier = Self.claudeTokens(
+            access: "synthetic-access-a",
+            account: 1,
+            email: "synthetic@example.invalid",
+            addedAt: Date(timeIntervalSince1970: 1_800_000_000)
+        )
+        let later = Self.claudeTokens(
+            access: "synthetic-access-later",
+            account: 3,
+            email: "later@example.invalid",
+            addedAt: Date(timeIntervalSince1970: 1_800_000_100)
+        )
+        let loginStore = InMemoryClaudeLoginAccounts([earlier, later])
+        let transport = AppScriptedClaudeTransport()
+        let accounts = ClaudeCodeAccounts(store: loginStore, transport: transport)
+        let model = makeModel(
+            store: store,
+            claudeCodeAccounts: accounts,
+            claudeUsageClient: try scriptedClaudeUsageClient(accounts: accounts, transport: transport)
+        )
+
+        // Both would land on Official Claude; the earlier-added one wins.
+        await waitUntil { model.claudeCodeUsage(for: .official).status.isSignedIn }
+        XCTAssertEqual(model.claudeCodeUsage(for: .official).accountKey, earlier.accountKey)
+        XCTAssertEqual(model.unplacedClaudeSignIns, [later.accountKey])
+        XCTAssertEqual(loginStore.tokens(forAccountKey: later.accountKey), later)
+
+        model.discardUnplacedClaudeSignIns()
+        await waitUntil { model.unplacedClaudeSignIns.isEmpty }
+        XCTAssertNil(loginStore.tokens(forAccountKey: later.accountKey))
+        XCTAssertEqual(loginStore.tokens(forProfile: .official)?.accountUUID, earlier.accountUUID)
+    }
+
+    func testDeletingOrRemovingAProfileRemovesOnlyItsSignIn() async throws {
+        let store = try makeStore()
+        let work = try store.createProfile(product: .claude, name: "Work")
+        let personal = try store.createProfile(product: .claude, name: "Personal")
+        let workID = ClaudeCodeProfileID.managed(work.id)
+        let personalID = ClaudeCodeProfileID.managed(personal.id)
+        let officialTokens = Self.claudeTokens(access: "synthetic-access-a", account: 1, email: "a@example.invalid")
+        let workTokens = Self.claudeTokens(access: "synthetic-access-work", account: 3, email: "work@example.invalid")
+        let personalTokens = Self.claudeTokens(access: "synthetic-access-personal", account: 5, email: "p@example.invalid")
+        let loginStore = InMemoryClaudeLoginAccounts(profiles: [
+            .official: officialTokens,
+            workID: workTokens,
+            personalID: personalTokens
+        ])
+        let transport = AppScriptedClaudeTransport()
+        let accounts = ClaudeCodeAccounts(store: loginStore, transport: transport)
+        let model = makeModel(
+            store: store,
+            claudeCodeAccounts: accounts,
+            claudeUsageClient: try scriptedClaudeUsageClient(accounts: accounts, transport: transport)
+        )
+        await waitUntil { model.claudeCodeUsage(for: workID).status.isSignedIn }
+
+        model.deleteProfileData(work)
+        await waitUntil {
+            !model.storeMutationInProgress
+                && loginStore.tokens(forProfile: workID) == nil
+                && !model.claudeCodeProfileIDs.contains(workID)
+        }
+        XCTAssertNil(model.claudeCodeUsageByProfile[workID])
+        XCTAssertEqual(loginStore.tokens(forProfile: .official), officialTokens)
+        XCTAssertEqual(loginStore.tokens(forProfile: personalID), personalTokens)
+        XCTAssertEqual(model.claudeCodeUsage(for: personalID).accountKey, personalTokens.accountKey)
+
+        model.removeProfileFromList(personal)
+        await waitUntil {
+            !model.storeMutationInProgress
+                && loginStore.tokens(forProfile: personalID) == nil
+                && !model.claudeCodeProfileIDs.contains(personalID)
+        }
+        XCTAssertNil(model.claudeCodeUsageByProfile[personalID])
+        XCTAssertEqual(loginStore.tokens(forProfile: .official), officialTokens)
+        XCTAssertEqual(model.claudeCodeProfileIDs, [.official])
+    }
+
+    func testStartupRemovesTheSignInOfAProfileThatNoLongerExists() async throws {
+        let store = try makeStore()
+        let work = try store.createProfile(product: .claude, name: "Work")
+        let missing = ClaudeCodeProfileID.managed(UUID(uuidString: "20000000-0000-0000-0000-000000000009")!)
+        let workTokens = Self.claudeTokens(access: "synthetic-access-work", account: 3, email: "work@example.invalid")
+        let missingTokens = Self.claudeTokens(access: "synthetic-access-gone", account: 5, email: "gone@example.invalid")
+        let loginStore = InMemoryClaudeLoginAccounts(profiles: [.managed(work.id): workTokens, missing: missingTokens])
+        let transport = AppScriptedClaudeTransport()
+        let accounts = ClaudeCodeAccounts(store: loginStore, transport: transport)
+        let model = makeModel(
+            store: store,
+            claudeCodeAccounts: accounts,
+            claudeUsageClient: try scriptedClaudeUsageClient(accounts: accounts, transport: transport)
+        )
+
+        await waitUntil { model.claudeCodeAccountsState == .ready && loginStore.tokens(forProfile: missing) == nil }
+        XCTAssertEqual(loginStore.tokens(forProfile: .managed(work.id)), workTokens)
+        XCTAssertFalse(model.claudeCodeProfileIDs.contains(missing))
+    }
+
+    func testHomeShowsOneReadOnlyClaudeCodeRowPerSignedInProfile() async throws {
+        let store = try makeStore()
+        let work = try store.createProfile(product: .claude, name: "Work")
+        let workID = ClaudeCodeProfileID.managed(work.id)
+        let workTokens = Self.claudeTokens(access: "synthetic-access-work", account: 3, email: "work@example.invalid")
+        let loginStore = InMemoryClaudeLoginAccounts(profiles: [workID: workTokens])
+        let transport = AppScriptedClaudeTransport()
+        await transport.enqueue("/api/oauth/profile", status: 200, body: #"""
+        {"account":{"uuid":"00000000-0000-0000-0000-000000000003"},
+         "organization":{"uuid":"00000000-0000-0000-0000-000000000004"}}
+        """#)
+        await transport.enqueue("/api/oauth/usage", status: 200, body: #"""
+        {"five_hour":{"utilization":12.5,"resets_at":"2099-01-01T05:00:00.000Z"},
+         "seven_day":{"utilization":41,"resets_at":"2099-01-07T00:00:00Z"}}
+        """#)
+        let accounts = ClaudeCodeAccounts(store: loginStore, transport: transport)
+        let model = makeModel(
+            store: store,
+            claudeCodeAccounts: accounts,
+            claudeUsageClient: try scriptedClaudeUsageClient(accounts: accounts, transport: transport)
+        )
+        await waitUntil { model.claudeCodeUsage(for: workID).limits?.buckets.isEmpty == false }
+
+        let rows = DashboardSource.all(in: model, resets: model.resetReminders, now: Date())
+            .filter { $0.kind == .claudeCode }
+
+        // Official Claude is signed out, so only Work has a row.
+        XCTAssertEqual(rows.map(\.id), ["claude-code.\(workID.storageKey)"])
+        XCTAssertEqual(rows.map(\.name), ["Claude Code · Work"])
+        XCTAssertEqual(rows.first?.claudeCodeProfile, workID)
+        XCTAssertEqual(rows.first?.sessionWindow?.usage.usedPercent, 12.5)
+        XCTAssertFalse(rows.contains { $0.countsAsAccount })
+
+        // The row is read-only and opens the profile's page.
+        let row = try XCTUnwrap(rows.first)
+        DashboardSource.select(row, in: model)
+        XCTAssertEqual(model.selectedProfileID, work.id)
+    }
+
+    private static func claudeTokens(
+        access: String,
+        account: Int,
+        email: String,
+        addedAt: Date? = nil
+    ) -> ClaudeLoginTokens {
+        ClaudeLoginTokens(
+            accessToken: access,
+            refreshToken: "synthetic-refresh-\(account)",
+            expiresAt: Date().addingTimeInterval(3_600),
+            scopes: ["user:profile", "user:inference"],
+            accountUUID: String(format: "00000000-0000-0000-0000-%012d", account),
+            organizationUUID: String(format: "00000000-0000-0000-0000-%012d", account + 1),
+            accountLabel: email,
+            subscriptionType: "max",
+            addedAt: addedAt
+        )
     }
 
     func testOfficialCodexActionUsesStockInstancePath() async throws {

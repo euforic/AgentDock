@@ -166,14 +166,20 @@ returned.
 AgentDock's own Claude sign-in for Claude Code limits never reaches Claude in
 tests. Its tests run the sign-in flow with a pasted synthetic code against a
 scripted in-process transport, a real listener on 127.0.0.1, in-memory
-multi-account token stores, and temporary keychains created with
+per-profile token stores, and temporary keychains created with
 `SecKeychainCreate`; they never read the login Keychain or reach the internet.
-They cover adding, replacing, renaming, and signing out accounts, migrating the
-legacy single item (including idempotence and failed writes, read-backs, and
-deletes), per-account cooldowns and budgets, staggered starts, and the
-one-per-account and two-overall concurrency limits. Check the browser sign-in,
-the pasted-code path, adding a second account, migration of an existing
-sign-in, relaunch without a prompt, and Sign Out manually in a built app.
+They cover signing profiles in, replacing one profile's sign-in, renaming, and
+signing out per profile with other profiles untouched, removing a profile's
+sign-in when the profile is removed or deleted, migrating earlier
+account-keyed and single items onto profiles (name and email matching, the
+Official Claude fallback, the one-per-profile rule, idempotence, and failed
+writes, read-backs, and deletes), every card state, each profile page's own
+model state, Home's per-profile rows, per-account cooldowns and budgets shared
+by profiles on the same account, staggered starts, and the concurrency limits.
+Check manually in a built app: the browser sign-in and the pasted-code path on
+Official Claude and on a managed Claude profile, switching a profile to another
+account, migration of existing sign-ins, relaunch without a prompt, Sign Out,
+and deleting a signed-in profile.
 
 The installed Codex configuration check validates the signed app and runs its
 bundled CLI against a temporary managed MCP configuration without account data.

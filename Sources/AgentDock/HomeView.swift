@@ -85,18 +85,13 @@ struct HomeView: View {
     private func open(_ source: DashboardSource) {
         switch source.kind {
         case .official: model.openStock(source.product)
-        case .claudeCode: model.selectOfficial(.claude)
+        case .claudeCode: DashboardSource.select(source, in: model)
         case let .profile(profile): model.launch(profile)
         }
     }
 
     private func showDetails(_ source: DashboardSource) {
-        switch source.kind {
-        case .official: model.selectOfficial(source.product)
-        case .claudeCode: model.selectOfficial(.claude)
-        case let .profile(profile): model.selectProfile(profile.id)
-        }
-        model.detailTab = .overview
+        DashboardSource.select(source, in: model)
     }
 }
 
@@ -104,8 +99,8 @@ struct HomeView: View {
 struct DashboardSource: Identifiable {
     enum Kind: Equatable {
         case official
-        /// Live limits of a Claude account signed in to AgentDock for Claude Code;
-        /// not an app, so it is not counted as an app account.
+        /// Read-only live limits of one Claude profile's own Claude Code
+        /// sign-in; not an app, so it is not counted as an app account.
         case claudeCode
         case profile(CodexProfile)
     }
@@ -118,15 +113,29 @@ struct DashboardSource: Identifiable {
     let busy: Bool
     /// Banked-reset inventory for Codex sources; nil for Claude.
     let resets: HomeResetDigest?
-    /// The Claude Code account this row shows; one row per signed-in account.
-    var claudeCodeAccountKey: String? = nil
+    /// The profile whose Claude Code sign-in this row shows; one row per profile.
+    var claudeCodeProfile: ClaudeCodeProfileID? = nil
 
     var id: String {
         switch kind {
         case .official: "official.\(product.rawValue)"
-        case .claudeCode: claudeCodeAccountKey.map { "official.claude.code.\($0)" } ?? "official.claude.code"
+        case .claudeCode: claudeCodeProfile.map { "claude-code.\($0.storageKey)" } ?? "claude-code"
         case let .profile(profile): profile.id.uuidString
         }
+    }
+
+    /// Shows the source's page; a Claude Code row opens its profile's page.
+    @MainActor
+    static func select(_ source: DashboardSource, in model: AgentDockModel) {
+        switch source.kind {
+        case .official:
+            model.selectOfficial(source.product)
+        case .claudeCode:
+            if let profile = source.claudeCodeProfile { model.selectClaudeCodeProfile(profile) }
+        case let .profile(profile):
+            model.selectProfile(profile.id)
+        }
+        model.detailTab = .overview
     }
 
     /// Claude Code sign-ins are not app accounts, so they are not counted.
@@ -167,21 +176,25 @@ struct DashboardSource: Identifiable {
                 busy: model.busyStockProducts.contains(product),
                 resets: product == .codex ? digest("official") : nil
             )
-            // One row per signed-in account, shown only once it reports windows,
-            // so there is no dead row without them.
+            // One read-only row per Claude profile whose own sign-in reports
+            // windows, in sidebar order, so there is no dead row without them.
+            // Selecting it opens that profile's page, where its sign-in lives.
             var claudeCode: [DashboardSource] = []
             if product == .claude {
-                for account in model.claudeCodeAccounts where account.status.isSignedIn {
-                    guard let limits = account.limits, !limits.buckets.isEmpty else { continue }
+                for profile in model.claudeCodeProfileIDs {
+                    let usage = model.claudeCodeUsage(for: profile)
+                    guard usage.status.isSignedIn, let limits = usage.limits, !limits.buckets.isEmpty else {
+                        continue
+                    }
                     claudeCode.append(DashboardSource(
                         product: .claude,
                         kind: .claudeCode,
-                        name: account.title,
+                        name: "Claude Code · \(model.claudeCodeProfileName(profile))",
                         limits: limits,
                         running: nil,
                         busy: false,
                         resets: nil,
-                        claudeCodeAccountKey: account.key
+                        claudeCodeProfile: profile
                     ))
                 }
             }
@@ -252,7 +265,7 @@ private struct AccountCell: View {
 
     private var subtitle: String {
         if source.kind == .claudeCode {
-            var parts = ["Claude Code"]
+            var parts = ["Live limits"]
             if let plan = source.limits?.planType, !plan.isEmpty {
                 parts.append(plan.replacingOccurrences(of: "_", with: " ").capitalized)
             }
@@ -364,7 +377,7 @@ private struct OpenButton: View {
             Button(source.busy ? "…" : title) {
                 switch source.kind {
                 case .official: model.openStock(source.product)
-                case .claudeCode: model.selectOfficial(.claude)
+                case .claudeCode: DashboardSource.select(source, in: model)
                 case let .profile(profile): model.launch(profile)
                 }
             }
@@ -470,12 +483,7 @@ private struct DashboardSummary: View {
     }
 
     private func select(_ source: DashboardSource) {
-        switch source.kind {
-        case .official: model.selectOfficial(source.product)
-        case .claudeCode: model.selectOfficial(.claude)
-        case let .profile(profile): model.selectProfile(profile.id)
-        }
-        model.detailTab = .overview
+        DashboardSource.select(source, in: model)
     }
 }
 

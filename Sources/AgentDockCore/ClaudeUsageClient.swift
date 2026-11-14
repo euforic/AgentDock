@@ -17,16 +17,18 @@ public protocol ClaudeUsageFetching: Sendable {
         forceRefresh: Bool
     ) async -> ProfileRateLimits
 
-    /// Live limits for every Claude account signed in to AgentDock. One
-    /// account's failure is reported on its own entry and never hides another.
+    /// Live Claude Code limits for each profile's own sign-in, in the given
+    /// order. One profile's failure is reported on its own entry and never
+    /// hides another.
     func fetchClaudeCodeUsage(
+        profiles: [ClaudeCodeProfileID],
         allowKeychainInteraction: Bool,
         forceRefresh: Bool
     ) async -> ClaudeCodeUsageReport
 
-    /// Live limits for one account; nil when it is no longer signed in here.
+    /// Live limits for one profile's sign-in; nil when no sign-ins are configured.
     func fetchClaudeCodeUsage(
-        accountKey: String,
+        profile: ClaudeCodeProfileID,
         allowKeychainInteraction: Bool,
         forceRefresh: Bool
     ) async -> ClaudeCodeAccountUsage?
@@ -45,9 +47,9 @@ enum ClaudeUsageRefreshPolicy {
     /// Repeated manual refreshes within this interval reuse the last success.
     static let manualRefreshFloor: TimeInterval = 30
     static let maximumRateLimitCooldown: TimeInterval = 60 * 60
-    /// At most this many Claude Code accounts fetch at once.
+    /// At most this many Claude Code sign-ins fetch at once.
     static let maximumConcurrentClaudeCodeRequests = 2
-    /// Claude Code fetch starts are spaced this far apart across accounts.
+    /// Claude Code fetch starts are spaced this far apart across sign-ins.
     static let claudeCodeRequestSpacing: Duration = .seconds(1)
 
     static func canReuse(_ limits: ProfileRateLimits, now: Date) -> Bool {
@@ -138,10 +140,13 @@ public actor ClaudeUsageClient: ClaudeUsageFetching {
     private var claudeCodeBudget = ClaudeUsageRequestBudget()
     /// At most two Claude Code fetches at once, with staggered starts.
     private let claudeCodeThrottle: ClaudeRequestThrottle
-    /// One Claude Code fetch per account at a time.
-    private let claudeCodeAccountLocks = ClaudeKeyedExclusion<ObjectIdentifier>()
+    /// One Claude Code fetch per profile sign-in at a time.
+    private let claudeCodeLoginLocks = ClaudeKeyedExclusion<ObjectIdentifier>()
+    /// One Claude Code request per Claude account at a time, even when two
+    /// profiles are signed in to the same account.
+    private let claudeCodeAccountLocks = ClaudeKeyedExclusion<String>()
 
-    /// `claudeCodeAccounts` nil means Claude Code limits list no accounts.
+    /// `claudeCodeAccounts` nil means no profile has a Claude Code sign-in.
     public init(claudeCodeAccounts: ClaudeCodeAccounts? = nil) {
         self.init(
             cooldowns: ClaudeUsageCooldownStore(),
@@ -193,17 +198,18 @@ public actor ClaudeUsageClient: ClaudeUsageFetching {
         return await fetch(credential, projection: .desktop, forceRefresh: forceRefresh)
     }
 
-    /// Live limits for every Claude account signed in to AgentDock, each of
-    /// which can differ from Desktop. Claude Code's own login is never read.
-    /// Accounts are fetched independently: each has its own gate, cooldown,
-    /// and budget, and one account's failure never blocks another.
+    /// Live limits for each profile's own Claude sign-in, each of which can
+    /// differ from Desktop. Claude Code's own login is never read. Profiles
+    /// are fetched independently; the gate, 429 cooldown, and hourly budget
+    /// belong to the Claude account, so two profiles on the same account
+    /// share them, and one profile's failure never blocks another.
     public func fetchClaudeCodeUsage(
+        profiles: [ClaudeCodeProfileID],
         allowKeychainInteraction: Bool,
         forceRefresh: Bool = false
     ) async -> ClaudeCodeUsageReport {
         guard let claudeCodeAccounts else { return ClaudeCodeUsageReport() }
-        let listing = await claudeCodeAccounts.entries(allowKeychainInteraction: allowKeychainInteraction)
-        let entries = listing.entries
+        let entries = await claudeCodeAccounts.entries(for: profiles)
         let accounts = await withTaskGroup(
             of: (Int, ClaudeCodeAccountUsage).self,
             returning: [ClaudeCodeAccountUsage].self
@@ -211,7 +217,7 @@ public actor ClaudeUsageClient: ClaudeUsageFetching {
             for (index, entry) in entries.enumerated() {
                 group.addTask {
                     let usage = await self.claudeCodeAccountUsage(
-                        key: entry.key,
+                        profile: entry.profile,
                         login: entry.login,
                         allowKeychainInteraction: allowKeychainInteraction,
                         forceRefresh: forceRefresh
@@ -226,38 +232,42 @@ public actor ClaudeUsageClient: ClaudeUsageFetching {
             return collected.compactMap { $0 }
         }
         return ClaudeCodeUsageReport(
-            keychainAccessRequired: listing.keychainAccessRequired,
+            keychainAccessRequired: accounts.contains { $0.status == .keychainAccessRequired },
             accounts: accounts
         )
     }
 
     public func fetchClaudeCodeUsage(
-        accountKey: String,
+        profile: ClaudeCodeProfileID,
         allowKeychainInteraction: Bool,
         forceRefresh: Bool = false
     ) async -> ClaudeCodeAccountUsage? {
-        guard let login = await claudeCodeAccounts?.login(forAccountKey: accountKey) else { return nil }
+        guard let login = await claudeCodeAccounts?.login(for: profile) else { return nil }
         return await claudeCodeAccountUsage(
-            key: accountKey,
+            profile: profile,
             login: login,
             allowKeychainInteraction: allowKeychainInteraction,
             forceRefresh: forceRefresh
         )
     }
 
-    /// Live limits for one signed-in account. Only one fetch per account runs
-    /// at a time; a second caller waits and then normally reuses the result.
+    /// Live limits for one profile's sign-in. Only one fetch per sign-in, and
+    /// one request per Claude account, runs at a time; a second caller waits
+    /// and then normally reuses the result.
     func fetchClaudeCodeUsage(
         login: ClaudeCodeLogin,
         allowKeychainInteraction: Bool,
         forceRefresh: Bool = false
     ) async -> ProfileRateLimits {
         let lock = ObjectIdentifier(login)
-        await claudeCodeAccountLocks.acquire(lock)
-        defer { claudeCodeAccountLocks.release(lock) }
+        await claudeCodeLoginLocks.acquire(lock)
+        defer { claudeCodeLoginLocks.release(lock) }
 
         switch await login.usableTokens(allowKeychainInteraction: allowKeychainInteraction) {
         case let .tokens(tokens):
+            let account = tokens.accountKey
+            await claudeCodeAccountLocks.acquire(account)
+            defer { claudeCodeAccountLocks.release(account) }
             return await fetch(
                 tokens.usageCredential,
                 projection: .claudeCode,
@@ -298,7 +308,7 @@ public actor ClaudeUsageClient: ClaudeUsageFetching {
     }
 
     private func claudeCodeAccountUsage(
-        key: String,
+        profile: ClaudeCodeProfileID,
         login: ClaudeCodeLogin,
         allowKeychainInteraction: Bool,
         forceRefresh: Bool
@@ -308,15 +318,15 @@ public actor ClaudeUsageClient: ClaudeUsageFetching {
             allowKeychainInteraction: allowKeychainInteraction,
             forceRefresh: forceRefresh
         )
-        let summary = await login.summary()
-        let identity = await login.knownIdentity()
-        return ClaudeCodeAccountUsage(
-            key: key,
-            account: summary.account,
-            status: summary.status,
-            limits: limits,
-            rateLimitedUntil: identity.flatMap { claudeCodeRetryAt($0, now: Date()) }
+        var usage = await ClaudeCodeAccounts.usage(
+            for: profile,
+            login: login,
+            allowKeychainInteraction: false
         )
+        usage.limits = limits
+        let identity = await login.knownIdentity()
+        usage.rateLimitedUntil = identity.flatMap { claudeCodeRetryAt($0, now: Date()) }
+        return usage
     }
 
     /// The later of an active 429 cooldown and the end of a spent hourly budget.

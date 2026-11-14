@@ -137,13 +137,13 @@ final class HomeDashboardTests: XCTestCase {
             busy: false,
             resets: nil
         )
-        XCTAssertEqual(source.id, "official.claude.code")
+        XCTAssertEqual(source.id, "claude-code")
         XCTAssertFalse(source.countsAsAccount)
         XCTAssertEqual(source.sessionWindow?.title, "5-hour")
         XCTAssertEqual(source.weeklyWindow?.title, "Weekly")
     }
 
-    func testEachClaudeCodeAccountHasItsOwnRow() {
+    func testEachClaudeProfileHasItsOwnClaudeCodeRow() {
         let limits = ProfileRateLimits(buckets: [
             RateLimitBucket(
                 id: "claude",
@@ -152,21 +152,27 @@ final class HomeDashboardTests: XCTestCase {
                 secondary: nil
             )
         ])
-        let keys = [String(repeating: "a", count: 32), String(repeating: "b", count: 32)]
-        let rows = keys.map { accountKey in
+        let profiles: [ClaudeCodeProfileID] = [
+            .official,
+            .managed(UUID(uuidString: "10000000-0000-0000-0000-000000000001")!)
+        ]
+        let rows = profiles.map { profile in
             DashboardSource(
                 product: .claude,
                 kind: .claudeCode,
-                name: "Account \(accountKey.prefix(1))",
+                name: "Claude Code · \(profile.storageKey)",
                 limits: limits,
                 running: nil,
                 busy: false,
                 resets: nil,
-                claudeCodeAccountKey: accountKey
+                claudeCodeProfile: profile
             )
         }
 
-        XCTAssertEqual(rows.map(\.id), keys.map { "official.claude.code.\($0)" })
+        XCTAssertEqual(rows.map(\.id), [
+            "claude-code.official",
+            "claude-code.10000000-0000-0000-0000-000000000001"
+        ])
         XCTAssertEqual(Set(rows.map(\.id)).count, 2)
         XCTAssertTrue(rows.allSatisfy { !$0.countsAsAccount })
     }

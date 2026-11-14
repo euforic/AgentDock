@@ -43,17 +43,20 @@ Selecting a count opens Available Resets with the expiring reset selected.
 Home adds no polling, notification scheduling, reset consumption, or account
 persistence.
 
-## Claude Code row
+## Claude Code rows
 
-When the Claude account signed in to AgentDock reports live windows, a "Claude Code" row
-appears under Official Claude. It shows a terminal icon and "Claude Code
-login", the plan, and Fable's weekly percentage when reported. Its Session and
-Weekly columns use the 5-hour and weekly windows, and the Closest to Limit and
-Next Usage Reset tiles include its Fable window. The row has no running state
-and no Open action; Show Details and selection open the Official Claude
-overview. It is not counted as an account in the provider header or the
-Running tile, and it is hidden when signed out of AgentDock's Claude sign-in or
-when no windows are reported.
+Claude Code sign-ins live on each Claude profile's page, so Home only
+summarizes them. Every Claude profile (Official Claude first, then managed
+Claude profiles in sidebar order) whose own Claude Code sign-in reports live
+windows gets one read-only row in the Claude section, named "Claude Code ·
+<profile name>". It shows a terminal icon, "Live limits", the plan, and Fable's
+weekly percentage when reported. Its Session and Weekly columns use the 5-hour
+and weekly windows, and the Closest to Limit and Next Usage Reset tiles include
+its Fable window. The row has no running state, no Open action, and no sign-in
+or sign-out controls; Show Details, selection, and the tiles open that
+profile's page, where the sign-in is managed. It is not counted as an account
+in the provider header or the Running tile, and it is hidden while that profile
+is signed out or reports no windows.
 
 ## Design
 

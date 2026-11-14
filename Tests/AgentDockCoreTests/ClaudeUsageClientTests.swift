@@ -515,19 +515,31 @@ final class ClaudeUsageClientTests: XCTestCase {
         let requests = await transport.requests.count
         XCTAssertEqual(requests, 0)
 
-        // Without any accounts at all, the section lists none and sends nothing.
+        // Without any sign-in store at all, nothing is listed and nothing is sent.
         let withoutAccounts = ClaudeUsageClient(
             cooldowns: ClaudeUsageCooldownStore(defaults: try makeDefaults()),
             transport: transport
         )
-        let none = await withoutAccounts.fetchClaudeCodeUsage(allowKeychainInteraction: false, forceRefresh: true)
+        let none = await withoutAccounts.fetchClaudeCodeUsage(
+            profiles: [.official],
+            allowKeychainInteraction: false,
+            forceRefresh: true
+        )
         XCTAssertEqual(none, ClaudeCodeUsageReport())
+        // Profiles without a sign-in each report signed out, and nothing is sent.
         let emptyRegistry = try makeClient(
             accounts: ClaudeCodeAccounts(store: InMemoryClaudeLoginAccounts(), transport: transport),
             transport: transport
         )
-        let empty = await emptyRegistry.fetchClaudeCodeUsage(allowKeychainInteraction: false, forceRefresh: true)
-        XCTAssertTrue(empty.accounts.isEmpty)
+        let empty = await emptyRegistry.fetchClaudeCodeUsage(
+            profiles: [.official, Fixture.work],
+            allowKeychainInteraction: false,
+            forceRefresh: true
+        )
+        XCTAssertEqual(empty.accounts.map(\.profile), [.official, Fixture.work])
+        XCTAssertTrue(empty.accounts.allSatisfy { $0.status == .signedOut(expired: false) })
+        XCTAssertTrue(empty.accounts.allSatisfy { $0.limits?.errorMessage == ClaudeCodeUsageMessage.notSignedIn })
+        XCTAssertTrue(empty.accounts.allSatisfy { $0.phase() == .signedOut })
         XCTAssertFalse(empty.keychainAccessRequired)
         let afterwards = await transport.requests.count
         XCTAssertEqual(afterwards, 0)
@@ -553,9 +565,9 @@ final class ClaudeUsageClientTests: XCTestCase {
         XCTAssertEqual(usageCount, 2)
     }
 
-    // MARK: - Multiple Claude Code accounts
+    // MARK: - One Claude Code sign-in per profile
 
-    func testEachAccountGetsItsOwnCardAndOneFailureHidesNoOther() async throws {
+    func testEachProfileGetsItsOwnCardAndOneFailureHidesNoOther() async throws {
         let transport = ScriptedClaudeTransport()
         let first = Fixture.tokens(addedAt: Date(timeIntervalSince1970: 1_800_000_000))
         let second = Fixture.secondTokens()
@@ -566,14 +578,21 @@ final class ClaudeUsageClientTests: XCTestCase {
         await transport.enqueue(usagePath, token: first.accessToken, Fixture.usageReply)
         await transport.enqueue(usagePath, token: second.accessToken, .json(500, "{}"))
         await transport.enqueue(usagePath, token: third.accessToken, .json(429, "{}", headers: ["Retry-After": "600"]))
-        let store = InMemoryClaudeLoginAccounts(accounts: [third, first, second])
+        let store = InMemoryClaudeLoginAccounts(
+            profiles: [.official: first, Fixture.work: second, Fixture.personal: third]
+        )
         let client = try makeClient(accounts: ClaudeCodeAccounts(store: store, transport: transport), transport: transport)
 
-        let report = await client.fetchClaudeCodeUsage(allowKeychainInteraction: false, forceRefresh: false)
+        let report = await client.fetchClaudeCodeUsage(
+            profiles: [.official, Fixture.work, Fixture.personal],
+            allowKeychainInteraction: false,
+            forceRefresh: false
+        )
 
         XCTAssertFalse(report.keychainAccessRequired)
-        // Ordered by when each account was added.
-        XCTAssertEqual(report.accounts.map(\.key), [first.accountKey, second.accountKey, third.accountKey])
+        // In the order the profiles were requested.
+        XCTAssertEqual(report.accounts.map(\.profile), [.official, Fixture.work, Fixture.personal])
+        XCTAssertEqual(report.accounts.map(\.accountKey), [first.accountKey, second.accountKey, third.accountKey])
         XCTAssertEqual(report.accounts.map(\.title), [Fixture.email, Fixture.secondEmail, Fixture.thirdEmail])
         XCTAssertTrue(report.accounts.allSatisfy { $0.status.isSignedIn })
 
@@ -581,24 +600,58 @@ final class ClaudeUsageClientTests: XCTestCase {
         XCTAssertNil(ok.limits?.errorMessage)
         XCTAssertEqual(ok.limits?.buckets.map(\.id), ["claude"])
         XCTAssertNil(ok.rateLimitedUntil)
+        XCTAssertEqual(ok.phase(), .ok)
 
         let failed = report.accounts[1]
         XCTAssertEqual(failed.limits?.errorMessage, "Live usage request failed (HTTP 500).")
         XCTAssertNil(failed.rateLimitedUntil)
+        XCTAssertEqual(failed.phase(), .error("Live usage request failed (HTTP 500)."))
 
         let limited = report.accounts[2]
         XCTAssertEqual(limited.limits?.errorMessage, "Live usage is rate limited. Try again later.")
         let until = try XCTUnwrap(limited.rateLimitedUntil)
         XCTAssertEqual(until.timeIntervalSinceNow, 600, accuracy: 5)
+        XCTAssertEqual(limited.phase(), .rateLimited(until: until))
 
-        // Each account used only its own token.
+        // Each profile used only its own sign-in's token.
         for tokens in [first, second, third] {
             let usage = await transport.count(usagePath, token: tokens.accessToken)
             XCTAssertEqual(usage, 1)
         }
     }
 
-    func testOneAccountsRateLimitDoesNotBlockAnother() async throws {
+    func testTwoProfilesOnTheSameAccountShareItsCooldown() async throws {
+        let transport = ScriptedClaudeTransport()
+        let onOfficial = Fixture.tokens(access: "synthetic-access-official")
+        let onWork = Fixture.tokens(access: "synthetic-access-work")
+        await enqueueProfile(transport, onOfficial)
+        await transport.enqueue(
+            usagePath,
+            token: onOfficial.accessToken,
+            .json(429, "{}", headers: ["Retry-After": "900"])
+        )
+        let store = InMemoryClaudeLoginAccounts(profiles: [.official: onOfficial, Fixture.work: onWork])
+        let client = try makeClient(accounts: ClaudeCodeAccounts(store: store, transport: transport), transport: transport)
+
+        let limited = await client.fetchClaudeCodeUsage(
+            profile: .official,
+            allowKeychainInteraction: false,
+            forceRefresh: true
+        )
+        let sameAccount = await client.fetchClaudeCodeUsage(
+            profile: Fixture.work,
+            allowKeychainInteraction: false,
+            forceRefresh: true
+        )
+
+        XCTAssertEqual(limited?.limits?.errorMessage, "Live usage is rate limited. Try again later.")
+        XCTAssertEqual(sameAccount?.limits?.errorMessage, "Live usage is rate limited. Try again later.")
+        XCTAssertNotNil(sameAccount?.rateLimitedUntil, "the 429 cooldown belongs to the Claude account")
+        let workRequests = await transport.count(usagePath, token: onWork.accessToken)
+        XCTAssertEqual(workRequests, 0)
+    }
+
+    func testOneProfilesRateLimitDoesNotBlockAnother() async throws {
         let transport = ScriptedClaudeTransport()
         let first = Fixture.tokens()
         let second = Fixture.secondTokens()
@@ -606,7 +659,7 @@ final class ClaudeUsageClientTests: XCTestCase {
         await enqueueProfile(transport, second)
         await transport.enqueue(usagePath, token: first.accessToken, .json(429, "{}", headers: ["Retry-After": "900"]))
         await transport.enqueue(usagePath, token: second.accessToken, Fixture.usageReply, Fixture.usageReply)
-        let store = InMemoryClaudeLoginAccounts(accounts: [first, second])
+        let store = InMemoryClaudeLoginAccounts(profiles: [.official: first, Fixture.work: second])
         let defaults = try makeDefaults()
         let client = ClaudeUsageClient(
             cooldowns: ClaudeUsageCooldownStore(defaults: defaults),
@@ -615,11 +668,14 @@ final class ClaudeUsageClientTests: XCTestCase {
             claudeCodeRequestSpacing: .zero
         )
 
-        _ = await client.fetchClaudeCodeUsage(allowKeychainInteraction: false, forceRefresh: true)
-        let firstKey = first.accountKey
+        _ = await client.fetchClaudeCodeUsage(
+            profiles: [.official, Fixture.work],
+            allowKeychainInteraction: false,
+            forceRefresh: true
+        )
         let secondKey = second.accountKey
         let limitedAgain = await client.fetchClaudeCodeUsage(
-            accountKey: firstKey,
+            profile: .official,
             allowKeychainInteraction: false,
             forceRefresh: true
         )
@@ -630,7 +686,7 @@ final class ClaudeUsageClientTests: XCTestCase {
 
         await client.forgetClaudeCodeUsage(accountKey: secondKey)
         let other = await client.fetchClaudeCodeUsage(
-            accountKey: secondKey,
+            profile: Fixture.work,
             allowKeychainInteraction: false,
             forceRefresh: true
         )
@@ -658,43 +714,43 @@ final class ClaudeUsageClientTests: XCTestCase {
             await transport.enqueue(usagePath, token: first.accessToken, .json(500, "{}"))
         }
         await transport.enqueue(usagePath, token: second.accessToken, Fixture.usageReply)
-        let store = InMemoryClaudeLoginAccounts(accounts: [first, second])
+        let store = InMemoryClaudeLoginAccounts(profiles: [.official: first, Fixture.work: second])
         let registry = ClaudeCodeAccounts(store: store, transport: transport)
         let client = try makeClient(accounts: registry, transport: transport)
         let firstKey = first.accountKey
-        // Single-account fetches resolve only accounts the registry has listed,
-        // as the app does at launch. Listing sends no requests.
-        let listing = await registry.list()
-        XCTAssertEqual(listing.accounts.map(\.key), [firstKey, second.accountKey])
+        // Listing the profiles, as the app does at launch, sends no requests.
+        let listing = await registry.list(profiles: [.official, Fixture.work])
+        XCTAssertEqual(listing.accounts.map(\.accountKey), [firstKey, second.accountKey])
         let listingRequests = await transport.requests.count
         XCTAssertEqual(listingRequests, 0)
 
         for _ in 0..<ClaudeUsageRequestBudget.limit {
             let result = await client.fetchClaudeCodeUsage(
-                accountKey: firstKey,
+                profile: .official,
                 allowKeychainInteraction: false,
                 forceRefresh: true
             )
-            let failed = try XCTUnwrap(result, "a listed account must resolve")
+            let failed = try XCTUnwrap(result, "a profile must resolve")
             XCTAssertEqual(failed.limits?.errorMessage, "Live usage request failed (HTTP 500).")
         }
         let spent = await client.fetchClaudeCodeUsage(
-            accountKey: firstKey,
+            profile: .official,
             allowKeychainInteraction: false,
             forceRefresh: true
         )
         XCTAssertEqual(spent?.limits?.errorMessage, ClaudeUsageClient.budgetError)
         let retry = try XCTUnwrap(spent?.rateLimitedUntil)
         XCTAssertEqual(retry.timeIntervalSinceNow, ClaudeUsageRequestBudget.window, accuracy: 30)
+        XCTAssertEqual(spent?.phase(), .budgetExhausted(until: retry))
         let firstUsage = await transport.count(usagePath, token: first.accessToken)
         XCTAssertEqual(firstUsage, ClaudeUsageRequestBudget.limit)
 
         let other = await client.fetchClaudeCodeUsage(
-            accountKey: second.accountKey,
+            profile: Fixture.work,
             allowKeychainInteraction: false,
             forceRefresh: true
         )
-        XCTAssertNotNil(other, "the second account must resolve")
+        XCTAssertNotNil(other, "the second profile must resolve")
         XCTAssertNil(other?.limits?.errorMessage)
         XCTAssertEqual(other?.limits?.buckets.map(\.id), ["claude"])
         XCTAssertNil(other?.rateLimitedUntil, "the first account's spent budget does not block the second")
@@ -702,7 +758,7 @@ final class ClaudeUsageClientTests: XCTestCase {
         XCTAssertEqual(secondUsage, 1)
     }
 
-    func testFetchingAllAccountsStaggersStartsAndRunsAtMostTwo() async throws {
+    func testFetchingAllProfilesStaggersStartsAndRunsAtMostTwo() async throws {
         let transport = ScriptedClaudeTransport()
         let accounts = [Fixture.tokens(), Fixture.secondTokens(), Fixture.thirdTokens()]
         for tokens in accounts {
@@ -710,7 +766,10 @@ final class ClaudeUsageClientTests: XCTestCase {
             await transport.enqueue(usagePath, token: tokens.accessToken, Fixture.usageReply)
         }
         await transport.hold(usagePath)
-        let store = InMemoryClaudeLoginAccounts(accounts: accounts)
+        let profiles: [ClaudeCodeProfileID] = [.official, Fixture.work, Fixture.personal]
+        let store = InMemoryClaudeLoginAccounts(
+            profiles: Dictionary(uniqueKeysWithValues: zip(profiles, accounts))
+        )
         let spacing = Duration.milliseconds(150)
         let client = ClaudeUsageClient(
             cooldowns: ClaudeUsageCooldownStore(defaults: try makeDefaults()),
@@ -719,7 +778,9 @@ final class ClaudeUsageClientTests: XCTestCase {
             claudeCodeRequestSpacing: spacing
         )
 
-        let pass = Task { await client.fetchClaudeCodeUsage(allowKeychainInteraction: false, forceRefresh: false) }
+        let pass = Task {
+            await client.fetchClaudeCodeUsage(profiles: profiles, allowKeychainInteraction: false, forceRefresh: false)
+        }
         let twoHeld = await eventually { await transport.heldCount == 2 }
         XCTAssertTrue(twoHeld)
         // The third account waits for a slot while two requests are in flight.
@@ -787,16 +848,25 @@ final class ClaudeUsageClientTests: XCTestCase {
         )
         let transport = ScriptedClaudeTransport()
         let store = InMemoryClaudeLoginAccounts(legacy: legacy)
+        let registry = ClaudeCodeAccounts(store: store, transport: transport)
         let client = ClaudeUsageClient(
             cooldowns: ClaudeUsageCooldownStore(defaults: defaults),
             transport: transport,
-            claudeCodeAccounts: ClaudeCodeAccounts(store: store, transport: transport),
+            claudeCodeAccounts: registry,
             claudeCodeRequestSpacing: .zero
         )
+        let migration = await registry.migrateEarlierSignIns(
+            to: [ClaudeCodeMigrationTarget(profile: .official, name: "Official Claude")]
+        )
+        XCTAssertEqual(migration.placed, [.official: legacy.accountKey])
 
-        let report = await client.fetchClaudeCodeUsage(allowKeychainInteraction: false, forceRefresh: true)
+        let report = await client.fetchClaudeCodeUsage(
+            profiles: [.official],
+            allowKeychainInteraction: false,
+            forceRefresh: true
+        )
 
-        XCTAssertEqual(report.accounts.map(\.key), [legacy.accountKey])
+        XCTAssertEqual(report.accounts.map(\.accountKey), [legacy.accountKey])
         XCTAssertEqual(report.accounts.first?.limits?.errorMessage, "Live usage is rate limited. Try again later.")
         XCTAssertNotNil(report.accounts.first?.rateLimitedUntil)
         XCTAssertNil(store.tokens(.legacy))

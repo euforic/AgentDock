@@ -152,14 +152,19 @@ usage summaries are source-dependent:
   session, weekly, model-scoped, reset, and extra-usage status. The cross-source
   card keeps the official installation visible alongside every managed account.
   Local rate-limit events remain a clearly separate last-observed fallback.
-  A separate Claude Code Usage Limits section shows live 5-hour, weekly, and
-  Fable weekly limits for each Claude account you sign in with once through
-  **Sign In to Claude…** or **Add Claude Account…** in AgentDock, which can
-  differ from the Claude Desktop account. Every account gets its own card with
-  its own reset times and status, can be renamed, and signs out on its own.
-  Each account's tokens live only in its own AgentDock Keychain item; AgentDock
-  never reads Claude Code's login or discovers accounts on its own. A sign-in
-  from an earlier version moves to the new per-account item automatically.
+  Each Claude profile's page, Official Claude included, has its own Claude
+  Code Usage Limits card with live 5-hour, weekly, and Fable weekly limits for
+  the Claude account that profile signs in with through its own
+  **Sign In to Claude…** button, which can differ from the profile's Claude
+  Desktop account. Every Claude profile has at most one such sign-in: signing
+  in again replaces only that profile's sign-in, **Sign Out** removes only it,
+  and removing or deleting the profile removes it too. There is no shared
+  account list. Each sign-in's tokens live only in that profile's own AgentDock
+  Keychain item; AgentDock never reads Claude Code's login or discovers
+  accounts on its own. Home shows a read-only Claude Code row for each signed-in
+  profile that opens the profile's page. Sign-ins from earlier versions move
+  onto profiles automatically at launch; see
+  [Upgrade migration](docs/upgrade-migration.md#claude-code-sign-ins).
 - AgentDock does not index ordinary synced claude.ai web-chat content. Live
   Claude Desktop usage reads the provider-owned OAuth cache and
   active-organization cookie required to resolve the signed-in account.

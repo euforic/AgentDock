@@ -1,11 +1,13 @@
+import AgentDockCore
 import AppKit
 import SwiftUI
 
-/// Guides adding a Claude account with AgentDock's own sign-in: the browser
-/// step, an optional pasted code, the token exchange, and a retry after a
-/// failure. Signing in to an account already listed replaces its sign-in.
+/// Guides signing one profile in to Claude with AgentDock's own sign-in: the
+/// browser step, an optional pasted code, the token exchange, and a retry
+/// after a failure. It replaces only this profile's sign-in.
 struct ClaudeSignInSheet: View {
     @EnvironmentObject private var model: AgentDockModel
+    let profile: ClaudeCodeProfileID
     @State private var code = ""
     @FocusState private var codeFocused: Bool
 
@@ -14,12 +16,16 @@ struct ClaudeSignInSheet: View {
             Section {
                 content
             } header: {
-                Text("Sign In to Claude")
-                    .font(.title3.weight(.semibold))
-                    .foregroundStyle(.primary)
-                    .textCase(nil)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Sign In to Claude")
+                        .font(.title3.weight(.semibold))
+                        .foregroundStyle(.primary)
+                    Text("For \(model.claudeCodeProfileName(profile))")
+                        .foregroundStyle(.secondary)
+                }
+                .textCase(nil)
             } footer: {
-                Text("AgentDock keeps each account's sign-in in its own Keychain item and uses it only to read that account's profile and Claude Code usage limits. Sign in with the account you want to add.")
+                Text("AgentDock keeps this profile's sign-in in its own Keychain item and uses it only to read the account's profile and Claude Code usage limits. Signing in replaces only this profile's sign-in.")
             }
         }
         .formStyle(.grouped)
@@ -69,7 +75,7 @@ struct ClaudeSignInSheet: View {
         case .failed:
             Button("Try Again") {
                 code = ""
-                model.signInToClaude()
+                model.signInToClaude(profile: profile)
             }
         default:
             EmptyView()

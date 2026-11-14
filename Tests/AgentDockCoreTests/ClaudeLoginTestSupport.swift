@@ -204,14 +204,17 @@ final class InMemoryClaudeLoginStore: ClaudeLoginTokenStoring, Sendable {
     }
 }
 
-/// A test-only multi-account store: one in-memory item per account key plus
-/// the legacy item. Like the Keychain store, an account's item refuses another
-/// account's sign-in. Each item can be told to fail its next load, save, or
-/// delete, or to drop its next save so the read-back finds nothing.
+/// A test-only sign-in store: one in-memory item per profile, plus the items
+/// earlier versions wrote (one per account key, and the legacy item). Like the
+/// Keychain store, an account-keyed item refuses another account's sign-in,
+/// while a profile's item holds any account. Each item can be told to fail its
+/// next load, save, or delete, or to drop its next save so the read-back finds
+/// nothing.
 final class InMemoryClaudeLoginAccounts: ClaudeLoginAccountStoring, Sendable {
     enum Item: Hashable, Sendable {
         case legacy
         case account(String)
+        case profile(ClaudeCodeProfileID)
     }
 
     private struct State {
@@ -227,16 +230,34 @@ final class InMemoryClaudeLoginAccounts: ClaudeLoginAccountStoring, Sendable {
 
     private let state = Mutex(State())
 
-    init(legacy: ClaudeLoginTokens? = nil, accounts: [ClaudeLoginTokens] = []) {
+    init(
+        legacy: ClaudeLoginTokens? = nil,
+        accounts: [ClaudeLoginTokens] = [],
+        profiles: [ClaudeCodeProfileID: ClaudeLoginTokens] = [:]
+    ) {
         state.withLock { current in
             if let legacy { current.items[.legacy] = legacy }
             for tokens in accounts { current.items[.account(tokens.accountKey)] = tokens }
+            for (profile, tokens) in profiles { current.items[.profile(profile)] = tokens }
         }
     }
 
     func tokens(_ item: Item) -> ClaudeLoginTokens? { state.withLock { $0.items[item] } }
     func saveCount(_ item: Item) -> Int { state.withLock { $0.saves[item] ?? 0 } }
     func deleteCount(_ item: Item) -> Int { state.withLock { $0.deletes[item] ?? 0 } }
+
+    /// Every profile item's profile, sorted by storage key.
+    var storedProfileIDs: [ClaudeCodeProfileID] {
+        state.withLock { current in
+            current.items.keys.compactMap { item -> ClaudeCodeProfileID? in
+                if case let .profile(profile) = item { return profile }
+                return nil
+            }.sorted { $0.storageKey < $1.storageKey }
+        }
+    }
+
+    /// Every item, for asserting that a run changed nothing.
+    var snapshot: [Item: ClaudeLoginTokens] { state.withLock { $0.items } }
 
     /// Every account item's key, legacy excluded, sorted.
     var storedAccountKeys: [String] {
@@ -279,6 +300,19 @@ final class InMemoryClaudeLoginAccounts: ClaudeLoginAccountStoring, Sendable {
         }
         if let failure { throw failure }
         return storedAccountKeys
+    }
+
+    func profileIDs(allowInteraction _: Bool) throws -> [ClaudeCodeProfileID] {
+        let failure: ClaudeLoginStoreError? = state.withLock { current in
+            defer { current.listFailure = nil }
+            return current.listFailure
+        }
+        if let failure { throw failure }
+        return storedProfileIDs
+    }
+
+    func tokenStore(forProfile profile: ClaudeCodeProfileID) -> any ClaudeLoginTokenStoring {
+        InMemoryClaudeLoginItem(owner: self, item: .profile(profile))
     }
 
     func tokenStore(forAccountKey accountKey: String) -> any ClaudeLoginTokenStoring {
@@ -354,6 +388,12 @@ enum ClaudeLoginFixture {
     static let thirdAccount = "00000000-0000-0000-0000-000000000005"
     static let thirdOrganization = "00000000-0000-0000-0000-000000000006"
     static let thirdEmail = "third@example.invalid"
+
+    /// Synthetic managed Claude profiles.
+    static let workProfileID = UUID(uuidString: "10000000-0000-0000-0000-000000000001")!
+    static let personalProfileID = UUID(uuidString: "10000000-0000-0000-0000-000000000002")!
+    static var work: ClaudeCodeProfileID { .managed(workProfileID) }
+    static var personal: ClaudeCodeProfileID { .managed(personalProfileID) }
 
     static var accountKey: String {
         ClaudeLoginAccountKey.make(accountUUID: account, organizationUUID: organization)
